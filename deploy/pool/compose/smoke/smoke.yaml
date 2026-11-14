@@ -1,0 +1,48 @@
+# Compose overlay for smoke.sh: stack.yaml + pool.yaml + a Multica backend with
+# its own Postgres, all in the smoke's own project. Nothing here is shared
+# with another compose project.
+services:
+  manager:
+    depends_on:
+      backend: {condition: service_started}
+    environment:
+      # The smoke checks that a pod is reset between two tasks, so no binding
+      # holds its pod for the next task of its key.
+      SANDBOX_HOLD_TIMEOUT: "0"
+
+  multica-pg:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: multica
+      POSTGRES_USER: multica
+      POSTGRES_PASSWORD: ${SMOKE_DB_PASSWORD:?}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U multica -d multica"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [egress]
+
+  backend:
+    image: ${MULTICA_BACKEND_IMAGE:?}
+    depends_on:
+      multica-pg: {condition: service_healthy}
+    ports:
+      - "127.0.0.1:${SMOKE_API_PORT:?}:8080"
+    environment:
+      DATABASE_URL: postgres://multica:${SMOKE_DB_PASSWORD}@multica-pg:5432/multica?sslmode=disable
+      PORT: "8080"
+      APP_ENV: development
+      JWT_SECRET: ${SMOKE_JWT_SECRET:?}
+      MULTICA_DEV_VERIFICATION_CODE: ${SMOKE_DEV_CODE:?}
+      FRONTEND_ORIGIN: http://localhost:3000
+      MULTICA_APP_URL: http://localhost:3000
+      MULTICA_PUBLIC_URL: http://localhost:${SMOKE_API_PORT}
+    networks:
+      egress:
+        aliases: [multica-backend]
+
+networks:
+  # stack.yaml names the pod network; give the smoke its own.
+  pods:
+    name: ${SMOKE_PROJECT:?}-sandbox

@@ -1,0 +1,38 @@
+#!/bin/sh
+# Stand-in for Claude Code for credential-free trials of the sandbox runtime. It speaks just
+# enough stream-json for the daemon and proves the agent can reach the Multica
+# API with its task token through the manager. SANDBOX_FAKE_NOTE, set in the
+# agent's custom environment, is echoed in the comment to show that the
+# environment reached the agent. SANDBOX_FAKE_SLEEP (seconds) keeps the task
+# running that long after the comment, so a trial can fill the pool.
+case "${1:-}" in
+--version | -v)
+	echo "2.1.0 (Claude Code)"
+	exit 0
+	;;
+esac
+prompt="$(head -n 1)"
+# Count the files an earlier task left (a reset should leave none), then leave
+# one in the task directory, the caches under HOME, Claude Code's own state
+# next to the image skills (~/.claude/projects), TMPDIR and /tmp, for the next
+# task to look for.
+left="$(find "$HOME" -name 'sandbox-fake-left-*' 2>/dev/null | wc -l)"
+mkdir -p "$HOME/.cache/sandbox-fake" "$HOME/.claude/projects/sandbox-fake"
+for d in . "$HOME/.cache/sandbox-fake" "$HOME/.claude/projects/sandbox-fake" "${TMPDIR:-/tmp}" /tmp; do
+	echo "$$" >"$d/sandbox-fake-left-$$" 2>/dev/null || true
+done
+issue="$(printf '%s' "$prompt" | grep -oE 'assigned issue ID is: [0-9a-f-]{36}' | head -n 1 | sed 's/.* //')"
+# A task a comment started must reply under that comment.
+parent="$(printf '%s' "$prompt" | grep -oE -- '--parent [0-9a-f-]{36}' | head -n 1 | sed 's/.* //')"
+note="no issue ID in prompt"
+if [ -n "$issue" ]; then
+	if multica issue comment add "$issue" ${parent:+--parent "$parent"} --content "sandbox-fake: agent ran in $(hostname) with skill $(ls "$HOME/.claude/skills" 2>/dev/null | tr '\n' ' ')earlier task files $left, note ${SANDBOX_FAKE_NOTE:-unset}">/tmp/comment.log 2>&1; then
+		note="commented on $issue"
+	else
+		note="comment failed: $(tail -n 1 /tmp/comment.log)"
+	fi
+fi
+case "${SANDBOX_FAKE_SLEEP:-}" in '' | *[!0-9]*) ;; *) sleep "$SANDBOX_FAKE_SLEEP" ;; esac
+sid="sandbox-fake-$$"
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
+printf '{"type":"result","subtype":"success","is_error":false,"result":"sandbox-fake done: %s","session_id":"%s"}\n' "$note" "$sid"

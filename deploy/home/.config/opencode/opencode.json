@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "model": "llm/claude-haiku-5-5",
+  "small_model": "llm/claude-haiku-5-5",
+  "enabled_providers": ["llm"],
+  "provider": {
+    "llm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LLM",
+      "options": {
+        "baseURL": "{env:OPENAI_BASE_URL}",
+        "apiKey": "{env:OPENAI_API_KEY}"
+      },
+      "models": {
+        "claude-haiku-5-5": { "name": "Claude Haiku 5.5" }
+      }
+    }
+  }
+}

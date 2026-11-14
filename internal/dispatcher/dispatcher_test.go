@@ -1,0 +1,459 @@
+package dispatcher_test
+
+// Dispatcher tests against a fake sandbox service: the fake decides which
+// pods are free, records every Create and Delete, and the test sends its
+// notifications itself.
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"sandbox-manager/internal/dispatcher"
+	"sandbox-manager/internal/sandbox"
+)
+
+type fakeSandbox struct {
+	mu     sync.Mutex
+	order  []sandbox.PodID
+	state  map[sandbox.PodID]sandbox.PodState
+	tokens map[string]sandbox.PodID
+	// calls records "create <id>", "create: no capacity" and
+	// "delete <id> (<reason>)" in order.
+	calls []string
+	// afterCreate, when set, runs once Create has marked the pod held and
+	// before it returns, as a notification arriving in between would.
+	afterCreate func(id sandbox.PodID)
+}
+
+func newFakeSandbox() *fakeSandbox {
+	return &fakeSandbox{state: map[sandbox.PodID]sandbox.PodState{}, tokens: map[string]sandbox.PodID{}}
+}
+
+// add registers a free pod and returns its token.
+func (f *fakeSandbox) add(id string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.order = append(f.order, sandbox.PodID(id))
+	f.state[sandbox.PodID(id)] = sandbox.PodFree
+	token := "mpt_" + id
+	f.tokens[token] = sandbox.PodID(id)
+	return token
+}
+
+// set changes a pod's state, as its reset completing or its loss would.
+func (f *fakeSandbox) set(id string, s sandbox.PodState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.state[sandbox.PodID(id)] = s
+}
+
+func (f *fakeSandbox) seen(prefix string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, prefix) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func (f *fakeSandbox) Create(context.Context) (sandbox.PodID, error) {
+	f.mu.Lock()
+	for _, id := range f.order {
+		if f.state[id] == sandbox.PodFree {
+			f.state[id] = sandbox.PodHeld
+			f.calls = append(f.calls, "create "+string(id))
+			hook := f.afterCreate
+			f.mu.Unlock()
+			if hook != nil {
+				hook(id)
+			}
+			return id, nil
+		}
+	}
+	f.calls = append(f.calls, "create: no capacity")
+	f.mu.Unlock()
+	return "", sandbox.ErrNoCapacity
+}
+
+func (f *fakeSandbox) Delete(_ context.Context, id sandbox.PodID, label sandbox.AuditLabel) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "delete "+string(id)+" ("+label.Reason+")")
+	if f.state[id] == sandbox.PodHeld {
+		f.state[id] = sandbox.PodResetting
+	}
+	return nil
+}
+
+func (f *fakeSandbox) PutFiles(context.Context, sandbox.PodID, string, io.Reader) error {
+	return sandbox.ErrUnsupported
+}
+
+func (f *fakeSandbox) GetFiles(context.Context, sandbox.PodID, string) (io.ReadCloser, error) {
+	return nil, sandbox.ErrUnsupported
+}
+
+func (f *fakeSandbox) Exec(context.Context, sandbox.PodID, sandbox.Command) (sandbox.Result, error) {
+	return sandbox.Result{}, sandbox.ErrUnsupported
+}
+
+func (f *fakeSandbox) Authenticate(token string) (sandbox.PodID, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id, ok := f.tokens[token]
+	return id, ok
+}
+
+func (f *fakeSandbox) Inventory() sandbox.Inventory {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var inv sandbox.Inventory
+	for _, id := range f.order {
+		inv.Pods = append(inv.Pods, sandbox.PodInfo{ID: id, Label: string(id), State: f.state[id]})
+	}
+	return inv
+}
+
+func (f *fakeSandbox) Pod(id sandbox.PodID) (sandbox.PodInfo, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	st, ok := f.state[id]
+	return sandbox.PodInfo{ID: id, Label: string(id), State: st}, ok
+}
+
+// newFakeSandboxHarness wires the fake Multica server and a pool manager on
+// a fake sandbox service.
+func newFakeSandboxHarness(t *testing.T, opts ...func(*dispatcher.PoolConfig)) (*harness, *fakeSandbox) {
+	t.Helper()
+	up := newFakeMultica(t)
+	cfg := dispatcher.PoolConfig{MulticaURL: up.URL, Ticket: harnessPAT, Name: "Test Pool"}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	logs, audit := &syncBuffer{}, &syncBuffer{}
+	cfg.AuditLog = audit
+	svc := newFakeSandbox()
+	pool, err := dispatcher.NewPoolWithSandbox(cfg, slog.New(slog.NewTextHandler(logs, nil)), svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	h := &harness{t: t, upstream: up, pool: pool, logs: logs, audit: audit}
+	h.podAPI = httptest.NewServer(pool.PodHandler())
+	h.admin = httptest.NewServer(pool.AdminHandler())
+	t.Cleanup(h.podAPI.Close)
+	t.Cleanup(h.admin.Close)
+	return h, svc
+}
+
+// fakePod is a pod of the fake service whose daemon has not started yet.
+func (h *harness) fakePod(svc *fakeSandbox, id string) *simPod {
+	return &simPod{h: h, name: id, id: id, token: svc.add(id), client: h.podAPI.Client(), seen: true}
+}
+
+func wantCalls(t *testing.T, svc *fakeSandbox, prefix string, want ...string) {
+	t.Helper()
+	if got := svc.seen(prefix); !slices.Equal(got, want) {
+		t.Fatalf("%s calls: got %q, want %q", prefix, got, want)
+	}
+}
+
+func TestAClaimIsMadeOnlyAgainstAnAcquiredPod(t *testing.T) {
+	t.Parallel()
+	h, svc := newFakeSandboxHarness(t)
+	pod := h.fakePod(svc, "p1")
+	pod.startRaw()
+	svc.set("p1", sandbox.PodResetting)
+	h.upstream.enqueue("t1")
+
+	// No free pod: nothing is claimed, and the task stays queued upstream.
+	h.dispatch()
+	if n := h.upstream.claimCount(); n != 0 {
+		t.Fatalf("claimed without a pod: %d claims", n)
+	}
+	if h.upstream.queued() != 1 {
+		t.Fatal("the task left the upstream queue")
+	}
+	wantCalls(t, svc, "create", "create: no capacity")
+
+	svc.set("p1", sandbox.PodFree)
+	h.dispatch()
+	wantCalls(t, svc, "create", "create: no capacity", "create p1")
+	if n := h.upstream.claimCount(); n != 1 {
+		t.Fatalf("want one claim after the pod was acquired, got %d", n)
+	}
+	if got := pod.pollBatch(); !slices.Equal(got, []string{"t1"}) {
+		t.Fatalf("want t1 on the acquired pod, got %v", got)
+	}
+}
+
+func TestAnEmptyClaimKeepsTheAcquiredPod(t *testing.T) {
+	t.Parallel()
+	h, svc := newFakeSandboxHarness(t)
+	h.fakePod(svc, "p1").startRaw()
+
+	h.dispatch()
+	h.dispatch()
+	if n := h.upstream.claimCount(); n != 2 {
+		t.Fatalf("want a probe claim per tick, got %d", n)
+	}
+	wantCalls(t, svc, "create", "create p1")
+	wantCalls(t, svc, "delete")
+	if inv := h.inventory(); inv.Idle != 1 {
+		t.Fatalf("the kept pod must be idle: %+v", inv)
+	}
+}
+
+func TestAPollWithNothingPlacedCausesNoClaim(t *testing.T) {
+	t.Parallel()
+	h, svc := newFakeSandboxHarness(t)
+	pod := h.fakePod(svc, "p1")
+	pod.startRaw()
+	h.upstream.enqueue("t1")
+	for range 3 {
+		if got := pod.pollBatch(); len(got) != 0 {
+			t.Fatalf("a poll was handed %v", got)
+		}
+	}
+	if n := h.upstream.claimCount(); n != 0 {
+		t.Fatalf("a poll claimed upstream: %d", n)
+	}
+	wantCalls(t, svc, "create")
+}
+
+func TestAPodIsNotLentToAWorkspaceItsDaemonDidNotRegisterFor(t *testing.T) {
+	t.Parallel()
+	h, svc := newFakeSandboxHarness(t)
+	pod := h.fakePod(svc, "p1")
+	// The fake Multica lists the workspace's runtime only once some daemon
+	// registered it; a second pod's daemon does that here.
+	h.fakePod(svc, "p0-other").startRaw()
+	svc.set("p0-other", sandbox.PodLost)
+	h.upstream.enqueue("t1")
+
+	h.dispatch()
+	wantCalls(t, svc, "create", "create p1", "create: no capacity")
+	if n := h.upstream.claimCount(); n != 0 {
+		t.Fatalf("claimed for a pod whose daemon serves no workspace: %d", n)
+	}
+
+	pod.startRaw()
+	h.dispatch()
+	if got := pod.pollBatch(); !slices.Equal(got, []string{"t1"}) {
+		t.Fatalf("want t1 once the daemon registered, got %v", got)
+	}
+	wantCalls(t, svc, "create", "create p1", "create: no capacity")
+}
+
+// personTask queues a task a person started on an issue.
+func personTask(h *harness, id, issue, person string) {
+	h.upstream.mu.Lock()
+	defer h.upstream.mu.Unlock()
+	h.upstream.queue = append(h.upstream.queue, map[string]any{
+		"id": id, "agent_id": "agent-1", "runtime_id": "runtime-a",
+		"workspace_id": harnessWorkspaceID, "issue_id": issue, "attribution": originated(person),
+	})
+}
+
+// leaseFake places task id on pod by a dispatch tick and has the pod take it.
+func leaseFake(t *testing.T, h *harness, pod *simPod, id string) {
+	t.Helper()
+	h.dispatch()
+	if got := pod.pollBatch(); !slices.Equal(got, []string{id}) {
+		t.Fatalf("want %s on %s, got %v", id, pod.id, got)
+	}
+}
+
+func TestEveryBindingEndHandsThePodBackOnce(t *testing.T) {
+	t.Parallel()
+	hold := func(c *dispatcher.PoolConfig) {
+		c.HoldTimeout, c.HeartbeatTimeout = 10*time.Minute, 1000*time.Hour
+	}
+	t.Run("hold expiry", func(t *testing.T) {
+		t.Parallel()
+		h, svc := newFakeSandboxHarness(t, hold)
+		clk := h.withClock()
+		pod := h.fakePod(svc, "p1")
+		pod.startRaw()
+		issueTask(h, "t1", "issue-1")
+		leaseFake(t, h, pod, "t1")
+		pod.report("t1", "complete")
+		wantCalls(t, svc, "delete")
+		clk.advance(10*time.Minute + time.Second)
+		h.dispatch()
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (hold expired)")
+	})
+	t.Run("maximum lifetime", func(t *testing.T) {
+		t.Parallel()
+		h, svc := newFakeSandboxHarness(t, hold, func(c *dispatcher.PoolConfig) {
+			c.HoldTimeout, c.PodMaxLifetime = 2*time.Hour, time.Hour
+		})
+		clk := h.withClock()
+		pod := h.fakePod(svc, "p1")
+		pod.startRaw()
+		issueTask(h, "t1", "issue-1")
+		leaseFake(t, h, pod, "t1")
+		pod.report("t1", "complete")
+		clk.advance(time.Hour + time.Second)
+		h.dispatch()
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (maximum lifetime reached)")
+	})
+	t.Run("unique key", func(t *testing.T) {
+		t.Parallel()
+		h, svc := newFakeSandboxHarness(t, hold)
+		pod := h.fakePod(svc, "p1")
+		pod.startRaw()
+		h.upstream.enqueueNoInitiator("t1")
+		leaseFake(t, h, pod, "t1")
+		pod.report("t1", "complete")
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (task ended: pod reported complete)")
+	})
+	t.Run("workspace removal", func(t *testing.T) {
+		t.Parallel()
+		h, svc := newFakeSandboxHarness(t, hold)
+		pod := h.fakePod(svc, "p1")
+		pod.startRaw()
+		issueTask(h, "t1", "issue-1")
+		leaseFake(t, h, pod, "t1")
+		pod.report("t1", "complete")
+		other := dispatcher.WorkspaceConfig{WorkspaceID: "22222222-2222-4333-8444-555555555555"}
+		if _, err := h.pool.Reload(context.Background(), []dispatcher.WorkspaceConfig{other}); err != nil {
+			t.Fatal(err)
+		}
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (workspace removed)")
+	})
+	t.Run("eviction", func(t *testing.T) {
+		t.Parallel()
+		h, svc := newFakeSandboxHarness(t, hold)
+		pod := h.fakePod(svc, "p1")
+		pod.startRaw()
+		issueTask(h, "t1", "issue-1")
+		leaseFake(t, h, pod, "t1")
+		pod.report("t1", "complete")
+		personTask(h, "t2", "issue-2", "u-bob") // another person, another key
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (evicted for task t2 of another affinity key)")
+		h.dispatch()
+		wantCalls(t, svc, "delete", "delete p1 (evicted for task t2 of another affinity key)")
+	})
+}
+
+func TestAnEvictedForTaskRunsOnTheNextPodAcquiredBeforeAnyNewClaim(t *testing.T) {
+	t.Parallel()
+	h, svc := newFakeSandboxHarness(t, func(c *dispatcher.PoolConfig) { c.HoldTimeout = time.Hour })
+	pod := h.fakePod(svc, "p1")
+	pod.startRaw()
+	issueTask(h, "t1", "issue-1")
+	leaseFake(t, h, pod, "t1")
+	pod.report("t1", "complete")
+	personTask(h, "t2", "issue-2", "u-bob")
+	h.dispatch() // the hold of p1 is reserved, t2 claimed and p1 handed back
+	claims := h.upstream.claimCount()
+
+	personTask(h, "t3", "issue-3", "u-carol")
+	h.dispatch()
+	h.dispatch()
+	if n := h.upstream.claimCount(); n != claims {
+		t.Fatalf("a claim was made while t2 waited: %d -> %d", claims, n)
+	}
+
+	svc.set("p1", sandbox.PodFree) // its reset is done
+	h.dispatch()
+	if got := pod.pollBatch(); !slices.Equal(got, []string{"t2"}) {
+		t.Fatalf("want t2 on the pod acquired next, got %v", got)
+	}
+	if n := h.upstream.claimCount(); n != claims {
+		t.Fatalf("the tick that placed t2 claimed too: %d -> %d", claims, n)
+	}
+}
+
+func TestAnInterruptedOrLostPodFailsItsStartedTasksAndReplacesTheOthers(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		tell func(n sandbox.Notifier, id sandbox.PodID)
+		fail string
+	}{
+		{"interrupted", func(n sandbox.Notifier, id sandbox.PodID) { n.Interrupted(id, "pod daemon restarted") }, "the pod's daemon restarted"},
+		{"lost", func(n sandbox.Notifier, id sandbox.PodID) { n.Lost(id, "pod lost") }, "the pod running this task was lost"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h, svc := newFakeSandboxHarness(t, sharedPods(4, time.Hour))
+			a, b := h.fakePod(svc, "pa"), h.fakePod(svc, "pb")
+			a.startRaw()
+			b.startRaw()
+			issueTask(h, "t1", "issue-1")
+			leaseFake(t, h, a, "t1")
+			issueTask(h, "t2", "issue-1")
+			h.dispatch() // t2 joins t1's binding on pa, not picked up yet
+
+			svc.set("pa", sandbox.PodResetting)
+			c.tell(h.pool.Notifier(), "pa")
+
+			eventually(t, "t1 failed upstream", func() bool {
+				msg, ok := h.upstream.failureOf("t1")
+				return ok && msg == c.fail
+			})
+			if _, ok := h.upstream.failureOf("t2"); ok {
+				t.Fatal("the unstarted task was failed")
+			}
+			if got := b.pollBatch(); !slices.Equal(got, []string{"t2"}) {
+				t.Fatalf("want t2 placed on pb, got %v", got)
+			}
+			wantCalls(t, svc, "delete")
+		})
+	}
+}
+
+// A notification that arrives while Create is still returning names a pod the
+// dispatcher does not hold yet; the pod must not be recorded as held.
+func TestANotificationDuringAcquireTakesEffectAtOnce(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name  string
+		state sandbox.PodState
+		tell  func(n sandbox.Notifier, id sandbox.PodID)
+	}{
+		{"interrupted", sandbox.PodResetting, func(n sandbox.Notifier, id sandbox.PodID) { n.Interrupted(id, "pod daemon restarted") }},
+		{"lost", sandbox.PodLost, func(n sandbox.Notifier, id sandbox.PodID) { n.Lost(id, "pod lost") }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			h, svc := newFakeSandboxHarness(t)
+			h.fakePod(svc, "p1").startRaw()
+			var once sync.Once
+			svc.afterCreate = func(id sandbox.PodID) {
+				once.Do(func() {
+					svc.set(string(id), c.state)
+					c.tell(h.pool.Notifier(), id)
+				})
+			}
+			h.upstream.enqueue("t1")
+
+			h.dispatch()
+			if n := h.upstream.claimCount(); n != 0 {
+				t.Fatalf("a claim was made against a pod the service no longer lent: %d claims", n)
+			}
+			if inv := h.inventory(); inv.Idle != 0 || inv.Leased != 0 {
+				t.Fatalf("the gone pod is held: %+v", inv)
+			}
+		})
+	}
+}

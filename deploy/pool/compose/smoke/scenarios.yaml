@@ -1,0 +1,14 @@
+# Compose overlay for scenarios.sh, on top of smoke.yaml: short timings so
+# the whole scenario set runs in minutes. Per-workspace hold, lifetime and
+# quota come from the overrides file the driver rewrites between scenarios.
+services:
+  manager:
+    environment:
+      # One task per pod, so two pods are two places and "full" is easy to
+      # reach.
+      SANDBOX_POD_CAPACITY: "1"
+      # Read the overrides file and the workspace list every 2 seconds.
+      SANDBOX_POOL_SYNC_INTERVAL: "2s"
+      # A task running past its binding's maximum lifetime is failed 10
+      # seconds later.
+      SANDBOX_POD_DRAIN_GRACE: "10s"

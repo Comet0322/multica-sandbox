@@ -1,0 +1,160 @@
+# Pooled sandbox pod image. A pod is one container, not running as root:
+# pod-supervisor is PID 1 and supervises the stock Multica daemon, which starts
+# the agent CLIs itself, all as uid 1001. The root filesystem is meant to run
+# read-only; the only writable area is the pod's HOME volume (/home/pod), which
+# holds every per-task location (workspaces, TMPDIR, the agents' caches), so a
+# reset, which clears HOME, leaves nothing of a task behind. Build from the
+# repository root:
+#   docker build -f sandbox-manager/deploy/Dockerfile.pool -t multica-sandbox-pool:<tag> .
+# Run: see pool/k8s/sandbox/pool.yaml and pool/compose/pool.yaml, which set the
+# user, the group 2000, the volume, the process limit and the dropped
+# capabilities. The default target installs real agent CLIs; --target fake uses
+# a fake Claude Code for credential-free testing.
+ARG GO_IMAGE=golang:1.27.3-alpine
+ARG BASE_IMAGE=node:22-slim
+
+# The stock daemon is Multica's, built from server/; the supervisor is ours,
+# built from sandbox-manager/.
+FROM ${GO_IMAGE} AS builder
+WORKDIR /src/server
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+COPY server/ ./
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /out/multica ./cmd/multica
+WORKDIR /src/sandbox-manager
+COPY sandbox-manager/go.mod sandbox-manager/go.sum ./
+RUN go mod download
+COPY sandbox-manager/ ./
+RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/pod-supervisor ./cmd/pod-supervisor
+
+FROM ${BASE_IMAGE} AS base
+# Addresses baked into the image. Defaults are placeholders; the cluster
+# manifests (or a rebuild) set the real in-cluster addresses.
+ARG MANAGER_URL=http://sandbox-manager.multica-sandbox.svc.cluster.local:8080
+ARG PACKAGE_MIRROR_URL=http://package-mirror.multica-sandbox.svc.cluster.local
+
+# The daemon and the agents run as one non-root user (sandboxd, uid 1001, group
+# 2000, the pod's fsGroup). The container sets the user itself; the entries
+# only give the ids names. See "The pod" in sandbox-manager/deploy/SANDBOX.md.
+RUN groupadd --gid 2000 sandbox \
+	&& useradd --uid 1001 --gid 2000 --no-create-home --home-dir /home/pod \
+		--shell /usr/sbin/nologin sandboxd
+
+# Common toolchains, installed at build time so agents never install globally
+# (the root filesystem is read-only) or reach the public internet.
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		ca-certificates git openssh-client curl jq procps make build-essential \
+		python3 python3-pip python3-venv \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& npm install -g pnpm && npm cache clean --force
+
+# Package sources point at the internal mirror. --user, venv and in-project
+# installs work; global installs fail on the read-only root.
+COPY sandbox-manager/deploy/pool/pip.conf /etc/pip.conf
+RUN sed -i "s|@PACKAGE_MIRROR_URL@|${PACKAGE_MIRROR_URL}|g" /etc/pip.conf \
+	&& printf 'registry=%s/npm/\n' "${PACKAGE_MIRROR_URL}" >/usr/local/etc/npmrc
+ENV GOPROXY=${PACKAGE_MIRROR_URL}/go,off
+
+# Claude Code phones api.anthropic.com for telemetry and update checks, which
+# the egress policy denies. The daemon passes the pod's environment on to the
+# agent CLI, so these silence that traffic for every task. (The model endpoint
+# and key come from the agent's custom environment in Multica, such as
+# ANTHROPIC_BASE_URL. opencode reaches it through the provider in its config,
+# from OPENAI_BASE_URL and OPENAI_API_KEY.)
+ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+	DISABLE_AUTOUPDATER=1 \
+	OPENCODE_DISABLE_AUTOUPDATE=true \
+	OPENCODE_DISABLE_MODELS_FETCH=true
+
+# Git credentials come from the agent's custom environment in Multica; the
+# image configures none. A pod has no user of its own, so commits get the
+# daemon's fallback identity unless the task sets another: without one every
+# `git commit` in a pod fails.
+RUN git config --system safe.directory '*' \
+	&& git config --system user.name "Multica Agent" \
+	&& git config --system user.email "agent@multica.local"
+
+COPY --from=builder /out/multica /usr/local/bin/multica
+COPY --from=builder /out/pod-supervisor /usr/local/bin/pod-supervisor
+COPY sandbox-manager/deploy/pool/entrypoint.sh /usr/local/bin/multica-pod-entrypoint
+
+# The daemon's CLI settings (manager address and a placeholder token), copied
+# into HOME by the entrypoint at container start with the placeholder replaced
+# by the pod token the manager issued, and kept across resets by the
+# supervisor's skip list. The runtime-private agent configuration (home/) stays
+# here, read-only; the entrypoint copies only its Claude skills into HOME,
+# which the skip list keeps (see home/README.md). Nothing here is a real
+# secret.
+COPY sandbox-manager/deploy/home/ /etc/multica-sandbox/home-template/
+RUN mkdir -p /etc/multica-sandbox/daemon-template/.multica \
+	&& printf '{"server_url":"%s","token":"pool-placeholder"}\n' "${MANAGER_URL}" \
+		>/etc/multica-sandbox/daemon-template/.multica/config.json \
+	&& chown -R 1001:2000 /etc/multica-sandbox/daemon-template \
+	&& chmod 700 /etc/multica-sandbox/daemon-template /etc/multica-sandbox/daemon-template/.multica \
+	&& chmod 600 /etc/multica-sandbox/daemon-template/.multica/config.json \
+	&& chmod -R a+rX,go-w /etc/multica-sandbox/home-template
+
+# /home/pod is the only writable path. Its mount point is owned by the pod's
+# user and group 2000, with setgid, as Kubernetes makes a volume with fsGroup;
+# Docker and compose copy the image's ownership into a new volume. /tmp points
+# into it, so a program that ignores TMPDIR and writes to /tmp still writes
+# under HOME, where the reset reaches. Build leftovers are removed.
+RUN rm -rf /tmp \
+	&& mkdir -p /home/pod/tmp \
+	&& ln -s /home/pod/tmp /tmp \
+	&& chown -R 1001:2000 /home/pod \
+	&& chmod 2770 /home/pod && chmod 700 /home/pod/tmp
+
+# The layout comes from the environment (see the entrypoint). Every per-task
+# location is under POD_DAEMON_HOME: the workspaces root (a subdirectory, as
+# the daemon refuses to start with its working directory at or below the
+# task-context marker it writes there) and the agents' temporary directories
+# (the supervisor sets TMPDIR to HOME/tmp). MULTICA_GC_ENABLED=false: only the
+# supervisor cleans the pod.
+ENV POD_CONTROL_URL=${MANAGER_URL}/pod/control \
+	POD_REGISTER_URL=${MANAGER_URL}/pod/register \
+	POD_DAEMON_HOME=/home/pod \
+	POD_DAEMON_HOME_TEMPLATE=/etc/multica-sandbox/daemon-template \
+	MULTICA_WORKSPACES_ROOT=/home/pod/workspaces \
+	MULTICA_AGENT_TEMP_BASE=/home/pod/tmp \
+	MULTICA_GC_ENABLED=false \
+	MULTICA_DAEMON_AUTO_UPDATE=false \
+	OPENCODE_CONFIG=/etc/multica-sandbox/home-template/.config/opencode/opencode.json
+
+# The daemon's local health endpoint (loopback only). The cluster has no probe
+# of its own for the pod: the supervisor exits, and the kubelet restarts the
+# container, when the manager stops knowing the pod.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+	CMD curl -fsS -o /dev/null http://127.0.0.1:19514/health
+VOLUME ["/home/pod"]
+# Nothing in the image needs root, and nothing runs as root.
+USER 1001:2000
+ENTRYPOINT ["/usr/local/bin/multica-pod-entrypoint"]
+
+# AGENT_COMMANDS lists the agent CLIs installed in a stage. A name without an
+# installed CLI must not be listed: the daemon would offer a runtime for it.
+FROM base AS fake
+# Installing the CLIs takes root; the image still ends as the unprivileged
+# user.
+USER root
+COPY sandbox-manager/deploy/fake/fake-claude /usr/local/bin/claude
+COPY sandbox-manager/deploy/fake/skill/ /etc/multica-sandbox/home-template/
+USER 1001:2000
+
+FROM base AS agents
+# Space-separated npm packages providing the agent CLIs to expose.
+ARG AGENT_PACKAGES="@anthropic-ai/claude-code opencode-ai@1.19.5"
+ARG AGENT_COMMANDS="claude opencode"
+# The base stage points npm at the internal package mirror; when that mirror
+# does not serve the agent CLIs (or the build runs outside the cluster
+# network), AGENT_NPM_REGISTRY names the registry to install them from. The
+# running image still uses the mirror.
+ARG AGENT_NPM_REGISTRY=
+USER root
+RUN if [ -n "$AGENT_PACKAGES" ]; then npm install -g ${AGENT_NPM_REGISTRY:+--registry="$AGENT_NPM_REGISTRY"} $AGENT_PACKAGES && npm cache clean --force; fi \
+	&& for c in $AGENT_COMMANDS; do command -v "$c" >/dev/null || exit 1; done \
+	&& rm -rf /home/pod/tmp/* /home/pod/tmp/.[!.]* /root/.npm
+USER 1001:2000

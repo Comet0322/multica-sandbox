@@ -1,0 +1,72 @@
+# The pod pool. Pods are interchangeable and keep no task state across a reset,
+# so a Deployment is enough; replicas (and the image tag, via
+# kustomization.yaml) are the only sizing knobs. The pool has no autoscaler.
+#
+# A pod is one container: pod-supervisor is PID 1 and runs the Multica daemon,
+# which starts the agent CLIs itself, all as one non-root user. The only
+# writable area is the home volume, which holds every per-task location; a
+# reset clears it (see "The pod" in sandbox-manager/deploy/SANDBOX.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-pool
+  namespace: multica-sandbox
+  labels:
+    app.kubernetes.io/name: sandbox-pool
+    app.kubernetes.io/part-of: multica-sandbox
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-pool
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sandbox-pool
+        multica.io/sandbox-role: pool-pod # the label the NetworkPolicies key on
+    spec:
+      hostNetwork: false # never share the node's
+      hostIPC: false
+      automountServiceAccountToken: false # no Kubernetes API access
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        fsGroup: 2000
+        runAsNonRoot: true
+      containers:
+        - name: pod
+          image: multica-sandbox-pool:0.7.0 # kustomization.yaml replaces name and tag
+          imagePullPolicy: IfNotPresent
+          env:
+            # Reset poll interval; the manager address is baked into the image
+            # (POD_CONTROL_URL, the daemon's CLI config).
+            - name: POD_POLL_INTERVAL
+              value: 2s
+          securityContext:
+            # No root and no capability (sandbox-manager/deploy/SANDBOX.md).
+            runAsUser: 1001
+            runAsGroup: 2000
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false # no-new-privileges
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: "1", memory: 2Gi}
+            limits: {cpu: "4", memory: 8Gi}
+          volumeMounts:
+            # HOME of the daemon and the agents; /tmp in the image points into it.
+            - {name: home, mountPath: /home/pod}
+          # No probe: the supervisor exits, and the kubelet restarts the
+          # container, when the manager stops knowing the pod.
+      volumes:
+        # The only writable area. The size limit keeps one task from filling the node.
+        - name: home
+          emptyDir: {sizeLimit: 24Gi}

@@ -1,0 +1,10 @@
+# Takes precedence over the root .dockerignore. The pod image builds the stock
+# daemon from Multica's server/ and the supervisor and pod files from
+# sandbox-manager/.
+*
+!server/
+!sandbox-manager/
+server/bin
+server/tmp
+sandbox-manager/.scratch
+sandbox-manager/docs
