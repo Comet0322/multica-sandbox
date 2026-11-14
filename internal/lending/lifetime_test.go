@@ -9,13 +9,13 @@ import (
 
 func withLifetime(hold, life, grace time.Duration) func(c *lending.Config) {
 	return func(c *lending.Config) {
-		c.Rule, c.Capacity = lending.RulePersonIssue, lending.Resources{Slots: 2}
+		c.Rule, c.Capacity = rulePersonIssue, lending.Resources{Slots: 2}
 		c.HoldTimeout, c.MaxLifetime, c.DrainGrace = hold, life, grace
 	}
 }
 
 func TestMaximumLifetime(t *testing.T) {
-	two := setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
+	two := setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
 	firstTask := []step{
 		{do: request(pods("p1"), "A"), want: []string{"claim A res=1 pod=p1"}},
 		{do: claimed(1, onIssue("t1", "is-1", "alice")), want: []string{"place t1 pod=p1 binding=1 new"}},
@@ -83,11 +83,11 @@ func TestMaximumLifetime(t *testing.T) {
 }
 
 func removed(ws string) func(*lending.Policy) []lending.Decision {
-	return func(p *lending.Policy) []lending.Decision { return p.RemoveWorkspace(ws) }
+	return func(p *lending.Policy) []lending.Decision { return p.RemoveTenant(ws) }
 }
 
-func TestRemovedWorkspaceResetsItsPods(t *testing.T) {
-	two := setup(workspace("A", unlimited), workspace("B", unlimited), cleanPod("p1", "A", "B"), cleanPod("p2", "A", "B"))
+func TestRemovedTenantResetsItsPods(t *testing.T) {
+	two := setup(tenant("A", unlimited), tenant("B", unlimited), cleanPod("p1", "A", "B"), cleanPod("p2", "A", "B"))
 	firstTask := []step{
 		{do: request(pods("p1"), "A"), want: []string{"claim A res=1 pod=p1"}},
 		{do: claimed(1, onIssue("t1", "is-1", "alice")), want: []string{"place t1 pod=p1 binding=1 new"}},
@@ -95,21 +95,21 @@ func TestRemovedWorkspaceResetsItsPods(t *testing.T) {
 	}
 	run(t, []scenario{
 		{
-			name: "removing a workspace resets its bindings in hold",
+			name: "removing a tenant resets its bindings in hold",
 			cfg:  withHold(time.Hour), setup: two,
 			steps: steps(firstTask, []step{
 				{do: ended("t1", "done"), want: []string{"end-lease t1 (done)"}},
-				{do: removed("A"), want: []string{"reset p1 (workspace removed)"}},
+				{do: removed("A"), want: []string{"reset p1 (tenant removed)"}},
 			}),
 		},
 		{
-			name: "a binding of a removed workspace is reset, not held, when its last task ends",
+			name: "a binding of a removed tenant is reset, not held, when its last task ends",
 			cfg:  withHold(time.Hour), setup: two,
 			steps: steps(firstTask, []step{
 				{do: removed("A"), want: []string{}},
-				{do: ended("t1", "workspace removed from the configuration"), want: []string{
-					"end-lease t1 (workspace removed from the configuration)",
-					"reset p1 after t1 (workspace removed)",
+				{do: ended("t1", "tenant removed from the configuration"), want: []string{
+					"end-lease t1 (tenant removed from the configuration)",
+					"reset p1 after t1 (tenant removed)",
 				}},
 				{do: request(pods("p1", "p2"), "B"), want: []string{"claim B res=2 pod=p2"}},
 			}),

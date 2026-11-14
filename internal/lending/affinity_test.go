@@ -11,13 +11,16 @@ import (
 // of the binding it opened.
 func keyOf(t *testing.T, rules lending.Registry, rule lending.AffinityRule, tk lending.Task) string {
 	t.Helper()
+	if rules == nil {
+		rules = testRules()
+	}
 	p, err := lending.New(lending.Config{Capacity: lending.Resources{Slots: 1}, Rule: rule, Rules: rules})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_ = p.SetWorkspace(tk.Workspace, unlimited)
-	p.PodAcquired("p1", tk.Workspace)
-	p.RequestClaim(lending.ClaimRequest{Pods: pods("p1"), Workspaces: []string{tk.Workspace}})
+	_ = p.SetTenant(tk.Tenant, unlimited)
+	p.PodAcquired("p1", tk.Tenant)
+	p.RequestClaim(lending.ClaimRequest{Pods: pods("p1"), Tenants: []string{tk.Tenant}})
 	p.ClaimReturned(1, &tk, false)
 	b, ok := p.Binding("p1")
 	if !ok {
@@ -26,25 +29,25 @@ func keyOf(t *testing.T, rules lending.Registry, rule lending.AffinityRule, tk l
 	return b.Key
 }
 
-func TestBuiltinRulesProduceTheDocumentedKey(t *testing.T) {
-	full := lending.Task{ID: "t1", Workspace: "A", Initiator: "u-alice", AgentID: "ag-1", IssueID: "is-1", ChatSessionID: "ch-1"}
-	chat := lending.Task{ID: "t2", Workspace: "A", Initiator: "u-alice", AgentID: "ag-1", ChatSessionID: "ch-1"}
-	bare := lending.Task{ID: "t3", Workspace: "A", Initiator: "u-alice", AgentID: "ag-1"}
-	anon := lending.Task{ID: "t4", Workspace: "A", AgentID: "ag-1", IssueID: "is-1"}
+func TestRulesProduceTheDocumentedKey(t *testing.T) {
+	full := lending.Task{ID: "t1", Tenant: "A", Initiator: "u-alice", Labels: map[string]string{"agent": "ag-1", "issue": "is-1", "chat": "ch-1"}}
+	chat := lending.Task{ID: "t2", Tenant: "A", Initiator: "u-alice", Labels: map[string]string{"agent": "ag-1", "chat": "ch-1"}}
+	bare := lending.Task{ID: "t3", Tenant: "A", Initiator: "u-alice", Labels: map[string]string{"agent": "ag-1"}}
+	anon := lending.Task{ID: "t4", Tenant: "A", Labels: map[string]string{"agent": "ag-1", "issue": "is-1"}}
 	for _, c := range []struct {
 		rule lending.AffinityRule
 		task lending.Task
 		want string
 	}{
 		{lending.RuleTask, full, "task:t1"},
-		{lending.RulePersonIssue, full, "person-issue:issue:is-1/by:u-alice/in:A"},
-		{lending.RulePersonIssue, chat, "person-issue:chat:ch-1/by:u-alice/in:A"},
-		{lending.RulePersonIssue, bare, "task:t3"},
-		{lending.RulePersonAgent, full, "person-agent:ag-1/by:u-alice/in:A"},
-		{lending.RulePerson, full, "person:all/by:u-alice/in:A"},
-		{lending.RulePerson, anon, "task:t4"},
-		{lending.RulePersonIssue, anon, "task:t4"},
-		{lending.RulePersonAgent, anon, "task:t4"},
+		{rulePersonIssue, full, "person-issue:issue:is-1/by:u-alice/in:A"},
+		{rulePersonIssue, chat, "person-issue:chat:ch-1/by:u-alice/in:A"},
+		{rulePersonIssue, bare, "task:t3"},
+		{rulePersonAgent, full, "person-agent:ag-1/by:u-alice/in:A"},
+		{rulePerson, full, "person:all/by:u-alice/in:A"},
+		{rulePerson, anon, "task:t4"},
+		{rulePersonIssue, anon, "task:t4"},
+		{rulePersonAgent, anon, "task:t4"},
 	} {
 		if got := keyOf(t, nil, c.rule, c.task); got != c.want {
 			t.Errorf("%s for %s: key %q, want %q", c.rule, c.task.ID, got, c.want)
@@ -53,17 +56,17 @@ func TestBuiltinRulesProduceTheDocumentedKey(t *testing.T) {
 }
 
 func TestANewRuleIsOneRegisteredFunction(t *testing.T) {
-	rules := lending.Builtin()
-	rules["by-agent-and-issue"] = func(t lending.Task) string { return t.AgentID + "+" + t.IssueID }
-	tk := lending.Task{ID: "t1", Workspace: "A", Initiator: "u-alice", AgentID: "ag-1", IssueID: "is-1"}
+	rules := testRules()
+	rules["by-agent-and-issue"] = func(t lending.Task) string { return t.Labels["agent"] + "+" + t.Labels["issue"] }
+	tk := lending.Task{ID: "t1", Tenant: "A", Initiator: "u-alice", Labels: map[string]string{"agent": "ag-1", "issue": "is-1"}}
 	if got, want := keyOf(t, rules, "by-agent-and-issue", tk), "by-agent-and-issue:ag-1+is-1/by:u-alice/in:A"; got != want {
 		t.Fatalf("key %q, want %q", got, want)
 	}
 }
 
-func TestDefaultRuleIsPersonIssue(t *testing.T) {
-	tk := lending.Task{ID: "t1", Workspace: "A", Initiator: "u-alice", IssueID: "is-1"}
-	if got, want := keyOf(t, nil, "", tk), "person-issue:issue:is-1/by:u-alice/in:A"; got != want {
+func TestTheDefaultRuleGivesEveryTaskItsOwnBinding(t *testing.T) {
+	tk := lending.Task{ID: "t1", Tenant: "A", Initiator: "u-alice", Labels: map[string]string{"issue": "is-1"}}
+	if got, want := keyOf(t, lending.Registry{}, "", tk), "task:t1"; got != want {
 		t.Fatalf("key %q, want %q", got, want)
 	}
 }
@@ -71,7 +74,7 @@ func TestDefaultRuleIsPersonIssue(t *testing.T) {
 // sameUnit is a task of the given person on issue is-1, chat ch-1 and agent
 // ag-1, so every built-in rule but task would let two of them share.
 func sameUnit(id, initiator string) lending.Task {
-	return lending.Task{ID: id, Workspace: "A", Initiator: initiator, AgentID: "ag-1", IssueID: "is-1", ChatSessionID: "ch-1"}
+	return lending.Task{ID: id, Tenant: "A", Initiator: initiator, Labels: map[string]string{"agent": "ag-1", "issue": "is-1", "chat": "ch-1"}}
 }
 
 func underRule(rule lending.AffinityRule) func(c *lending.Config) {
@@ -79,9 +82,9 @@ func underRule(rule lending.AffinityRule) func(c *lending.Config) {
 }
 
 func TestSharingUnderEveryBuiltinRule(t *testing.T) {
-	three := setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A"))
+	three := setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A"))
 	var scenarios []scenario
-	for _, rule := range []lending.AffinityRule{lending.RulePersonIssue, lending.RulePersonAgent, lending.RulePerson} {
+	for _, rule := range []lending.AffinityRule{rulePersonIssue, rulePersonAgent, rulePerson} {
 		scenarios = append(scenarios,
 			scenario{
 				name: string(rule) + ": tasks of two people never share a binding; one person's do", cfg: underRule(rule), setup: three,
@@ -114,9 +117,9 @@ func TestSharingUnderEveryBuiltinRule(t *testing.T) {
 			{do: claimed(2, sameUnit("t2", "alice")), want: []string{"place t2 pod=p2 binding=2 new"}},
 		},
 	}, scenario{
-		name: "the same person in two workspaces does not share a binding",
-		cfg:  underRule(lending.RulePerson),
-		setup: setup(workspace("A", unlimited), workspace("B", unlimited),
+		name: "the same person in two tenants does not share a binding",
+		cfg:  underRule(rulePerson),
+		setup: setup(tenant("A", unlimited), tenant("B", unlimited),
 			cleanPod("p1", "A", "B"), cleanPod("p2", "A", "B")),
 		steps: []step{
 			{do: request(pods("p1"), "A"), want: []string{"claim A res=1 pod=p1"}},
@@ -130,16 +133,16 @@ func TestSharingUnderEveryBuiltinRule(t *testing.T) {
 
 func withHold(d time.Duration) func(c *lending.Config) {
 	return func(c *lending.Config) {
-		c.Rule, c.HoldTimeout, c.Capacity = lending.RulePersonIssue, d, lending.Resources{Slots: 2}
+		c.Rule, c.HoldTimeout, c.Capacity = rulePersonIssue, d, lending.Resources{Slots: 2}
 	}
 }
 
 func onIssue(id, issue, initiator string) lending.Task {
-	return lending.Task{ID: id, Workspace: "A", Initiator: initiator, IssueID: issue}
+	return lending.Task{ID: id, Tenant: "A", Initiator: initiator, Labels: map[string]string{"issue": issue}}
 }
 
 func TestHold(t *testing.T) {
-	two := setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
+	two := setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
 	firstTask := []step{
 		{do: request(pods("p1"), "A"), want: []string{"claim A res=1 pod=p1"}},
 		{do: claimed(1, onIssue("t1", "is-1", "alice")), want: []string{"place t1 pod=p1 binding=1 new"}},
@@ -201,9 +204,9 @@ func TestHold(t *testing.T) {
 			},
 		},
 		{
-			name: "a workspace's own hold timeout applies to its bindings",
+			name: "a tenant's own hold timeout applies to its bindings",
 			cfg:  withHold(10 * time.Minute),
-			setup: setup(workspace("A", lending.WorkspaceSettings{HoldTimeout: durationPtr(time.Minute)}),
+			setup: setup(tenant("A", lending.TenantSettings{HoldTimeout: durationPtr(time.Minute)}),
 				cleanPod("p1", "A"), cleanPod("p2", "A")),
 			steps: steps(firstTask, []step{
 				{do: ended("t1", "done"), want: []string{"end-lease t1 (done)"}},
@@ -211,9 +214,9 @@ func TestHold(t *testing.T) {
 			}),
 		},
 		{
-			name: "a workspace hold timeout of 0 overrides the pool's",
+			name: "a tenant hold timeout of 0 overrides the pool's",
 			cfg:  withHold(10 * time.Minute),
-			setup: setup(workspace("A", lending.WorkspaceSettings{HoldTimeout: durationPtr(0)}),
+			setup: setup(tenant("A", lending.TenantSettings{HoldTimeout: durationPtr(0)}),
 				cleanPod("p1", "A"), cleanPod("p2", "A")),
 			steps: steps(firstTask, []step{
 				{do: ended("t1", "done"), want: []string{"end-lease t1 (done)", "reset p1 after t1 (task ended: done)"}},
@@ -231,7 +234,7 @@ func TestHold(t *testing.T) {
 		{
 			name:  "the most recently used binding of a key with room is chosen, in hold or running",
 			cfg:   withHold(10 * time.Minute),
-			setup: setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A")),
+			setup: setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A")),
 			steps: steps(firstTask, []step{
 				{do: request(pods("p2"), "A"), want: []string{"claim A res=2 pod=p2"}},
 				{do: claimed(2, onIssue("t2", "is-1", "alice")), want: []string{"place t2 pod=p1 binding=1", "release res=2 pod=p2"}},
@@ -251,27 +254,27 @@ func TestBindingQueryShowsKeyAndHold(t *testing.T) {
 	now := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 	p, err := lending.New(lending.Config{
 		Now: func() time.Time { return now }, Capacity: lending.Resources{Slots: 2},
-		Rule: lending.RulePersonIssue, HoldTimeout: 10 * time.Minute,
+		Rules: testRules(), Rule: rulePersonIssue, HoldTimeout: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = p.SetWorkspace("A", unlimited)
+	_ = p.SetTenant("A", unlimited)
 	p.PodAcquired("p1", "A")
 	if _, ok := p.Binding("p1"); ok {
 		t.Fatal("an idle pod has a binding")
 	}
-	p.RequestClaim(lending.ClaimRequest{Pods: pods("p1"), Workspaces: []string{"A"}})
-	p.ClaimReturned(1, &lending.Task{ID: "t1", Workspace: "A", Initiator: "alice", IssueID: "is-1"}, false)
+	p.RequestClaim(lending.ClaimRequest{Pods: pods("p1"), Tenants: []string{"A"}})
+	p.ClaimReturned(1, &lending.Task{ID: "t1", Tenant: "A", Initiator: "alice", Labels: map[string]string{"issue": "is-1"}}, false)
 	b, _ := p.Binding("p1")
-	want := lending.BindingInfo{ID: 1, Key: "person-issue:issue:is-1/by:alice/in:A", Workspace: "A", Used: lending.Resources{Slots: 1}, Tasks: 1}
+	want := lending.BindingInfo{ID: 1, Key: "person-issue:issue:is-1/by:alice/in:A", Tenant: "A", Used: lending.Resources{Slots: 1}, Tasks: 1}
 	if b != want {
 		t.Fatalf("running binding %+v, want %+v", b, want)
 	}
 	now = now.Add(time.Minute)
 	p.TaskEnded("t1", "done")
 	b, _ = p.Binding("p1")
-	want = lending.BindingInfo{ID: 1, Key: want.Key, Workspace: "A", Hold: true, HoldUntil: now.Add(10 * time.Minute)}
+	want = lending.BindingInfo{ID: 1, Key: want.Key, Tenant: "A", Hold: true, HoldUntil: now.Add(10 * time.Minute)}
 	if b != want {
 		t.Fatalf("held binding %+v, want %+v", b, want)
 	}

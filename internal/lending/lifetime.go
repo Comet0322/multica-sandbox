@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// holdTimeout is the hold timeout for bindings opened by a workspace's tasks.
-func (p *Policy) holdTimeout(workspace string) time.Duration {
-	if s, ok := p.workspaces[workspace]; ok && s.HoldTimeout != nil {
+// holdTimeout is the hold timeout for bindings opened by a tenant's tasks.
+func (p *Policy) holdTimeout(tenant string) time.Duration {
+	if s, ok := p.tenants[tenant]; ok && s.HoldTimeout != nil {
 		return *s.HoldTimeout
 	}
 	return p.cfg.HoldTimeout
@@ -29,15 +29,17 @@ func (p *Policy) handBack(pd *podState, d Reset) Decision {
 
 // Reasons for the resets and failures the maximum lifetime causes.
 const (
-	reasonRemoved       = "workspace removed"
-	reasonLifetime      = "maximum lifetime reached"
-	reasonGracePassed   = "maximum lifetime and drain grace passed"
-	reasonGraceFailTask = "the sandbox pod reached its maximum lifetime and the task ran past the drain grace period"
+	// DefaultRemovedReason is the reset reason of a removed tenant's pods
+	// when Config.RemovedReason is empty.
+	DefaultRemovedReason = "tenant removed"
+	reasonLifetime       = "maximum lifetime reached"
+	reasonGracePassed    = "maximum lifetime and drain grace passed"
+	reasonGraceFailTask  = "the sandbox pod reached its maximum lifetime and the task ran past the drain grace period"
 )
 
-// maxLifetime is the maximum lifetime for bindings a workspace's tasks open.
-func (p *Policy) maxLifetime(workspace string) time.Duration {
-	if s, ok := p.workspaces[workspace]; ok && s.MaxLifetime != nil {
+// maxLifetime is the maximum lifetime for bindings a tenant's tasks open.
+func (p *Policy) maxLifetime(tenant string) time.Duration {
+	if s, ok := p.tenants[tenant]; ok && s.MaxLifetime != nil {
 		return *s.MaxLifetime
 	}
 	return p.cfg.MaxLifetime
@@ -62,7 +64,7 @@ func (p *Policy) Tick() []Decision {
 	for _, ts := range p.waiting {
 		if now.Sub(ts.waitingSince) > p.cfg.PlacementWait {
 			delete(p.tasks, ts.ID)
-			ds = append(ds, Fail{Task: ts.ID, Workspace: ts.Workspace, Reason: "no sandbox pod could take the task in time"})
+			ds = append(ds, Fail{Task: ts.ID, Tenant: ts.Tenant, Reason: "no sandbox pod could take the task in time"})
 			continue
 		}
 		still = append(still, ts)
@@ -115,13 +117,13 @@ func (p *Policy) expireLifetimes(now time.Time) []Decision {
 	return ds
 }
 
-// evictable is the held pod serving a workspace whose binding has been in
+// evictable is the held pod serving a tenant whose binding has been in
 // hold longest and is not reserved; nil when there is none.
 func (p *Policy) evictable(ws string) *podState {
 	var best *podState
 	for _, pd := range p.pods {
 		b := pd.binding
-		if !pd.workspaces[ws] || pd.reservation != nil || b == nil || b.state != bindingHold {
+		if !pd.tenants[ws] || pd.reservation != nil || b == nil || b.state != bindingHold {
 			continue
 		}
 		if best == nil || b.heldSince.Before(best.binding.heldSince) ||

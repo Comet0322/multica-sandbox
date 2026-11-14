@@ -8,63 +8,39 @@ import (
 
 // Task is what the policy knows of a claimed task.
 type Task struct {
-	ID        string
-	Workspace string
-	// Initiator is the person the task runs for; empty when unknown.
-	Initiator     string
-	AgentID       string
-	IssueID       string
-	ChatSessionID string
+	ID     string
+	Tenant string
+	// Initiator is the person the task runs for; empty when unknown. Tasks of
+	// different initiators never share a binding.
+	Initiator string
+	// Labels are what the affinity rules read to find the unit a task may
+	// share a pod with (an issue, a chat, an agent). The policy itself never
+	// reads them; the caller's rules give them meaning.
+	Labels map[string]string
 }
 
 // AffinityRule names the rule that decides which tasks share a pod.
 type AffinityRule string
 
 // UnitFunc maps a task to the unit it may share a pod with under one affinity
-// rule: an issue, a chat session, an agent. An empty unit means the task shares
-// with nothing.
+// rule, usually from its Labels. An empty unit means the task shares with
+// nothing.
 type UnitFunc func(Task) string
 
 // Registry holds the affinity rules by name. Adding a sharing rule means adding
 // one entry.
 type Registry map[AffinityRule]UnitFunc
 
-// The built-in affinity rules.
-const (
-	// RuleTask gives every task a binding of its own.
-	RuleTask AffinityRule = "task"
-	// RulePersonIssue shares a binding between one person's tasks on one
-	// issue, or in one chat session for a task without an issue. It is the
-	// default.
-	RulePersonIssue AffinityRule = "person-issue"
-	// RulePersonAgent shares a binding between one person's tasks of one agent.
-	RulePersonAgent AffinityRule = "person-agent"
-	// RulePerson shares a binding between all of one person's tasks.
-	RulePerson AffinityRule = "person"
-)
+// RuleTask gives every task a binding of its own. It is the only rule the
+// policy knows by itself; every Registry has it.
+const RuleTask AffinityRule = "task"
 
-// Builtin returns the built-in affinity rules.
-func Builtin() Registry {
-	return Registry{
-		RuleTask: func(Task) string { return "" },
-		RulePersonIssue: func(t Task) string {
-			switch {
-			case t.IssueID != "":
-				return "issue:" + t.IssueID
-			case t.ChatSessionID != "":
-				return "chat:" + t.ChatSessionID
-			}
-			return ""
-		},
-		RulePersonAgent: func(t Task) string { return t.AgentID },
-		RulePerson:      func(Task) string { return "all" },
-	}
-}
+func ownBinding(Task) string { return "" }
 
 // affinityKey is the key tasks must share to share a binding:
-// "<rule>:<unit>/by:<initiator>/in:<workspace>". It always names the
-// initiator, so tasks of different people never share one, and the workspace,
-// so one person's tasks in two workspaces do not either. A task without a unit
+// "<rule>:<unit>/by:<initiator>/in:<tenant>". It always names the
+// initiator, so tasks of different people never share one, and the tenant,
+// so one person's tasks in two tenants do not either. A task without a unit
 // or without a known initiator gets a key of its own, "task:<id>".
 const uniqueKeyPrefix = "task:"
 
@@ -77,7 +53,7 @@ func affinityKey(name AffinityRule, unit UnitFunc, t Task) string {
 	if u == "" || t.Initiator == "" {
 		return uniqueKeyPrefix + t.ID
 	}
-	return string(name) + ":" + u + "/by:" + t.Initiator + "/in:" + t.Workspace
+	return string(name) + ":" + u + "/by:" + t.Initiator + "/in:" + t.Tenant
 }
 
 // DefaultPlacementWait bounds how long a displaced task waits for a pod.
@@ -88,8 +64,8 @@ type BindingInfo struct {
 	ID BindingID
 	// Key is the affinity key the binding serves.
 	Key string
-	// Workspace is the workspace of the task that opened it.
-	Workspace string
+	// Tenant is the tenant of the task that opened it.
+	Tenant string
 	// Used is the capacity its tasks occupy; Tasks is how many it holds.
 	Used  Resources
 	Tasks int
@@ -105,7 +81,7 @@ func (p *Policy) Binding(pod string) (BindingInfo, bool) {
 		return BindingInfo{}, false
 	}
 	b := pd.binding
-	info := BindingInfo{ID: b.id, Key: b.key, Workspace: b.workspace, Used: b.used, Tasks: len(b.tasks)}
+	info := BindingInfo{ID: b.id, Key: b.key, Tenant: b.tenant, Used: b.used, Tasks: len(b.tasks)}
 	if b.state == bindingHold {
 		info.Hold, info.HoldUntil = true, b.holdUntil
 	}
@@ -114,7 +90,7 @@ func (p *Policy) Binding(pod string) (BindingInfo, bool) {
 
 func (p *Policy) newTask(t Task) *taskState {
 	name := p.cfg.Rule
-	if s, ok := p.workspaces[t.Workspace]; ok && s.Rule != "" {
+	if s, ok := p.tenants[t.Tenant]; ok && s.Rule != "" {
 		name = s.Rule
 	}
 	return &taskState{Task: t, key: affinityKey(name, p.cfg.Rules[name], t)}
@@ -126,7 +102,7 @@ func (p *Policy) bindingFor(ts *taskState) *binding {
 	var best *binding
 	for _, pd := range p.pods {
 		b := pd.binding
-		if b == nil || b.key != ts.key || !pd.workspaces[ts.Workspace] || p.pastLifetime(b, p.cfg.Now()) {
+		if b == nil || b.key != ts.key || !pd.tenants[ts.Tenant] || p.pastLifetime(b, p.cfg.Now()) {
 			continue
 		}
 		if !p.cfg.Capacity.sub(b.used).fits(TaskDemand) {
@@ -149,13 +125,13 @@ func (p *Policy) join(b *binding, ts *taskState) Decision {
 	// binding is left without a task again.
 	b.state, b.holdUntil = bindingRunning, time.Time{}
 	p.tasks[ts.ID] = ts
-	return Place{Task: ts.ID, Workspace: ts.Workspace, Pod: b.pod.id, Binding: b.id}
+	return Place{Task: ts.ID, Tenant: ts.Tenant, Pod: b.pod.id, Binding: b.id}
 }
 
 func (p *Policy) open(pd *podState, ts *taskState) Decision {
 	p.nextBinding++
 	now := p.cfg.Now()
-	b := &binding{id: p.nextBinding, key: ts.key, workspace: ts.Workspace, pod: pd, tasks: map[string]*taskState{}, openedAt: now, lifetime: p.maxLifetime(ts.Workspace)}
+	b := &binding{id: p.nextBinding, key: ts.key, tenant: ts.Tenant, pod: pd, tasks: map[string]*taskState{}, openedAt: now, lifetime: p.maxLifetime(ts.Tenant)}
 	pd.binding = b
 	d := p.join(b, ts).(Place)
 	d.NewBinding = true
@@ -179,12 +155,12 @@ func (p *Policy) placeWaiting(evict bool) []Decision {
 			ds = append(ds, p.join(b, ts))
 			continue
 		}
-		if pd := p.freePod(ts.Workspace); pd != nil {
+		if pd := p.freePod(ts.Tenant); pd != nil {
 			ds = append(ds, p.open(pd, ts))
 			continue
 		}
 		if evict && !ts.evictedFor {
-			if pd := p.evictable(ts.Workspace); pd != nil {
+			if pd := p.evictable(ts.Tenant); pd != nil {
 				ds = append(ds, p.evict(pd, ts))
 			}
 		}
@@ -201,7 +177,7 @@ func (p *Policy) placeOrphan(t *Task) []Decision {
 	if b := p.bindingFor(ts); b != nil {
 		return []Decision{p.join(b, ts)}
 	}
-	if pd := p.freePod(ts.Workspace); pd != nil {
+	if pd := p.freePod(ts.Tenant); pd != nil {
 		return []Decision{p.open(pd, ts)}
 	}
 	p.wait(ts)
@@ -216,12 +192,12 @@ func (p *Policy) wait(ts *taskState) {
 	p.waiting = append(p.waiting, ts)
 }
 
-// freePod is the first held pod, by ID, that serves the workspace and can
+// freePod is the first held pod, by ID, that serves the tenant and can
 // take a new binding.
-func (p *Policy) freePod(workspace string) *podState {
+func (p *Policy) freePod(tenant string) *podState {
 	ids := make([]string, 0, len(p.pods))
 	for id, pd := range p.pods {
-		if pd.workspaces[workspace] && p.reservable(pd) {
+		if pd.tenants[tenant] && p.reservable(pd) {
 			ids = append(ids, id)
 		}
 	}

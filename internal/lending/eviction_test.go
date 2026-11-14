@@ -6,8 +6,8 @@ import (
 )
 
 func TestEviction(t *testing.T) {
-	two := setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
-	three := setup(workspace("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A"))
+	two := setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"))
+	three := setup(tenant("A", unlimited), cleanPod("p1", "A"), cleanPod("p2", "A"), cleanPod("p3", "A"))
 	// p1 runs alice's is-1 and p2 bob's is-2.
 	bothRunning := []step{
 		{do: request(pods("p1"), "A"), want: []string{"claim A res=1 pod=p1"}},

@@ -15,10 +15,10 @@ type ReservationID uint64
 // first lease to its reset.
 type BindingID uint64
 
-// Claim tells the manager to claim one task upstream from Workspace, against
+// Claim tells the manager to claim one task upstream from Tenant, against
 // Reservation on Pod. Its outcome goes back through ClaimReturned.
 type Claim struct {
-	Workspace   string
+	Tenant      string
 	Reservation ReservationID
 	Pod         string
 }
@@ -35,7 +35,7 @@ type Release struct {
 // its lease starts when the pod picks it up (TaskStarted).
 type Place struct {
 	Task       string
-	Workspace  string
+	Tenant     string
 	Pod        string
 	Binding    BindingID
 	NewBinding bool
@@ -57,9 +57,9 @@ type Acquire struct{}
 
 // Fail tells the manager to fail Task upstream with Reason.
 type Fail struct {
-	Task      string
-	Workspace string
-	Reason    string
+	Task   string
+	Tenant string
+	Reason string
 }
 
 // EndLease tells the manager to close the lease of Task.
@@ -79,7 +79,7 @@ func (Acquire) decision()  {}
 func (Acquire) String() string { return "acquire" }
 
 func (d Claim) String() string {
-	return fmt.Sprintf("claim %s res=%d pod=%s", d.Workspace, d.Reservation, d.Pod)
+	return fmt.Sprintf("claim %s res=%d pod=%s", d.Tenant, d.Reservation, d.Pod)
 }
 
 func (d Release) String() string {

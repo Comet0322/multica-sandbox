@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-func TestLoadPoolReadsTheOverridesFileOnEveryCall(t *testing.T) {
+func TestLoadSettingsReadsTheOverridesFileOnEveryCall(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "overrides.yaml")
 	if err := os.WriteFile(path, []byte("alpha: {quota: 1}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	env := baseEnv()
 	env["SANDBOX_WORKSPACE_OVERRIDES_FILE"] = path
-	s, err := loadPool(envLookup(env))
+	s, err := loadSettings(envLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,17 +33,17 @@ func TestLoadPoolReadsTheOverridesFileOnEveryCall(t *testing.T) {
 	}
 }
 
-func TestLoadPoolWithoutAnOverridesFileHasNone(t *testing.T) {
-	s, err := loadPool(envLookup(baseEnv()))
+func TestLoadSettingsWithoutAnOverridesFileHasNone(t *testing.T) {
+	s, err := loadSettings(envLookup(baseEnv()))
 	if err != nil || s.config.ReadOverrides != nil {
 		t.Fatalf("want no overrides reader: %v", err)
 	}
 }
 
-func TestLoadPoolRefusesARelativeOverridesFile(t *testing.T) {
+func TestLoadSettingsRefusesARelativeOverridesFile(t *testing.T) {
 	env := baseEnv()
 	env["SANDBOX_WORKSPACE_OVERRIDES_FILE"] = "overrides.yaml"
-	_, err := loadPool(envLookup(env))
+	_, err := loadSettings(envLookup(env))
 	if err == nil || !strings.Contains(err.Error(), "SANDBOX_WORKSPACE_OVERRIDES_FILE") {
 		t.Fatalf("want the setting named, got %v", err)
 	}

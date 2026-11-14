@@ -1,10 +1,12 @@
 # Sandbox Manager Instructions
 
-This repository is our sandbox manager: the dispatcher that lends pooled pods to Multica tasks, the sandbox service that runs the pods, and the pod supervisor. Multica itself is a separate checkout next to it (`../multica`), used only to build the stock daemon into the pod image; do not change it for the manager's sake.
+This repository is our sandbox manager: the program that lends pooled pods to Multica tasks, the sandbox service that runs the pods, and the pod supervisor. Multica itself is a separate checkout next to it (`../multica`), used only to build the stock daemon into the pod image; do not change it for the manager's sake.
 
 ## Boundaries
 
-- The Go module `sandbox-manager` must not require a Multica module; `module_test.go` enforces it. Daemon protocol types we exchange with Multica live in `internal/daemonwire`, pinned to the v0.6.4 wire format by its fixtures.
+- The Go module `sandbox-manager` must not require a Multica module; `module_test.go` enforces it. Daemon protocol types we exchange with Multica live in `internal/multica/daemonwire`, pinned to the v0.6.4 wire format by its fixtures.
+- Everything Multica-specific lives in `internal/multica`; it imports only the lending policy (`internal/multica/imports_test.go`). `internal/manager` wires it to the rest.
+- `internal/lending` imports nothing else of this module and knows no Multica: a workspace is a tenant, and the affinity rules come from the caller (`internal/lending/imports_test.go`).
 - `internal/sandbox` imports nothing else of this module (`internal/sandbox/imports_test.go`).
 
 ## Checks

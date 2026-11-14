@@ -8,7 +8,7 @@ import (
 
 // The service must be able to leave the manager's process unchanged: it
 // depends on the standard library and generic helpers only, never on the
-// dispatcher, the lending policy, the daemon wire types or Multica.
+// manager, the lending policy, the daemon wire types or Multica.
 func TestThePackageImportsNothingOfTheManagerOrMultica(t *testing.T) {
 	const self = "sandbox-manager/internal/sandbox"
 	out, err := exec.Command("go", "list", "-deps", self).CombinedOutput()

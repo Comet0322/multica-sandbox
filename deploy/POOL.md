@@ -9,23 +9,28 @@ is the [per-workspace overrides](#per-workspace-overrides) file, which is read
 on every sync and whose problems are reported without stopping anything. Durations use Go
 syntax (`45s`, `10m`, `2h`). Unset or `0` means the default shown.
 
-## Two modules, one process
+## Modules, one process
 
-The manager is two modules in one process and one pod listener:
+The program runs in one process with one pod listener:
 
 - The **sandbox service** (`internal/sandbox`) owns the
   pods: registration and pod tokens, the control channel, resets, liveness,
   pruning, and the set of free pods. It knows nothing of Multica, workspaces
   or tasks. Its settings are `SANDBOX_POOL_HEARTBEAT_TIMEOUT`,
   `SANDBOX_POOL_RESET_TIMEOUT` and `SANDBOX_POOL_LOST_RETENTION`.
-- The **dispatcher** is everything else: the upstream daemon toward Multica,
-  workspaces, claims, bindings, hold, quota, leases and the audit of leases. It
-  reaches pods only through the service: `Create` takes a free, reset pod and
-  `Delete` hands it back to be reset. `PutFiles`, `GetFiles` and `Exec` exist
-  on the interface but the current pods do not support them. The service tells
-  it when a pod it holds is interrupted or lost.
+- The **manager** (`internal/manager`) is everything else: workspaces, claims,
+  bindings, hold, quota, leases and the audit of leases. It reaches pods only
+  through the service: `Create` takes a free, reset pod and `Delete` hands it
+  back to be reset. `PutFiles`, `GetFiles` and `Exec` exist on the interface
+  but the current pods do not support them. The service tells it when a pod it
+  holds is interrupted or lost. Two packages hold its parts:
+  - `internal/lending`, the lending policy (queue, quota, affinity, hold,
+    lifetime), which knows nothing of Multica: a workspace is a tenant to it.
+  - `internal/multica`, everything the manager knows of Multica: the server's
+    API, the daemon protocol it serves to the pods, runtime registration and
+    the affinity rules.
 
-Every other setting below belongs to the dispatcher. See ADR 0004
+Every other setting below belongs to the manager. See ADR 0004
 (`docs/adr/0004-pods-behind-a-sandbox-service.md`) for the seam.
 
 Secrets accept `NAME` or `NAME_FILE` (a path; surrounding whitespace is
@@ -80,8 +85,8 @@ The sandbox service assigns the pod ID; the label is only shown in the
 inventory and logs. A new pod is reset once before it can be acquired. The
 token lasts until the container stops: a restarted container registers as a
 new pod, and the old identity, now silent, is marked lost after the heartbeat
-timeout and the dispatcher ends its leases (tasks failed upstream). The
-dispatcher never sees the token: it asks the service which pod a token
+timeout and the manager ends its leases (tasks failed upstream). The
+manager never sees the token: it asks the service which pod a token
 belongs to. An agent's `multica` CLI calls carry the
 task's `mat_` token instead and are relayed to Multica unchanged, without the
 manager knowing which pod sent them.
@@ -94,9 +99,9 @@ other callers away from that port.
 ## How a pod is reset and rejoins
 
 The service needs nothing from the daemon to tell a reset has finished. A pod
-is `free`, `held` (acquired by the dispatcher), `resetting` or `lost`:
+is `free`, `held` (acquired by the manager), `resetting` or `lost`:
 
-1. A reset starts when the dispatcher hands a pod back with `Delete` (its last
+1. A reset starts when the manager hands a pod back with `Delete` (its last
    lease ended, a hold ran out, a task of another key evicted it, and so on),
    when a pod registers for the first time, when a lost pod returns, or when
    the supervisor reports an interrupt. The pod is `resetting` and the
@@ -112,7 +117,7 @@ is `free`, `held` (acquired by the dispatcher), `resetting` or `lost`:
    restores no template and touches nothing outside the daemon's HOME. It then
    reports `done` with the paths it could not delete.
 3. The report completes the reset: the service logs any paths left behind and
-   the pod is `free` again, so the dispatcher can acquire it. A pod is never
+   the pod is `free` again, so the manager can acquire it. A pod is never
    lent while it is resetting. The daemon keeps running throughout, so a
    registration during the reset is the same daemon's and changes nothing.
    A reset not reported done within `SANDBOX_POOL_RESET_TIMEOUT` makes the pod
@@ -126,8 +131,8 @@ so after 5 minutes.
 The supervisor also reports two events on `/pod/control`: `started` when it
 (so the container) starts, before the daemon, and `daemon-exited` when the
 daemon exits by itself, before the daemon is started again. Either one on a
-pod the dispatcher holds is an **interrupt**: the service releases the hold,
-starts the reset itself and notifies the dispatcher, which fails the pod's
+pod the manager holds is an **interrupt**: the service releases the hold,
+starts the reset itself and notifies the manager, which fails the pod's
 started tasks upstream ("the pod's daemon restarted"), ends their leases with
 "pod daemon restarted" or "pod container restarted", and places the tasks not
 yet started on another pod. Without this a daemon the supervisor restarted,
@@ -137,10 +142,10 @@ inherit leases whose tasks died with the old process.
 The supervisor's start clears the daemon's HOME the same way (a restarted
 container keeps its volume); see [SANDBOX.md](SANDBOX.md).
 
-A pod that stays silent past the heartbeat timeout is `lost`. If the dispatcher
-holds it, the service notifies it and the dispatcher ends the pod's leases
+A pod that stays silent past the heartbeat timeout is `lost`. If the manager
+holds it, the service notifies it and the manager ends the pod's leases
 (tasks failed upstream, release audited) and places the tasks not yet started
-elsewhere; the dispatcher also compares the pods it holds with the service's
+elsewhere; the manager also compares the pods it holds with the service's
 inventory on every tick, so a missed notification is caught. Any poll or
 control report from a lost pod starts a new reset, so it returns to service
 through a reset, whether or not it held work. The manager does not answer a
@@ -150,7 +155,7 @@ lost pod's poll with an error, and a pod token the service does not know gets
 After a manager restart, whose service state is in memory, every pod's token
 is unknown: each supervisor exits at its next control poll (every 2 seconds),
 the container restarts and registers as a new pod, and the service resets it
-before it can be acquired. The dispatcher's first workspace listing, before any
+before it can be acquired. The manager's first workspace listing, before any
 pod is served, fails what Multica still shows running on the manager's runtimes
 in every workspace (orphan recovery), so the tasks that ran at the restart are
 failed upstream without waiting for a pod. A pod's first registration in a
@@ -200,7 +205,7 @@ A lease ends and the pod is reset
 Reconciliation runs every `SANDBOX_POOL_RECONCILE_INTERVAL`: it asks Multica
 for each leased task's status with the endpoint the stock daemon polls
 (`GET /api/daemon/tasks/{id}/status`, with the PAT), at most 8 calls at once
-and 10s each, never holding the dispatcher's lock while it waits. Any other error
+and 10s each, never holding the manager's lock while it waits. Any other error
 keeps the lease for the next pass.
 
 A failure report that does not reach Multica (network error, timeout, 429 or
@@ -230,7 +235,7 @@ being marked lost at once.
 Reset events are audited (`action: reset`), with the task whose end caused
 it when there was one. The service writes every reset's start, completion
 and timeout (a `Delete` that starts no reset writes nothing), naming the
-dispatcher's lease for the resets the dispatcher causes, and a pod lost on its
+manager's lease for the resets the manager causes, and a pod lost on its
 heartbeat. `/v1/leases`
 and the pods in `/v1/inventory` name the initiators. Each pod in
 `/v1/inventory` also shows its `binding`: the affinity key, capacity use and,
@@ -276,10 +281,10 @@ affinity key`) and the task runs there once the reset is done. A binding with
 a running task is never evicted; a task no pod can take stays queued in
 Multica.
 
-Eviction is carried out in the dispatcher: the held pod is reserved and the
+Eviction is carried out in the manager: the held pod is reserved and the
 claim made, and when the claimed task has another key the hold ends and the
 pod is handed back with `Delete`. The task then waits, within
-`SANDBOX_PLACEMENT_WAIT`, and takes the next pod the dispatcher acquires
+`SANDBOX_PLACEMENT_WAIT`, and takes the next pod the manager acquires
 before any new claim is made. It fails upstream if no clean pod comes in
 time.
 
@@ -339,7 +344,7 @@ the file has entries.
 The stock daemon in a pod polls for a task every 30 seconds, so a task would
 wait that long for an idle pod. The manager therefore dispatches itself: the
 daemon opens its usual wake websocket on the manager, and every
-`SANDBOX_POOL_WAKE_INTERVAL` the dispatcher reads the queue, acquires a pod
+`SANDBOX_POOL_WAKE_INTERVAL` the manager reads the queue, acquires a pod
 from the sandbox service with `Create` when it has no reservable one, claims
 one task upstream against that reservation, places it where the lending policy
 says, and sends the target pod the hint that makes it claim at once. The
@@ -350,7 +355,7 @@ receives only a task already placed on it, and a poll with nothing placed on
 it causes no upstream claim and never fails because Multica does. So a pod
 without a socket or with a lost hint is served by its next poll once the tick
 has placed a task on it, and the poll remains the liveness signal. A pod the
-dispatcher acquired but never ran a task on, because a claim came back empty,
+manager acquired but never ran a task on, because a claim came back empty,
 is kept for the next claim, not handed back. Neither Multica nor the pod image
 changes.
 

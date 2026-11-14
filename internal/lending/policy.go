@@ -1,4 +1,4 @@
-// Package lending is the sandbox manager's lending policy: which workspace to
+// Package lending is the sandbox manager's lending policy: which tenant to
 // claim from, which pod a claimed task runs on, which tasks share a pod, and
 // when a pod is handed back to be reset or a task failed.
 //
@@ -11,6 +11,10 @@
 // time comes from the injected clock. Events go in through the Policy methods
 // and decisions come out; the manager carries the decisions out. A Policy is
 // not safe for concurrent use: the manager calls it under its own lock.
+//
+// It knows nothing of where tasks come from. A tenant is the unit quota and
+// affinity keys are scoped to (for Multica, a workspace), and the affinity
+// rules that read a task's labels come from the caller.
 package lending
 
 import (
@@ -26,7 +30,7 @@ type Config struct {
 	// Capacity is what every pod offers. It is pool-wide.
 	Capacity Resources
 	// Rule is the default affinity rule, a name in Rules. Empty means
-	// RulePersonIssue.
+	// RuleTask.
 	Rule AffinityRule
 	// HoldTimeout is how long a binding with no running task keeps its pod
 	// for its affinity key before the pod is reset. Zero resets the pod as
@@ -39,28 +43,33 @@ type Config struct {
 	// DrainGrace is how long the tasks of a binding past its maximum lifetime
 	// may still run before they are failed and the pod reset.
 	DrainGrace time.Duration
-	// Rules are the affinity rules workspaces may use. Nil means Builtin().
+	// Rules are the affinity rules tenants may use. RuleTask is always
+	// among them.
 	Rules Registry
-	// Backoff is how long a workspace is not claimed from after its upstream
+	// Backoff is how long a tenant is not claimed from after its upstream
 	// failed a claim.
 	Backoff time.Duration
 	// PlacementWait bounds how long a claimed task that lost its pod before
 	// starting (see PodLost) waits for another before it is failed. Zero means
 	// DefaultPlacementWait.
 	PlacementWait time.Duration
+	// RemovedReason is the reset reason of the pods a removed tenant's
+	// bindings held, in the caller's words (such as "workspace removed").
+	// Empty means DefaultRemovedReason.
+	RemovedReason string
 }
 
-// WorkspaceSettings is what the policy knows of one served workspace.
-type WorkspaceSettings struct {
-	// Quota caps the capacity the workspace's tasks and claims in flight may
+// TenantSettings is what the policy knows of one served tenant.
+type TenantSettings struct {
+	// Quota caps the capacity the tenant's tasks and claims in flight may
 	// occupy at once, in slots. Zero means no cap.
 	Quota int
-	// Rule is the workspace's affinity rule. Empty means the pool default.
+	// Rule is the tenant's affinity rule. Empty means the pool default.
 	Rule AffinityRule
-	// HoldTimeout is the hold timeout of the bindings the workspace's tasks
+	// HoldTimeout is the hold timeout of the bindings the tenant's tasks
 	// open. Nil means the pool default.
 	HoldTimeout *time.Duration
-	// MaxLifetime is the maximum lifetime of the bindings the workspace's
+	// MaxLifetime is the maximum lifetime of the bindings the tenant's
 	// tasks open from now on; a binding keeps the lifetime it opened with.
 	// Nil means the pool default, and zero means none.
 	MaxLifetime *time.Duration
@@ -70,9 +79,9 @@ type WorkspaceSettings struct {
 // service and has not handed back.
 type podState struct {
 	id string
-	// workspaces are the workspaces the pod's daemon registered for; the pod
+	// tenants are the tenants the pod's worker registered for; the pod
 	// is lent only to them.
-	workspaces  map[string]bool
+	tenants     map[string]bool
 	binding     *binding
 	reservation *reservation
 }
@@ -88,14 +97,14 @@ const (
 )
 
 type binding struct {
-	id        BindingID
-	key       string
-	workspace string
-	pod       *podState
-	state     bindingState
-	tasks     map[string]*taskState
-	used      Resources
-	openedAt  time.Time
+	id       BindingID
+	key      string
+	tenant   string
+	pod      *podState
+	state    bindingState
+	tasks    map[string]*taskState
+	used     Resources
+	openedAt time.Time
 	// lifetime is the maximum lifetime the binding opened with; zero is none.
 	lifetime  time.Duration
 	lastUsed  time.Time
@@ -116,38 +125,42 @@ type taskState struct {
 }
 
 type reservation struct {
-	id        ReservationID
-	pod       *podState
-	workspace string
+	id     ReservationID
+	pod    *podState
+	tenant string
 }
 
 // Policy is the lending policy's state. See the package comment.
 type Policy struct {
 	cfg          Config
 	pods         map[string]*podState
-	workspaces   map[string]WorkspaceSettings
+	tenants      map[string]TenantSettings
 	backoff      map[string]time.Time
 	pending      map[string]*pendingList
 	tasks        map[string]*taskState
 	waiting      []*taskState
 	reservations map[ReservationID]*reservation
-	// lastWorkspace is the workspace claimed from last; workspaces claimed
+	// lastTenant is the tenant claimed from last; tenants claimed
 	// from without a queued task take turns after it.
-	lastWorkspace string
-	nextRes       ReservationID
-	nextBinding   BindingID
+	lastTenant  string
+	nextRes     ReservationID
+	nextBinding BindingID
 }
 
-// New returns a policy with no pods and no workspaces.
+// New returns a policy with no pods and no tenants.
 func New(cfg Config) (*Policy, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	if cfg.Rules == nil {
-		cfg.Rules = Builtin()
+	rules := Registry{RuleTask: ownBinding}
+	for name, unit := range cfg.Rules {
+		if name != RuleTask {
+			rules[name] = unit
+		}
 	}
+	cfg.Rules = rules
 	if cfg.Rule == "" {
-		cfg.Rule = RulePersonIssue
+		cfg.Rule = RuleTask
 	}
 	if cfg.HoldTimeout < 0 || cfg.MaxLifetime < 0 || cfg.DrainGrace < 0 {
 		return nil, fmt.Errorf("hold timeout, maximum lifetime and drain grace must not be negative")
@@ -164,69 +177,72 @@ func New(cfg Config) (*Policy, error) {
 	if cfg.PlacementWait == 0 {
 		cfg.PlacementWait = DefaultPlacementWait
 	}
+	if cfg.RemovedReason == "" {
+		cfg.RemovedReason = DefaultRemovedReason
+	}
 	return &Policy{
-		cfg: cfg, pods: map[string]*podState{}, workspaces: map[string]WorkspaceSettings{},
+		cfg: cfg, pods: map[string]*podState{}, tenants: map[string]TenantSettings{},
 		backoff: map[string]time.Time{}, pending: map[string]*pendingList{}, tasks: map[string]*taskState{}, reservations: map[ReservationID]*reservation{},
 	}, nil
 }
 
-// SetWorkspace adds a served workspace or changes its settings. The settings
+// SetTenant adds a served tenant or changes its settings. The settings
 // apply to claims and placements from now on.
-func (p *Policy) SetWorkspace(id string, s WorkspaceSettings) error {
+func (p *Policy) SetTenant(id string, s TenantSettings) error {
 	if s.Quota < 0 {
-		return fmt.Errorf("workspace %s: quota must not be negative", id)
+		return fmt.Errorf("tenant %s: quota must not be negative", id)
 	}
 	if s.Rule != "" && p.cfg.Rules[s.Rule] == nil {
-		return fmt.Errorf("workspace %s: unknown affinity rule %q", id, s.Rule)
+		return fmt.Errorf("tenant %s: unknown affinity rule %q", id, s.Rule)
 	}
 	if s.HoldTimeout != nil && *s.HoldTimeout < 0 {
-		return fmt.Errorf("workspace %s: hold timeout must not be negative", id)
+		return fmt.Errorf("tenant %s: hold timeout must not be negative", id)
 	}
 	if s.MaxLifetime != nil && *s.MaxLifetime < 0 {
-		return fmt.Errorf("workspace %s: maximum lifetime must not be negative", id)
+		return fmt.Errorf("tenant %s: maximum lifetime must not be negative", id)
 	}
-	p.workspaces[id] = s
+	p.tenants[id] = s
 	return nil
 }
 
-// RemoveWorkspace stops claiming from a workspace. Its tasks run on; its
+// RemoveTenant stops claiming from a tenant. Its tasks run on; its
 // bindings in hold, which nothing can renew any more, are reset, and so is
 // each of its other bindings when its last task ends.
-func (p *Policy) RemoveWorkspace(id string) []Decision {
-	delete(p.workspaces, id)
+func (p *Policy) RemoveTenant(id string) []Decision {
+	delete(p.tenants, id)
 	delete(p.backoff, id)
 	delete(p.pending, id)
 	var ds []Decision
-	for _, b := range p.bindings(func(b *binding) bool { return b.workspace == id && b.state == bindingHold }) {
-		ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: reasonRemoved}))
+	for _, b := range p.bindings(func(b *binding) bool { return b.tenant == id && b.state == bindingHold }) {
+		ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: p.cfg.RemovedReason}))
 	}
 	return ds
 }
 
 // PodAcquired records a pod the manager acquired from the sandbox service,
-// clean and lendable, with the workspaces its daemon registered for. Tasks
+// clean and lendable, with the tenants its worker registered for. Tasks
 // waiting for a pod are placed on it first.
-func (p *Policy) PodAcquired(pod string, workspaces ...string) []Decision {
+func (p *Policy) PodAcquired(pod string, tenants ...string) []Decision {
 	pd := p.pods[pod]
 	if pd == nil {
-		pd = &podState{id: pod, workspaces: map[string]bool{}}
+		pd = &podState{id: pod, tenants: map[string]bool{}}
 		p.pods[pod] = pd
 	}
-	for _, ws := range workspaces {
-		pd.workspaces[ws] = true
+	for _, ws := range tenants {
+		pd.tenants[ws] = true
 	}
 	return p.placeWaiting(false)
 }
 
-// PodRegistered records that the daemon of a held pod registered for a
-// workspace, so the pod may be lent to it. A pod the manager does not hold is
-// ignored: the workspaces come with PodAcquired.
-func (p *Policy) PodRegistered(pod, workspace string) []Decision {
+// PodRegistered records that the worker of a held pod registered for a
+// tenant, so the pod may be lent to it. A pod the manager does not hold is
+// ignored: the tenants come with PodAcquired.
+func (p *Policy) PodRegistered(pod, tenant string) []Decision {
 	pd := p.pods[pod]
 	if pd == nil {
 		return nil
 	}
-	pd.workspaces[workspace] = true
+	pd.tenants[tenant] = true
 	return p.placeWaiting(false)
 }
 
@@ -238,7 +254,7 @@ func (p *Policy) PodLost(pod, failReason, endReason string) []Decision {
 	return p.podGone(pod, failReason, endReason)
 }
 
-// PodInterrupted records that a held pod's daemon or container restarted by
+// PodInterrupted records that a held pod's worker or container restarted by
 // itself, so its started tasks are gone. It is handled as PodLost: the
 // sandbox service resets the pod itself, so it is forgotten without a Reset.
 func (p *Policy) PodInterrupted(pod, failReason, endReason string) []Decision {
@@ -275,10 +291,10 @@ func (p *Policy) TaskEnded(id, reason string) []Decision {
 	p.forget(ts)
 	if b := ts.binding; b != nil && len(b.tasks) == 0 {
 		now := p.cfg.Now()
-		_, served := p.workspaces[b.workspace]
-		switch hold := p.holdTimeout(b.workspace); {
+		_, served := p.tenants[b.tenant]
+		switch hold := p.holdTimeout(b.tenant); {
 		case !served:
-			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: reasonRemoved, Task: id}))
+			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: p.cfg.RemovedReason, Task: id}))
 		case p.pastLifetime(b, now):
 			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: reasonLifetime, Task: id}))
 		case hold > 0 && !uniqueKey(b.key):
@@ -292,15 +308,15 @@ func (p *Policy) TaskEnded(id, reason string) []Decision {
 	return append(ds, p.placeWaiting(false)...)
 }
 
-// Busy reports whether a workspace still has tasks or claims in flight here.
-func (p *Policy) Busy(workspace string) bool {
+// Busy reports whether a tenant still has tasks or claims in flight here.
+func (p *Policy) Busy(tenant string) bool {
 	for _, ts := range p.tasks {
-		if ts.Workspace == workspace {
+		if ts.Tenant == tenant {
 			return true
 		}
 	}
 	for _, r := range p.reservations {
-		if r.workspace == workspace {
+		if r.tenant == tenant {
 			return true
 		}
 	}
@@ -342,7 +358,7 @@ func (p *Policy) vacate(pd *podState, failReason, endReason string) []Decision {
 		ts.binding = nil
 		if ts.started {
 			delete(p.tasks, id)
-			ds = append(ds, Fail{Task: id, Workspace: ts.Workspace, Reason: failReason}, EndLease{Task: id, Reason: endReason})
+			ds = append(ds, Fail{Task: id, Tenant: ts.Tenant, Reason: failReason}, EndLease{Task: id, Reason: endReason})
 			continue
 		}
 		ts.waitingSince = now

@@ -60,6 +60,10 @@ _Avoid_: Grace, keep-alive, warm pod
 The amount of each resource a pod offers to running tasks; the first resource is slots, the number of tasks it runs at once.
 _Avoid_: Concurrency, size
 
+**Tenant**:
+What the lending policy scopes quota and affinity keys to. For Multica it is a workspace; the policy knows nothing else of it.
+_Avoid_: Workspace (inside the lending policy), customer
+
 **Quota**:
 The most capacity one workspace's running tasks may occupy at once; pods in hold do not count against it.
 _Avoid_: Limit, max leases
