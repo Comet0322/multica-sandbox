@@ -4,8 +4,10 @@
 # read-only; the only writable area is the pod's HOME volume (/home/pod), which
 # holds every per-task location (workspaces, TMPDIR, the agents' caches), so a
 # reset, which clears HOME, leaves nothing of a task behind. Build from the
-# repository root:
-#   docker build -f sandbox-manager/deploy/Dockerfile.pool -t multica-sandbox-pool:<tag> .
+# repository root, with a checkout of Multica (the version the daemon is built
+# from) as the named build context "multica":
+#   docker build -f deploy/Dockerfile.pool --build-context multica=../multica \
+#     -t multica-sandbox-pool:<tag> .
 # Run: see pool/k8s/sandbox/pool.yaml and pool/compose/pool.yaml, which set the
 # user, the group 2000, the volume, the process limit and the dropped
 # capabilities. The default target installs real agent CLIs; --target fake uses
@@ -13,20 +15,20 @@
 ARG GO_IMAGE=golang:1.27.3-alpine
 ARG BASE_IMAGE=node:22-slim
 
-# The stock daemon is Multica's, built from server/; the supervisor is ours,
-# built from sandbox-manager/.
+# The stock daemon is Multica's, built from the "multica" build context's
+# server/; the supervisor is ours, built from this repository.
 FROM ${GO_IMAGE} AS builder
 WORKDIR /src/server
-COPY server/go.mod server/go.sum ./
+COPY --from=multica server/go.mod server/go.sum ./
 RUN go mod download
-COPY server/ ./
+COPY --from=multica server/ ./
 ARG VERSION=dev
 ARG COMMIT=unknown
 RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /out/multica ./cmd/multica
 WORKDIR /src/sandbox-manager
-COPY sandbox-manager/go.mod sandbox-manager/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
-COPY sandbox-manager/ ./
+COPY . ./
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/pod-supervisor ./cmd/pod-supervisor
 
 FROM ${BASE_IMAGE} AS base
@@ -37,7 +39,7 @@ ARG PACKAGE_MIRROR_URL=http://package-mirror.multica-sandbox.svc.cluster.local
 
 # The daemon and the agents run as one non-root user (sandboxd, uid 1001, group
 # 2000, the pod's fsGroup). The container sets the user itself; the entries
-# only give the ids names. See "The pod" in sandbox-manager/deploy/SANDBOX.md.
+# only give the ids names. See "The pod" in deploy/SANDBOX.md.
 RUN groupadd --gid 2000 sandbox \
 	&& useradd --uid 1001 --gid 2000 --no-create-home --home-dir /home/pod \
 		--shell /usr/sbin/nologin sandboxd
@@ -53,7 +55,7 @@ RUN apt-get update \
 
 # Package sources point at the internal mirror. --user, venv and in-project
 # installs work; global installs fail on the read-only root.
-COPY sandbox-manager/deploy/pool/pip.conf /etc/pip.conf
+COPY deploy/pool/pip.conf /etc/pip.conf
 RUN sed -i "s|@PACKAGE_MIRROR_URL@|${PACKAGE_MIRROR_URL}|g" /etc/pip.conf \
 	&& printf 'registry=%s/npm/\n' "${PACKAGE_MIRROR_URL}" >/usr/local/etc/npmrc
 ENV GOPROXY=${PACKAGE_MIRROR_URL}/go,off
@@ -79,7 +81,7 @@ RUN git config --system safe.directory '*' \
 
 COPY --from=builder /out/multica /usr/local/bin/multica
 COPY --from=builder /out/pod-supervisor /usr/local/bin/pod-supervisor
-COPY sandbox-manager/deploy/pool/entrypoint.sh /usr/local/bin/multica-pod-entrypoint
+COPY deploy/pool/entrypoint.sh /usr/local/bin/multica-pod-entrypoint
 
 # The daemon's CLI settings (manager address and a placeholder token), copied
 # into HOME by the entrypoint at container start with the placeholder replaced
@@ -88,7 +90,7 @@ COPY sandbox-manager/deploy/pool/entrypoint.sh /usr/local/bin/multica-pod-entryp
 # here, read-only; the entrypoint copies only its Claude skills into HOME,
 # which the skip list keeps (see home/README.md). Nothing here is a real
 # secret.
-COPY sandbox-manager/deploy/home/ /etc/multica-sandbox/home-template/
+COPY deploy/home/ /etc/multica-sandbox/home-template/
 RUN mkdir -p /etc/multica-sandbox/daemon-template/.multica \
 	&& printf '{"server_url":"%s","token":"pool-placeholder"}\n' "${MANAGER_URL}" \
 		>/etc/multica-sandbox/daemon-template/.multica/config.json \
@@ -140,8 +142,8 @@ FROM base AS fake
 # Installing the CLIs takes root; the image still ends as the unprivileged
 # user.
 USER root
-COPY sandbox-manager/deploy/fake/fake-claude /usr/local/bin/claude
-COPY sandbox-manager/deploy/fake/skill/ /etc/multica-sandbox/home-template/
+COPY deploy/fake/fake-claude /usr/local/bin/claude
+COPY deploy/fake/skill/ /etc/multica-sandbox/home-template/
 USER 1001:2000
 
 FROM base AS agents

@@ -100,7 +100,7 @@ are listed in `AGENT_PACKAGES` and `AGENT_COMMANDS` of `Dockerfile.pool`; the
 daemon starts them itself, as the pod's user.
 
 opencode reaches an OpenAI-compatible endpoint through the provider in
-`sandbox-manager/deploy/home/.config/opencode/opencode.json`, which the image names in
+`deploy/home/.config/opencode/opencode.json`, which the image names in
 `OPENCODE_CONFIG` (it stays read-only in the image, outside HOME), and which reads
 `OPENAI_BASE_URL` and `OPENAI_API_KEY` from the agent's custom environment.
 Only that provider is enabled, so the model picker of an opencode agent shows

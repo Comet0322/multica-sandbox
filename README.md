@@ -14,11 +14,9 @@ Lends a pool of long-lived sandbox pods to Multica tasks. The pods run Multica's
 | `GLOSSARY.md`, `docs/adr/` | Terms and decisions |
 | `.scratch/` | Specs and tickets |
 
-Test with `go test -race ./...` here. Build the images from the repository root:
+Test with `go test -race ./...`. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, at the version the company server runs, `slim/v0.6.4`). Build the images from the repository root:
 
 ```bash
-docker build -f sandbox-manager/deploy/Dockerfile.manager -t multica-sandbox-manager:dev .
-docker build -f sandbox-manager/deploy/Dockerfile.pool -t multica-sandbox-pool:dev .
+docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:dev .
+docker build -f deploy/Dockerfile.pool --build-context multica=../multica -t multica-sandbox-pool:dev .
 ```
-
-The pod image also builds Multica's `multica` daemon from `server/`.

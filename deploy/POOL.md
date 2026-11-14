@@ -13,7 +13,7 @@ syntax (`45s`, `10m`, `2h`). Unset or `0` means the default shown.
 
 The manager is two modules in one process and one pod listener:
 
-- The **sandbox service** (`sandbox-manager/internal/sandbox`) owns the
+- The **sandbox service** (`internal/sandbox`) owns the
   pods: registration and pod tokens, the control channel, resets, liveness,
   pruning, and the set of free pods. It knows nothing of Multica, workspaces
   or tasks. Its settings are `SANDBOX_POOL_HEARTBEAT_TIMEOUT`,

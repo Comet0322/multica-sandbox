@@ -8,12 +8,14 @@
 # is lent again for a second task, which finds none of the first one's files.
 # scenarios.sh runs the full scenario set.
 #
-# Build the images first, from the repository root:
+# Build the images first, from the repository root, with Multica checked out
+# next to it (../multica):
 #
-#   docker build -f sandbox-manager/deploy/Dockerfile.manager -t multica-sandbox-manager:smoke .
-#   docker build -f sandbox-manager/deploy/Dockerfile.pool --target fake -t multica-sandbox-pool:smoke-fake .
+#   docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:smoke .
+#   docker build -f deploy/Dockerfile.pool --build-context multica=../multica \
+#     --target fake -t multica-sandbox-pool:smoke-fake .
 #
-# Then: sandbox-manager/deploy/pool/compose/smoke/smoke.sh. Settings: see lib.sh.
+# Then: deploy/pool/compose/smoke/smoke.sh. Settings: see lib.sh.
 set -euo pipefail
 
 export SMOKE_PROJECT=${SMOKE_PROJECT:-pool-smoke}

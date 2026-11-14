@@ -19,7 +19,7 @@ or LLM credentials; agents bring them in their custom environment in Multica.
 The manager image is `multica-sandbox-manager` (`../../Dockerfile.manager`);
 the sandbox pod image and its Deployment are in `sandbox/`.
 
-Offline check (no cluster): `kubectl kustomize sandbox-manager/deploy/pool/k8s`.
+Offline check (no cluster): `kubectl kustomize deploy/pool/k8s`.
 
 ## Manual smoke checklist (real cluster)
 

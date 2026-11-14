@@ -5,7 +5,7 @@
 # A pod is one container: pod-supervisor is PID 1 and runs the Multica daemon,
 # which starts the agent CLIs itself, all as one non-root user. The only
 # writable area is the home volume, which holds every per-task location; a
-# reset clears it (see "The pod" in sandbox-manager/deploy/SANDBOX.md).
+# reset clears it (see "The pod" in deploy/SANDBOX.md).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,7 +50,7 @@ spec:
             - name: POD_POLL_INTERVAL
               value: 2s
           securityContext:
-            # No root and no capability (sandbox-manager/deploy/SANDBOX.md).
+            # No root and no capability (deploy/SANDBOX.md).
             runAsUser: 1001
             runAsGroup: 2000
             runAsNonRoot: true

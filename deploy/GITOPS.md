@@ -10,8 +10,8 @@ same.
 
 | Piece | Image | Built from | Manifests |
 |---|---|---|---|
-| Sandbox manager | `multica-sandbox-manager` | `sandbox-manager/deploy/Dockerfile.manager` | `sandbox-manager/deploy/pool/k8s/manager.yaml` |
-| Sandbox pods | `multica-sandbox-pool` | `sandbox-manager/deploy/Dockerfile.pool` | `sandbox-manager/deploy/pool/k8s/sandbox/pool.yaml` |
+| Sandbox manager | `multica-sandbox-manager` | `deploy/Dockerfile.manager` | `deploy/pool/k8s/manager.yaml` |
+| Sandbox pods | `multica-sandbox-pool` | `deploy/Dockerfile.pool` | `deploy/pool/k8s/sandbox/pool.yaml` |
 
 `namespace.yaml` and `networkpolicy.yaml` sit next to the manager's manifests.
 Build both images from the same commit.
@@ -89,9 +89,11 @@ pool: { name: <build agents> }
 variables:
   tag: $(Build.SourceVersion)
 steps:
+  - checkout: self
+  - checkout: multica  # Multica at the daemon's version (slim/v0.6.4), checked out next to this repo
   - script: |
-      docker build -f sandbox-manager/deploy/Dockerfile.manager -t $(registry)/multica/sandbox-manager:$(tag) .
-      docker build -f sandbox-manager/deploy/Dockerfile.pool \
+      docker build -f deploy/Dockerfile.manager -t $(registry)/multica/sandbox-manager:$(tag) .
+      docker build -f deploy/Dockerfile.pool --build-context multica=../multica \
         --build-arg VERSION=$(tag) --build-arg COMMIT=$(tag) \
         --build-arg MANAGER_URL=http://sandbox-manager.multica-sandbox.svc.cluster.local:8080 \
         --build-arg PACKAGE_MIRROR_URL=$(mirrorUrl) \

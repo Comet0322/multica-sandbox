@@ -5,7 +5,7 @@
 #   admin listener   127.0.0.1:8791  read-only /v1/inventory and /v1/leases. It
 #     binds to loopback inside the pod, so nothing on the network (pods
 #     included) can reach it; admins use `kubectl port-forward`.
-# Settings are the sandbox-manager pool settings (sandbox-manager/deploy/POOL.md).
+# Settings are the sandbox-manager pool settings (deploy/POOL.md).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -70,7 +70,7 @@ spec:
           # even when it is not ready, so this is a signal for alerting and
           # `kubectl get pods`, never a cut of the pods' traffic. There is no
           # liveness probe on purpose: a manager restart fails every running
-          # task (sandbox-manager/deploy/POOL.md, known limits).
+          # task (deploy/POOL.md, known limits).
           resources:
             requests: {cpu: 100m, memory: 128Mi}
             limits: {cpu: "1", memory: 512Mi}

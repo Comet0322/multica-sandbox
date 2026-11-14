@@ -1,12 +1,12 @@
 # Build from the repository root:
-#   docker build -f sandbox-manager/deploy/Dockerfile.manager -t multica-sandbox-manager:<tag> .
+#   docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:<tag> .
 ARG GO_IMAGE=golang:1.27.3-alpine
 
 FROM ${GO_IMAGE} AS builder
 WORKDIR /src/sandbox-manager
-COPY sandbox-manager/go.mod sandbox-manager/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
-COPY sandbox-manager/ ./
+COPY . ./
 RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/sandbox-manager ./cmd/sandbox-manager
 
 FROM alpine:3.21

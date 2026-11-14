@@ -20,7 +20,7 @@
 #                        running past it and the drain grace is failed
 #
 # Images as for smoke.sh; settings in lib.sh. Run:
-#   sandbox-manager/deploy/pool/compose/smoke/scenarios.sh
+#   deploy/pool/compose/smoke/scenarios.sh
 set -euo pipefail
 
 export SMOKE_PROJECT=${SMOKE_PROJECT:-pool-scenarios}

@@ -1,10 +1,11 @@
-# Takes precedence over the root .dockerignore. The pod image builds the stock
-# daemon from Multica's server/ and the supervisor and pod files from
-# sandbox-manager/.
+# The pod image needs the Go module and the pod files. Multica's sources come
+# from the "multica" build context, filtered by that checkout's own
+# .dockerignore.
 *
-!server/
-!sandbox-manager/
-server/bin
-server/tmp
-sandbox-manager/.scratch
-sandbox-manager/docs
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!deploy/pool/
+!deploy/home/
+!deploy/fake/

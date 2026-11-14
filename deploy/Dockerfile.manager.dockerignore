@@ -1,7 +1,6 @@
-# Takes precedence over the root .dockerignore. The manager builds from its
-# own module only.
+# The manager image needs the Go module only.
 *
-!sandbox-manager/
-sandbox-manager/.scratch
-sandbox-manager/docs
-sandbox-manager/deploy
+!go.mod
+!go.sum
+!cmd/
+!internal/
