@@ -57,7 +57,7 @@ The module that owns the pods themselves. Callers use it through Create, Delete,
 _Avoid_: Pod manager, provider, runtime, executor
 
 **Pod template**:
-_(ADR 0009)_ The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, labels, annotations, restart policy and pod token.
+_(ADR 0009)_ The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, labels, annotations, restart policy and pod token, and a neutral hostname (`sandbox`) when the template sets none.
 _Avoid_: Pod spec (for the file), manifest
 
 **Acquire**:

@@ -9,8 +9,31 @@ ADR 0009 runs everything in a single namespace:
 | --- | --- |
 | `multica/` | Multica v0.6.4 with no namespace in the manifests. Apply it with `kubectl apply -k deploy/k8s/multica -n <namespace>` after creating the `multica-backend` Secret and ConfigMap (see below). |
 | `dev/` | A local kind cluster that stands in for the company's namespace. |
+| `pod.yaml` | The example pod template (`SANDBOX_POD_TEMPLATE`): `tini` and the stock daemon, requests and limits, a liveness probe on the daemon's health endpoint, the fixed hostname `sandbox`, and no secret in the environment but the pod token the manager sets. It passes Pod Security `restricted`. Set its image and manager address. |
+| `rbac.yaml` | The manager's own service account, with a Role that may only `create`, `delete`, `get`, `list` and `watch` pods, and its RoleBinding: for when the manager stops using the operator's kubeconfig. |
 
-The manager and the pod template are added here by `.scratch/k8s-executor` issues 02 and 03.
+The manager's Deployment is added here by a later `.scratch/k8s-executor` issue.
+
+## The pod
+
+The image is the `agents` target of `deploy/Dockerfile.pool`. A pod the manager creates runs `tini -- multica-pod-entrypoint-kube` (`deploy/pool/entrypoint-kube.sh`), which writes the daemon's config from `SANDBOX_POD_TOKEN` and `SANDBOX_MANAGER_URL`, sets the private umask and the daemon's home on the pod's volume, and execs the stock daemon. The template's `securityContext` keeps the root filesystem read-only. A pod is never reset; it is deleted after its task.
+
+Without `spec.hostname` the pod's hostname is its name, which agents print into what reaches Multica. The template sets `sandbox`, and the manager sets the same when a template has none.
+
+Memory measured on the `agents` image (cgroup `memory.current` and `memory.peak`, 2026-11-16), with no model reachable, so each task only started and retried its API calls:
+- an idle pod (`tini` and the daemon): about 10 MiB, with a peak of 90 MiB while the daemon probes the agent CLIs at start;
+- a pod running a Claude Code 2.1.325 task in the kind namespace: a peak of about 145 MiB (the CLI's RSS about 200 MiB);
+- opencode 1.19.5 starting a task, in a plain container: a peak of about 1.2 GiB.
+
+A real task's peak, with a model and the work it builds or runs, is not measured yet.
+
+## The manager's own service account
+
+```bash
+kubectl apply -f deploy/k8s/rbac.yaml -n <namespace>
+```
+
+Creating a service account and a Role takes rights the operator may not have; then ask the cluster's administrators to apply it, or check it with `kubectl apply --dry-run=server`. Run the manager with `serviceAccountName: sandbox-manager`, `automountServiceAccountToken: true` and no `KUBECONFIG`.
 
 ## Local namespace
 
