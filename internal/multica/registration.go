@@ -174,3 +174,25 @@ func CheckMachineName(name string) error {
 	}
 	return nil
 }
+
+// Machine is how the runtimes of one runtime kind appear in Multica's
+// runtime list: each kind's runtimes are a machine of their own.
+type Machine struct {
+	// Name is the title; each runtime is named "<agent CLI> (Name)", as the
+	// stock daemon names its runtimes after its host.
+	Name string
+	// DeviceName is shown under the title (the registration's device_name);
+	// empty shows Name.
+	DeviceName string
+}
+
+// Check refuses names the runtime list would misread (see
+// CheckMachineName).
+func (m Machine) Check() error {
+	for _, name := range []string{m.Name, m.DeviceName} {
+		if err := CheckMachineName(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}

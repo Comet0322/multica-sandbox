@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 
 	"k8s.io/client-go/kubernetes/fake"
 )
@@ -190,7 +191,7 @@ func (m *syncMultica) modes(workspaceID string) []string {
 func newSyncHarness(t *testing.T, up *syncMultica, mutate ...func(*manager.Config)) *harness {
 	t.Helper()
 	cfg := manager.Config{
-		MulticaURL: up.URL, PAT: patPool, Name: "Pool",
+		MulticaURL: up.URL, PAT: patPool, Pool: multica.Machine{Name: "Pool"},
 		UpstreamBackoff: time.Minute,
 		DrainTimeout:    time.Minute, DrainPoll: 5 * time.Millisecond,
 	}

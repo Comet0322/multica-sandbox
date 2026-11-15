@@ -45,10 +45,6 @@ type Config struct {
 	Now func() time.Time
 	// Client is the bot account on the Multica server.
 	Client *multica.Client
-	// Name is the machine name members see in the runtime list.
-	Name string
-	// DeviceName is shown under the machine name; empty shows Name.
-	DeviceName string
 	// Providers limits which agent CLIs a pod reports become upstream
 	// runtimes. Empty exposes every reported provider.
 	Providers []string
@@ -56,8 +52,9 @@ type Config struct {
 	// "private".
 	RuntimeVisibility string
 	// Runtimes are the runtime kinds registered in every workspace, each
-	// under its own daemon_id (see DaemonIDSuffix), name and device name.
-	// Empty registers the pool kind alone, under Name and DeviceName.
+	// under its own daemon_id (see DaemonIDSuffix) and machine. The pool
+	// kind's machine name, else the first kind's, is a workspace's default
+	// runtime name. Empty registers the pool kind alone, under no name.
 	Runtimes []RuntimeSet
 	// Quota is the default of every workspace.
 	Quota int
@@ -79,11 +76,9 @@ type Config struct {
 // workspace.
 type RuntimeSet struct {
 	Kind policy.Kind
-	// Name is the machine name members see for these runtimes. For the pool
+	// Machine is how these runtimes appear in the runtime list. For the pool
 	// kind a workspace's own runtime name, when it has one, comes first.
-	Name string
-	// DeviceName is shown under the machine name; empty shows Name.
-	DeviceName string
+	multica.Machine
 }
 
 // DaemonIDSuffix follows the manager's identity in the daemon_id of a
@@ -168,13 +163,24 @@ func New(cfg Config) *Source {
 		cfg.HeartbeatInterval = DefaultHeartbeatInterval
 	}
 	if len(cfg.Runtimes) == 0 {
-		cfg.Runtimes = []RuntimeSet{{Kind: policy.KindPool, Name: cfg.Name, DeviceName: cfg.DeviceName}}
+		cfg.Runtimes = []RuntimeSet{{Kind: policy.KindPool}}
 	}
 	models := multica.NewModelCatalog(cfg.Now, 0)
 	for provider, report := range cfg.Models {
 		models.Pin(provider, report)
 	}
 	return &Source{cfg: cfg, log: cfg.Log, up: cfg.Client, ws: newWorkspaceSet(cfg.Log), models: models}
+}
+
+// defaultName is a workspace's runtime name when it sets none: the pool
+// kind's machine name, else the first kind's.
+func (s *Source) defaultName() string {
+	for _, set := range s.cfg.Runtimes {
+		if set.Kind == policy.KindPool {
+			return set.Name
+		}
+	}
+	return s.cfg.Runtimes[0].Name
 }
 
 // Connect gives the source the core and the pod side.
@@ -206,7 +212,7 @@ func (s *Source) listWorkspaces(ctx context.Context) ([]WorkspaceConfig, error) 
 	}
 	out := make([]WorkspaceConfig, 0, len(listed))
 	for _, w := range listed {
-		out = append(out, WorkspaceConfig{WorkspaceID: w.ID, Slug: w.Slug, RuntimeName: s.cfg.Name})
+		out = append(out, WorkspaceConfig{WorkspaceID: w.ID, Slug: w.Slug, RuntimeName: s.defaultName()})
 	}
 	return out, nil
 }
@@ -301,7 +307,7 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 	next := slices.Clone(workspaces)
 	seen := map[string]bool{}
 	for i := range next {
-		if err := next[i].normalize(s.cfg.Name); err != nil {
+		if err := next[i].normalize(s.defaultName()); err != nil {
 			return ReloadResult{}, err
 		}
 		if seen[next[i].WorkspaceID] {

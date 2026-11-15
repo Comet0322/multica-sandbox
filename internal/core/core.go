@@ -102,9 +102,7 @@ func New(cfg Config) (*Core, error) {
 	if cfg.DispatchInterval == 0 {
 		cfg.DispatchInterval = DefaultDispatchInterval
 	}
-	if len(cfg.Kinds) == 0 {
-		cfg.Kinds = []policy.Kind{policy.KindPool}
-	}
+	cfg.Kinds = policy.KindsOrPool(cfg.Kinds)
 	if cfg.LeaseMax == 0 {
 		cfg.LeaseMax = DefaultLeaseMax
 	}

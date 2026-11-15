@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -111,19 +112,95 @@ func TestKubeRecordsWhatAPodServesOnThePod(t *testing.T) {
 	}
 }
 
-func TestKubeShowsRefusedRecords(t *testing.T) {
-	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1})
+// Without records a restart fails every running task, so a refused record
+// halts the service, as refused credentials do: the refusal shows, no pod is
+// given out and Halted says why, until a record is written again.
+func TestKubeHaltsWhileRecordsAreRefused(t *testing.T) {
+	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 2, MaxPods: 2})
+	var mu sync.Mutex
+	refuse := false
+	h.client.PrependReactor("patch", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !refuse {
+			return false, nil, nil
+		}
+		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no patch"))
+	})
+	h.run()
+	h.eventually("two warm pods", func() bool { return len(h.pods()) == 2 })
+	h.ready()
+	id, err := h.svc.Create(context.Background())
+	if err != nil {
+		t.Fatalf("Create before any refusal: %v", err)
+	}
+	mu.Lock()
+	refuse = true
+	mu.Unlock()
+	h.svc.Record(id, sandbox.PodRecord{Phase: "running", Tenant: "ws-1", Kind: "pool", Task: "task-1", TaskStarted: h.clock.Now()})
+	h.eventually("the refusal shown", func() bool {
+		p := h.svc.Inventory().Problem
+		return contains(p, "refused") && contains(p, "record")
+	})
+	if why := h.svc.Halted(); !contains(why, "refused") {
+		t.Fatalf("Halted = %q, want the refusal", why)
+	}
+	if _, err := h.svc.Create(context.Background()); !errors.Is(err, sandbox.ErrNoCapacity) || !contains(err.Error(), "refused") {
+		t.Fatalf("Create = %v, want ErrNoCapacity naming the refusal", err)
+	}
+
+	mu.Lock()
+	refuse = false
+	mu.Unlock()
+	h.eventually("the record written once allowed", func() bool {
+		pd, _ := h.pod(string(id))
+		return pd.Annotations[sandbox.TaskAnnotation] == "task-1"
+	})
+	if why := h.svc.Halted(); why != "" {
+		t.Fatalf("Halted = %q after the record was written", why)
+	}
+	if _, err := h.svc.Create(context.Background()); err != nil {
+		t.Fatalf("Create after the record was written: %v", err)
+	}
+}
+
+// A refusal found on start halts the service even with no pod to record on.
+func TestKubeRestoreWithoutTheRightToRecordHalts(t *testing.T) {
+	h := newRestoreHarness(t, sandbox.KubeConfig{MaxPods: 2})
 	h.client.PrependReactor("patch", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no patch"))
+	})
+	if _, err := h.svc.Restore(context.Background()); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if why := h.svc.Halted(); !contains(why, "patch") {
+		t.Fatalf("Halted = %q, want the missing right named", why)
+	}
+}
+
+// A record that could not be written is written again until it is: a
+// restart must find what a pod serves.
+func TestKubeWritesARecordAgainUntilItIsWritten(t *testing.T) {
+	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1})
+	var mu sync.Mutex
+	failures := 3
+	h.client.PrependReactor("patch", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if failures == 0 {
+			return false, nil, nil
+		}
+		failures--
+		return true, nil, apierrors.NewServiceUnavailable("try later")
 	})
 	h.run()
 	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
 	h.ready()
 	id, _ := h.svc.Create(context.Background())
 	h.svc.Record(id, sandbox.PodRecord{Phase: "running", Tenant: "ws-1", Kind: "pool", Task: "task-1", TaskStarted: h.clock.Now()})
-	h.eventually("the refusal shown", func() bool {
-		p := h.svc.Inventory().Problem
-		return p != "" && contains(p, "refused") && contains(p, "record")
+	h.eventually("the record written after the failures", func() bool {
+		pd, _ := h.pod(string(id))
+		return pd.Annotations[sandbox.TaskAnnotation] == "task-1"
 	})
 }
 
@@ -136,6 +213,7 @@ func TestKubeRebuildsFromThePodsItFinds(t *testing.T) {
 	idle := leftPod("sandbox-idle", "mpt_idle", map[string]string{sandbox.WorkspaceLabel: "ws-2", sandbox.KindLabel: "pool"},
 		map[string]string{sandbox.PhaseAnnotation: "idle", sandbox.SinceAnnotation: at(40)})
 	warm := leftPod("sandbox-warm", "mpt_warm", nil, nil)
+	warm.Status.Phase = corev1.PodPending
 	noToken := leftPod("sandbox-notoken", "", nil, nil)
 	garbled := leftPod("sandbox-garbled", "mpt_garbled", map[string]string{sandbox.WorkspaceLabel: "ws-1"},
 		map[string]string{sandbox.PhaseAnnotation: "dancing"})
@@ -192,6 +270,46 @@ func TestKubeRebuildsFromThePodsItFinds(t *testing.T) {
 	}
 	if id, err := h.svc.Create(context.Background()); err != nil || id != "sandbox-warm" {
 		t.Fatalf("Create = %q, %v; want the kept warm pod", id, err)
+	}
+}
+
+// A pod with no record may have been given a task whose record was never
+// written: only a pod whose containers never started is surely warm. Every
+// other unrecorded pod is deleted, so it never serves another key while it
+// still runs the old task.
+func TestKubeRestoreDeletesUnrecordedPodsThatMayRunATask(t *testing.T) {
+	started := leftPod("sandbox-started", "mpt_started", nil, nil)
+	started.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "daemon", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	pendingButStarted := leftPod("sandbox-sidecar-wait", "mpt_sidecar", nil, nil)
+	pendingButStarted.Status.Phase = corev1.PodPending
+	pendingButStarted.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "daemon", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	fresh := leftPod("sandbox-fresh", "mpt_fresh", nil, nil)
+	fresh.Status.Phase = corev1.PodPending
+	fresh.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "daemon", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}},
+	}}
+	h := newRestoreHarness(t, sandbox.KubeConfig{MaxPods: 3}, started, pendingButStarted, fresh)
+	got, err := h.svc.Restore(context.Background())
+	if err != nil || len(got) != 0 {
+		t.Fatalf("Restore = %v, %v; want nothing serving anyone", got, err)
+	}
+	for _, name := range []string{"sandbox-started", "sandbox-sidecar-wait"} {
+		if _, ok := h.pod(name); ok {
+			t.Errorf("unrecorded pod %s that may run a task was kept", name)
+		}
+	}
+	if _, ok := h.pod("sandbox-fresh"); !ok {
+		t.Fatal("the pod that never started was deleted")
+	}
+	if _, ok := h.svc.Authenticate("mpt_started"); ok {
+		t.Error("the deleted pod's token is still accepted")
+	}
+	if id, ok := h.svc.Authenticate("mpt_fresh"); !ok || id != "sandbox-fresh" {
+		t.Fatalf("the fresh pod's token = %q, %v", id, ok)
 	}
 }
 

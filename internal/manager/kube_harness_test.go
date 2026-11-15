@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -49,7 +50,7 @@ func podTemplate() *corev1.Pod {
 // side. Its stop ends it.
 func (w *kubeWorld) manager(warm, maxPods int, opts ...func(*manager.Config)) *harness {
 	w.t.Helper()
-	cfg := manager.Config{MulticaURL: w.upstream.URL, PAT: harnessPAT, Name: "Test Pool"}
+	cfg := manager.Config{MulticaURL: w.upstream.URL, PAT: harnessPAT, Pool: multica.Machine{Name: "Test Pool"}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}

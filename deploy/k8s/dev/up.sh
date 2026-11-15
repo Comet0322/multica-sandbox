@@ -33,7 +33,7 @@ for img in ghcr.io/multica-ai/multica-backend:v0.6.4 ghcr.io/multica-ai/multica-
 done
 
 k create namespace "$ns" --dry-run=client -o yaml | k apply -f -
-# The company's namespace policy is not known yet; baseline is enforced and
+# Your namespace's policy is not known here; baseline is enforced and
 # restricted only warned about.
 k label namespace "$ns" --overwrite \
 	pod-security.kubernetes.io/enforce=baseline \

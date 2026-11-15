@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// The manager handles no git or LLM credentials (ADR 0002): an agent's custom
+// The manager handles no git or LLM credentials: an agent's custom
 // environment is how it reaches an LLM and a git host, so the pod must receive
 // it exactly as the server sent it.
 func TestAgentCustomEnvReachesThePodUnchanged(t *testing.T) {

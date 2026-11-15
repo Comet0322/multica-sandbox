@@ -1,7 +1,7 @@
 // Package daemonwire holds the daemon protocol types the manager exchanges
 // with Multica and with the pods' stock daemons. They are our own copy of the
-// fields we use from Multica's server/pkg/protocol at v0.6.4, the version the
-// company server runs, so that this module does not depend on Multica's; the
+// fields we use from Multica's server/pkg/protocol at v0.6.4, the version
+// this module is pinned to, so that it does not depend on Multica's; the
 // golden fixtures in testdata pin the wire format.
 package daemonwire
 

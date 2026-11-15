@@ -27,7 +27,7 @@ func TestAPoolPodIsIdleWhenItsHoldRunsOut(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 	if inv := h.inventory(); inv.Idle != 1 || inv.Held != 0 {
-		t.Fatalf("a pool pod whose hold ran out should be idle: %+v", inv)
+		t.Fatalf("a pool runtime pod whose hold ran out should be idle: %+v", inv)
 	}
 	// Another key of the workspace takes it.
 	h.upstream.enqueueIn("t2", "issue-2", "")

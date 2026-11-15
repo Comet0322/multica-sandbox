@@ -41,7 +41,7 @@ const (
 	// DefaultHoldTimeout is the hold timeout the command line applies when
 	// none is configured.
 	DefaultHoldTimeout = 10 * time.Minute
-	// DefaultPodMaxIdle is how long an idle pool pod is kept when none is
+	// DefaultPodMaxIdle is how long an idle pool runtime pod is kept when none is
 	// configured.
 	DefaultPodMaxIdle = 24 * time.Hour
 )
@@ -88,7 +88,7 @@ const (
 type Config struct {
 	MulticaURL string
 	// Kube configures the sandbox service, which creates the pods through
-	// the Kubernetes API from a pod template (ADR 0009). Its Notify, Audit,
+	// the Kubernetes API from a pod template. Its Notify, Audit,
 	// Log and Now are the manager's. It is required unless the pod side is
 	// simulated.
 	Kube *sandbox.KubeConfig
@@ -113,13 +113,12 @@ type Config struct {
 	// workspace. Empty derives it from MulticaURL and the PAT's account,
 	// which keeps it stable across restarts.
 	DaemonID string
-	// Name is the machine name Multica's runtime list shows as the title;
-	// each runtime is named "<agent CLI> (Name)", as the stock daemon names
-	// its runtimes after its host.
-	Name string
-	// DeviceName is shown under the title (the registration's device_name).
-	// Empty means Name.
-	DeviceName string
+	// Pool is how the pool runtimes appear in Multica's runtime list. An
+	// empty Name means "Managed Sandbox", an empty DeviceName the Name.
+	Pool multica.Machine
+	// Clean is how the clean runtimes appear. An empty Name means Pool's
+	// followed by " Clean", an empty DeviceName the Name.
+	Clean multica.Machine
 	// UpstreamBackoff is how long a workspace is skipped after its upstream
 	// failed a claim. Zero means DefaultUpstreamBackoff.
 	UpstreamBackoff time.Duration
@@ -137,11 +136,7 @@ type Config struct {
 	// pool kind's daemon_id is DaemonID, another kind's DaemonID followed
 	// by "-<kind>".
 	Runtimes []policy.Kind
-	// CleanName and CleanDeviceName are Name and DeviceName for the clean
-	// runtimes. Empty means Name followed by " Clean", and CleanName.
-	CleanName       string
-	CleanDeviceName string
-	// PodMaxIdle is how long an idle pool pod is kept before it is deleted.
+	// PodMaxIdle is how long an idle pool runtime pod is kept before it is deleted.
 	// Zero means DefaultPodMaxIdle.
 	PodMaxIdle time.Duration
 	// DispatchInterval is the dispatch tick, the only place tasks are claimed:
@@ -204,26 +199,21 @@ func (c *Config) normalize() error {
 	if c.PodMaxIdle == 0 {
 		c.PodMaxIdle = DefaultPodMaxIdle
 	}
-	if c.Name == "" {
-		c.Name = "Managed Sandbox"
+	if c.Pool.Name == "" {
+		c.Pool.Name = "Managed Sandbox"
 	}
-	if c.DeviceName == "" {
-		c.DeviceName = c.Name
+	if c.Clean.Name == "" {
+		c.Clean.Name = c.Pool.Name + " Clean"
 	}
-	if c.CleanName == "" {
-		c.CleanName = c.Name + " Clean"
-	}
-	if c.CleanDeviceName == "" {
-		c.CleanDeviceName = c.CleanName
-	}
-	for _, name := range []string{c.Name, c.DeviceName, c.CleanName, c.CleanDeviceName} {
-		if err := multica.CheckMachineName(name); err != nil {
+	for _, m := range []*multica.Machine{&c.Pool, &c.Clean} {
+		if m.DeviceName == "" {
+			m.DeviceName = m.Name
+		}
+		if err := m.Check(); err != nil {
 			return fmt.Errorf("machine and device name: %w", err)
 		}
 	}
-	if len(c.Runtimes) == 0 {
-		c.Runtimes = []policy.Kind{policy.KindPool}
-	}
+	c.Runtimes = policy.KindsOrPool(c.Runtimes)
 	seen := map[policy.Kind]bool{}
 	for _, k := range c.Runtimes {
 		if k != policy.KindPool && k != policy.KindClean {
@@ -369,14 +359,14 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	client := multica.NewClient(cfg.MulticaURL, cfg.PAT, cfg.DaemonID, log)
 	var sets []tasksource.RuntimeSet
 	for _, k := range cfg.Runtimes {
-		set := tasksource.RuntimeSet{Kind: k, Name: cfg.Name, DeviceName: cfg.DeviceName}
+		set := tasksource.RuntimeSet{Kind: k, Machine: cfg.Pool}
 		if k == policy.KindClean {
-			set.Name, set.DeviceName = cfg.CleanName, cfg.CleanDeviceName
+			set.Machine = cfg.Clean
 		}
 		sets = append(sets, set)
 	}
 	src := tasksource.New(tasksource.Config{
-		Log: log, Now: m.clock.Now, Client: client, Name: cfg.Name, DeviceName: cfg.DeviceName, Providers: cfg.Providers, Runtimes: sets,
+		Log: log, Now: m.clock.Now, Client: client, Providers: cfg.Providers, Runtimes: sets,
 		RuntimeVisibility: cfg.RuntimeVisibility, Quota: cfg.Quota,
 		SyncInterval: cfg.SyncInterval, HeartbeatInterval: cfg.HeartbeatInterval, ReadOverrides: cfg.ReadOverrides,
 		Models: cfg.Models,

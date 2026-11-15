@@ -160,7 +160,7 @@ kubectl apply -f deploy/k8s/manager.yaml -n <namespace>
 ```
 
 The manager's own pod must not carry the label
-`app.kubernetes.io/managed-by=sandbox-manager`, which marks its sandbox pods.
+`app.kubernetes.io/managed-by=sandbox-manager`, which marks its pods.
 
 The manager can also run outside the cluster (as `deploy/k8s/dev/manager.sh`
 does) with `KUBECONFIG` set, as long as the pods can reach its pod listener at
@@ -207,7 +207,7 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `SANDBOX_WARM_PODS` | `2` | Ready pods kept that have served no one. At least `1`, since the manager learns each workspace's runtimes from a pod's daemon (`0` is refused), and at most `SANDBOX_MAX_PODS`. |
 | `SANDBOX_POD_START_TIMEOUT` | `3m` | How long a new pod may take until its daemon calls the manager. Past it the pod is deleted, and pod creation backs off (10s, doubling up to 5m). Nothing was claimed for it, so no task fails. |
 | `SANDBOX_HOLD_TIMEOUT` | `10m` | How long a pod whose task ended is held for the task's key. `0` holds nothing. Overridable per workspace. |
-| `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool pod is kept before it is deleted. |
+| `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool runtime pod is kept before it is deleted. |
 | `SANDBOX_POOL_QUOTA` | `0` | The most pods one workspace's running tasks may occupy at once; `0` is no cap. Overridable per workspace. |
 | `SANDBOX_WORKSPACE_OVERRIDES_FILE` | none | Absolute path of the [per-workspace overrides](#per-workspace-overrides) file, read again on every sync. |
 
@@ -230,7 +230,7 @@ passes to the agent unchanged.
 These belonged to the pool of pods that were started outside the manager and
 reset between tasks, before pods were created through the Kubernetes API.
 Each one still set is ignored, with a warning at start
-(`<NAME> is no longer used (ADR 0009) and is ignored`):
+(`<NAME> is no longer used and is ignored`):
 
 | Variable | What it was |
 | --- | --- |
@@ -258,23 +258,23 @@ no key and is never held. A pod runs one task at a time and never serves
 another department (workspace).
 
 - **Pool runtime.** A task takes its key's held pod, else an idle pod of its
-  department, else a warm pod, else a new pod. Pool pods are shared within a
+  department, else a warm pod, else a new pod. Pool runtime pods are shared within a
   department: once a pod's hold ended, a task of another key, even another
   person's, may land on it and sees what earlier tasks left there.
 - **Clean runtime.** A task takes its key's held pod, else a warm pod, else a
   new pod. A clean pod never serves another key.
 
 When a task ends, its pod is held for the task's key for the hold timeout;
-without a key, a pool pod becomes idle at once and a clean pod is deleted.
-When a hold ends, a pool pod becomes idle and a clean pod is deleted. An idle
-pool pod is deleted after `SANDBOX_POD_MAX_IDLE`.
+without a key, a pool runtime pod becomes idle at once and a clean pod is deleted.
+When a hold ends, a pool runtime pod becomes idle and a clean pod is deleted. An idle
+pool runtime pod is deleted after `SANDBOX_POD_MAX_IDLE`.
 
 A **hold** is kept as long as possible but never guaranteed: when the budget is
-full and a pod is needed, the manager deletes an idle pool pod first, then a
-held pool pod, then a held clean pod, from the department furthest over its
+full and a pod is needed, the manager deletes an idle pool runtime pod first, then a
+held pool runtime pod, then a held clean pod, from the department furthest over its
 share, and never one within another department's guarantee. A handoff across
 pods (agent A hands an issue to agent B, and B lands on another pod) sees only
-what A pushed, through the company's git MCP for example; anything A left
+what A pushed, through a git MCP server for example; anything A left
 unpushed stays on A's pod.
 
 A **warm pod** is new and ready and belongs to no department or kind until its
@@ -297,7 +297,8 @@ reason in words, and the pod is deleted:
 | --- | --- |
 | The pod's container ran out of memory | `the pod ran out of memory (limit <limit>)` |
 | The node evicted the pod | `the node evicted the pod: <message>` |
-| The daemon's container exited (a failing liveness probe ends this way) | `the pod's <container> container exited with code <code> (<reason>)` |
+| The daemon stopped answering: its liveness probe failed and the container was killed (exit code 137, not out of memory) | `the pod's daemon stopped answering (its liveness probe failed)` |
+| A container exited | `the pod's <container> container exited with code <code> (<reason>)` |
 | The pod was deleted outside the manager | `the pod was deleted` |
 
 The task fails as `the pod running this task was lost: <reason>`. A pod that
@@ -330,15 +331,21 @@ on a pod. When the manager starts it lists the pods labelled
   as before (it registers again on its next heartbeat);
 - a hold resumes with its remaining time, and an idle pod ages on from when it
   became idle;
-- a warm pod is kept and is ready again once its daemon calls in;
+- a pod with no record whose containers never started is kept as warm and is
+  ready once its daemon calls in;
+- any other pod with no record is deleted: a task may have been placed on it
+  just before the previous run stopped, before its record was written, and
+  kept as warm it could serve another key while still running that task;
 - a pod it cannot interpret (no pod token, a garbled record) is deleted;
 - a task placed on a pod that had not taken it up, and a task Multica shows
   dispatched to the manager that no pod has, are failed, so Multica retries
   them.
 
-Without the right to patch pods, nothing is recorded: the dispatch page shows
-the refusal, and a restarted manager deletes every pod it finds, failing the
-tasks that ran on them.
+A record that cannot be written is tried again, with a growing wait, until it
+is. When Kubernetes refuses to patch pods, the manager stops claiming until a
+record is written again, and the dispatch page shows the refusal: without
+records a restart would fail every running task. A restarted manager without
+the right to patch deletes every pod it finds.
 
 ## Pod API authorization
 
@@ -524,7 +531,7 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
   tasks that ran on them are failed upstream (Multica retries those eligible).
 - **Memory is per pod.** The pod template's limits bound each task; a task
   over them fails with the out-of-memory reason, and only that task.
-- **Pool pods are shared within a department.** Work that must not be seen by
+- **Pool runtime pods are shared within a department.** Work that must not be seen by
   another key of the department uses an agent bound to a clean runtime.
 - **Accepting an invitation opens the manager to that workspace.** The manager
   serves every workspace its account belongs to, and its runtimes are `public`
@@ -551,7 +558,7 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
 
 ## Local kind namespace
 
-`deploy/k8s/dev` stands in for the company's namespace on a workstation:
+`deploy/k8s/dev` stands in for your namespace on a workstation:
 
 ```bash
 deploy/k8s/dev/up.sh

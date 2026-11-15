@@ -13,7 +13,7 @@
 # Run exactly one manager per namespace (replicas 1, strategy Recreate): two
 # would act on the same pods. Never give the manager's own pod the label
 # app.kubernetes.io/managed-by=sandbox-manager; the manager treats every pod
-# carrying it as one of its sandbox pods.
+# carrying it as one of its own pods.
 apiVersion: v1
 kind: Service
 metadata:

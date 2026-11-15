@@ -35,7 +35,7 @@ func TestPoolPlacement(t *testing.T) {
 			}, runs(2, "p2", poolTask("a2", "A", "issue:2"), "p2")),
 		},
 		{
-			name:  "once its hold expired, a pool pod is idle and takes another key of its tenant before a warm pod",
+			name:  "once its hold expired, a pool runtime pod is idle and takes another key of its tenant before a warm pod",
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", "issue:1"), "p1"), []step{
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
@@ -52,7 +52,7 @@ func TestPoolPlacement(t *testing.T) {
 			}, runs(2, "p2", poolTask("b1", "B", "issue:2"), "p2")),
 		},
 		{
-			name:  "a task with no key is never held: its pool pod is idle at once",
+			name:  "a task with no key is never held: its pool runtime pod is idle at once",
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
@@ -60,7 +60,7 @@ func TestPoolPlacement(t *testing.T) {
 			}),
 		},
 		{
-			name:  "with hold timeout zero a pool pod is idle at once",
+			name:  "with hold timeout zero a pool runtime pod is idle at once",
 			cfg:   func(c *policy.Config) { c.HoldTimeout = 0 },
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", "issue:1"), "p1"), []step{
@@ -127,7 +127,7 @@ func TestCleanPlacement(t *testing.T) {
 			}),
 		},
 		{
-			name:  "a clean task never takes an idle pool pod",
+			name:  "a clean task never takes an idle pool runtime pod",
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},

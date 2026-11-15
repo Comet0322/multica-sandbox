@@ -1,6 +1,6 @@
 # Managed Sandbox
 
-Runs Multica agent tasks in company-run execution environments, so members get a cloud runtime without a machine of their own.
+Runs Multica agent tasks in centrally run execution environments, so members get a cloud runtime without a machine of their own.
 
 ## Language
 

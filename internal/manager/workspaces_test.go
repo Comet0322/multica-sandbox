@@ -276,7 +276,7 @@ func newMultiHarness(t *testing.T, up *multiMultica, workspaces []manager.Worksp
 // with its own settings, as a Sync that found them would.
 func newBotHarness(t *testing.T, up *multiMultica, workspaces []manager.WorkspaceConfig, cfg manager.Config) *harness {
 	t.Helper()
-	cfg.MulticaURL, cfg.PAT, cfg.Name = up.URL, patPool, "Shared Pool"
+	cfg.MulticaURL, cfg.PAT, cfg.Pool.Name = up.URL, patPool, "Shared Pool"
 	if len(cfg.Runtimes) == 0 {
 		clean(&cfg)
 	}

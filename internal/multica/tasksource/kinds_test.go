@@ -58,7 +58,7 @@ func newKindsSource(t *testing.T, sets []tasksource.RuntimeSet) (*tasksource.Sou
 	srv := httptest.NewServer(http.HandlerFunc(up.handle))
 	t.Cleanup(srv.Close)
 	s := tasksource.New(tasksource.Config{
-		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), Name: "Pool", RuntimeVisibility: "private",
+		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), RuntimeVisibility: "private",
 		Runtimes: sets,
 	})
 	s.Connect(&fakeCore{busy: map[string]bool{}}, &fakePods{})
@@ -73,8 +73,8 @@ func newKindsSource(t *testing.T, sets []tasksource.RuntimeSet) (*tasksource.Sou
 }
 
 var (
-	poolSet  = tasksource.RuntimeSet{Kind: policy.KindPool, Name: "Pool", DeviceName: "pool-device"}
-	cleanSet = tasksource.RuntimeSet{Kind: policy.KindClean, Name: "Clean Pool", DeviceName: "clean-device"}
+	poolSet  = tasksource.RuntimeSet{Kind: policy.KindPool, Machine: multica.Machine{Name: "Pool", DeviceName: "pool-device"}}
+	cleanSet = tasksource.RuntimeSet{Kind: policy.KindClean, Machine: multica.Machine{Name: "Clean Pool", DeviceName: "clean-device"}}
 )
 
 func TestEachRuntimeKindRegistersUnderItsOwnDaemonID(t *testing.T) {
@@ -83,7 +83,6 @@ func TestEachRuntimeKindRegistersUnderItsOwnDaemonID(t *testing.T) {
 		sets []tasksource.RuntimeSet
 		want []string // daemon_id name device_name of each registration
 	}{
-		{"default", nil, []string{"mgr Claude (Pool) Pool"}},
 		{"pool", []tasksource.RuntimeSet{poolSet}, []string{"mgr Claude (Pool) pool-device"}},
 		{"clean", []tasksource.RuntimeSet{cleanSet}, []string{"mgr-clean Claude (Clean Pool) clean-device"}},
 		{"pool,clean", []tasksource.RuntimeSet{poolSet, cleanSet}, []string{"mgr Claude (Pool) pool-device", "mgr-clean Claude (Clean Pool) clean-device"}},
@@ -119,7 +118,7 @@ func TestAPodGetsTheRuntimesOfEveryKind(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(up.handle))
 	t.Cleanup(srv.Close)
 	s := tasksource.New(tasksource.Config{
-		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), Name: "Pool", RuntimeVisibility: "private",
+		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), RuntimeVisibility: "private",
 		Runtimes: []tasksource.RuntimeSet{poolSet, cleanSet},
 	})
 	s.Connect(&fakeCore{busy: map[string]bool{}}, &fakePods{})

@@ -84,7 +84,8 @@ func newSource(t *testing.T, overrides string, handle func(w http.ResponseWriter
 	}))
 	t.Cleanup(srv.Close)
 	cfg := tasksource.Config{
-		Client: multica.NewClient(srv.URL, "mul_pat", "", nil), Name: "Pool", RuntimeVisibility: "private",
+		Client: multica.NewClient(srv.URL, "mul_pat", "", nil), RuntimeVisibility: "private",
+		Runtimes: []tasksource.RuntimeSet{{Kind: policy.KindPool, Machine: multica.Machine{Name: "Pool"}}},
 	}
 	if overrides != "" {
 		cfg.ReadOverrides = func() ([]byte, error) { return []byte(overrides), nil }

@@ -114,15 +114,15 @@ func requestKinds(pl pool, kinds []policy.Kind, exclude []policy.Target, tenants
 	}
 }
 
-func claimed(res policy.ReservationID, t policy.Task) func(*policy.Policy) []string {
+func claimed(res policy.ClaimID, t policy.Task) func(*policy.Policy) []string {
 	return func(p *policy.Policy) []string { return describe(p.ClaimReturned(res, &t, false)) }
 }
 
-func claimedNothing(res policy.ReservationID) func(*policy.Policy) []string {
+func claimedNothing(res policy.ClaimID) func(*policy.Policy) []string {
 	return func(p *policy.Policy) []string { return describe(p.ClaimReturned(res, nil, false)) }
 }
 
-func claimFailed(res policy.ReservationID) func(*policy.Policy) []string {
+func claimFailed(res policy.ClaimID) func(*policy.Policy) []string {
 	return func(p *policy.Policy) []string { return describe(p.ClaimReturned(res, nil, true)) }
 }
 
@@ -154,13 +154,14 @@ func cleanTask(id, tenant, key string) policy.Task {
 	return policy.Task{ID: id, Tenant: tenant, Kind: policy.KindClean, Key: key}
 }
 
-// runs claims t on whatever the policy reserves and starts it: the claim
-// must be for t's tenant and kind, reservation res, and t must go to pod.
-func runs(res policy.ReservationID, reserved string, t policy.Task, pod string) []step {
-	claim := fmt.Sprintf("claim %s/%s res=%d pod=%s", t.Tenant, t.Kind, res, reserved)
+// runs claims t against whatever pod the policy picks and starts it: the
+// claim must be for t's tenant and kind, with ID res, made against claimedOn,
+// and t must go to pod.
+func runs(res policy.ClaimID, claimedOn string, t policy.Task, pod string) []step {
+	claim := fmt.Sprintf("claim %s/%s id=%d pod=%s", t.Tenant, t.Kind, res, claimedOn)
 	place := []string{"place " + t.ID + " pod=" + pod}
-	if pod != reserved {
-		place = append(place, fmt.Sprintf("release res=%d pod=%s", res, reserved))
+	if pod != claimedOn {
+		place = append(place, fmt.Sprintf("closed claim=%d pod=%s", res, claimedOn))
 	}
 	return []step{
 		{do: requestKinds(pool{live: 10}, []policy.Kind{t.Kind}, nil, t.Tenant), want: []string{claim}},

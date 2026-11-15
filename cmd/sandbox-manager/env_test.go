@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/policy"
 )
 
@@ -67,7 +68,7 @@ func TestLoadSettingsWarnsOfRemovedSettings(t *testing.T) {
 		t.Fatalf("warnings %q, want one per removed setting", s.warnings)
 	}
 	for i, name := range removedSettings {
-		if !strings.HasPrefix(s.warnings[i], name+" is no longer used") {
+		if s.warnings[i] != name+" is no longer used and is ignored" {
 			t.Errorf("warning %q does not name %s", s.warnings[i], name)
 		}
 	}
@@ -117,8 +118,8 @@ func TestLoadSettingsReadsTheRuntimeKindsAndTheirNames(t *testing.T) {
 	env["SANDBOX_MANAGER_CLEAN_NAME"] = "Clean Sandbox"
 	env["SANDBOX_MANAGER_CLEAN_DEVICE_NAME"] = "clean pods"
 	s, err := loadSettings(envLookup(env))
-	if err != nil || s.config.CleanName != "Clean Sandbox" || s.config.CleanDeviceName != "clean pods" {
-		t.Fatalf("clean names: %q %q, %v", s.config.CleanName, s.config.CleanDeviceName, err)
+	if err != nil || s.config.Clean != (multica.Machine{Name: "Clean Sandbox", DeviceName: "clean pods"}) {
+		t.Fatalf("clean names: %+v, %v", s.config.Clean, err)
 	}
 }
 
@@ -128,13 +129,13 @@ func TestLoadSettingsReadsTheDaemonIdentity(t *testing.T) {
 	if err != nil || s.config.DaemonID != "" {
 		t.Fatalf("unset: %q, %v; want it left to derivation", s.config.DaemonID, err)
 	}
-	env["SANDBOX_MANAGER_DAEMON_ID"] = " company-sandbox-prod "
-	if s, err = loadSettings(envLookup(env)); err != nil || s.config.DaemonID != "company-sandbox-prod" {
+	env["SANDBOX_MANAGER_DAEMON_ID"] = " example-sandbox-prod "
+	if s, err = loadSettings(envLookup(env)); err != nil || s.config.DaemonID != "example-sandbox-prod" {
 		t.Fatalf("set: %q, %v", s.config.DaemonID, err)
 	}
 }
 
-// The manager handles no git or LLM credentials (ADR 0002), so every setting
+// The manager handles no git or LLM credentials, so every setting
 // it still reads must be enough to start it.
 func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 	up := newFakeMultica(t, testWorkspaceA)

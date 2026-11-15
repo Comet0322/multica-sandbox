@@ -7,7 +7,7 @@ import (
 
 // Fair sharing between tenants. A pod never serves another tenant, so
 // tenants share the pods in whole pods: a tenant occupies its running, held
-// and idle pods, and the warm pods reserved for its claims.
+// and idle pods, and the warm pods its claims in flight were made against.
 //
 // Each tenant has a guarantee and a weight (TenantSettings):
 //
@@ -31,11 +31,11 @@ func occupiedBy(pd *podState, tenant string) bool {
 	if pd.tenant != "" {
 		return pd.tenant == tenant
 	}
-	return pd.reservation != nil && pd.reservation.target.Tenant == tenant
+	return pd.claim != nil && pd.claim.target.Tenant == tenant
 }
 
 // occupied reports whether a pod counts toward some tenant's occupancy.
-func occupied(pd *podState) bool { return pd.tenant != "" || pd.reservation != nil }
+func occupied(pd *podState) bool { return pd.tenant != "" || pd.claim != nil }
 
 // occupiedPods counts the pods a tenant occupies.
 func (p *Policy) occupiedPods(tenant string) int {
@@ -48,9 +48,9 @@ func (p *Policy) occupiedPods(tenant string) int {
 	return n
 }
 
-// capacity is the number of pods the guarantees are scaled to: the budget,
+// budget is the number of pods the guarantees are scaled to: the budget,
 // or the live pods when the pool keeps the budget.
-func (p *Policy) capacity() int {
+func (p *Policy) budget() int {
 	if p.cfg.MaxPods > 0 {
 		return p.cfg.MaxPods
 	}
@@ -66,12 +66,12 @@ func (p *Policy) guarantees() map[string]int {
 		out[id] = s.Guarantee
 		sum += s.Guarantee
 	}
-	capacity := p.capacity()
-	if sum <= capacity {
+	budget := p.budget()
+	if sum <= budget {
 		return out
 	}
 	for id, g := range out {
-		out[id] = g * capacity / sum
+		out[id] = g * budget / sum
 	}
 	return out
 }
@@ -113,7 +113,7 @@ func (p *Policy) mayTakePod(tenant string) bool {
 			taken++
 		}
 	}
-	return p.capacity()-taken-1 >= kept
+	return p.budget()-taken-1 >= kept
 }
 
 // fairOrder orders the targets with a queued task: the tenant with the least
@@ -147,7 +147,7 @@ func (p *Policy) mayDelete(victim, taker string, g map[string]int) bool {
 }
 
 // victim is the pod to delete when the budget is full and a task of taker
-// needs a pod; nil when none may go. Idle pool pods go first, then held pool
+// needs a pod; nil when none may go. Idle pool runtime pods go first, then held pool
 // pods, then held clean pods; within each, the pod of the tenant furthest
 // over its share, then the one held or idle longest. A pod a claim in flight
 // was made against is left alone. take says the taker may take a pod
@@ -167,7 +167,7 @@ func (p *Policy) victim(taker string, take bool) *podState {
 	}
 	var best *podState
 	for _, pd := range p.sortedPods() {
-		if rank(pd) == 0 || pd.reservation != nil || !p.mayDelete(pd.tenant, taker, g) || (!take && pd.tenant != taker) {
+		if rank(pd) == 0 || pd.claim != nil || !p.mayDelete(pd.tenant, taker, g) || (!take && pd.tenant != taker) {
 			continue
 		}
 		if best == nil {
@@ -221,7 +221,7 @@ func (p *Policy) Shares() []ShareInfo {
 	out := make([]ShareInfo, 0, len(p.tenants))
 	target := map[string]int{}
 	demand := map[string]int{}
-	left := p.capacity()
+	left := p.budget()
 	for id, s := range p.tenants {
 		info := ShareInfo{Tenant: id, Guarantee: s.Guarantee, GuaranteeInEffect: g[id], Weight: weightOf(s), Occupied: p.occupiedPods(id)}
 		for _, pd := range p.pods {

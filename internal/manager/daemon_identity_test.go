@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 )
 
 // daemonIDsSent lists the daemon_id of every registration and claim the fake
@@ -101,10 +102,10 @@ func TestDerivedDaemonIdentityDependsOnTheAccount(t *testing.T) {
 func TestDaemonIdentityOverride(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
-	serveTwoWorkspaces(t, up, func(c *manager.Config) { c.DaemonID = "company-sandbox-prod" })
+	serveTwoWorkspaces(t, up, func(c *manager.Config) { c.DaemonID = "example-sandbox-prod" })
 
 	registered, claimed := daemonIDsSent(up)
-	if id := singleValue(t, "registration and claim", append(registered, claimed...)); id != "company-sandbox-prod" {
+	if id := singleValue(t, "registration and claim", append(registered, claimed...)); id != "example-sandbox-prod" {
 		t.Fatalf("daemon_id %q, want the configured one", id)
 	}
 	if up.pathCount("GET /api/me") != 0 {
@@ -196,8 +197,7 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
 	serveTwoWorkspaces(t, up, func(c *manager.Config) {
-		c.Name = "Company Sandbox"
-		c.DeviceName = "GPU pool, us-east"
+		c.Pool = multica.Machine{Name: "Example Sandbox", DeviceName: "GPU pool, us-east"}
 		c.Providers = []string{"claude"}
 	})
 	for _, r := range up.requestsTo("/api/daemon/register") {
@@ -210,7 +210,7 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 		}
 		for _, item := range runtimes {
 			rt, _ := item.(map[string]any)
-			if name, _ := rt["name"].(string); name != "Claude (Company Sandbox)" {
+			if name, _ := rt["name"].(string); name != "Claude (Example Sandbox)" {
 				t.Fatalf("runtime name %q, want the configured name", name)
 			}
 		}
@@ -220,8 +220,9 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 func TestAMachineNameTheRuntimeListWouldMisreadIsRefused(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range []manager.Config{
-		{Name: "Sandbox (prod)"},
-		{DeviceName: "linux · amd64"},
+		{Pool: multica.Machine{Name: "Sandbox (prod)"}},
+		{Pool: multica.Machine{DeviceName: "linux · amd64"}},
+		{Clean: multica.Machine{Name: "Clean (prod)"}},
 	} {
 		cfg.MulticaURL, cfg.PAT = "http://127.0.0.1:1", "mul_pat"
 		if _, err := manager.New(cfg, nil); err == nil || !strings.Contains(err.Error(), "parentheses") {

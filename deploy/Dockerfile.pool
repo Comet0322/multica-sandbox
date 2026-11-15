@@ -1,4 +1,4 @@
-# Sandbox pod image. A pod is one container, not running as root: tini is PID
+# Pod image. A pod is one container, not running as root: tini is PID
 # 1 and runs the stock Multica daemon, which starts the agent CLIs itself, all
 # as uid 1001. The root filesystem is meant to run read-only; the only
 # writable area is the pod's HOME volume (/home/pod), which holds every

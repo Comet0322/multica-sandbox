@@ -38,6 +38,8 @@ type Service interface {
 	// pods a previous run left, with what they serve.
 	Record(id sandbox.PodID, r sandbox.PodRecord)
 	Restore(ctx context.Context) ([]sandbox.RestoredPod, error)
+	// Halted is why no task may be claimed now, empty when tasks may be.
+	Halted() string
 }
 
 // Core is what the pool asks and tells the core.
@@ -225,6 +227,10 @@ func (p *Pool) Restore(ctx context.Context) error {
 	p.core.Restore(pods)
 	return nil
 }
+
+// Halted is why no task may be claimed now (the sandbox service cannot
+// record what its pods serve), empty when tasks may be.
+func (p *Pool) Halted() string { return p.svc.Halted() }
 
 // Wake tells a pod over its wake socket that a task is placed on it.
 func (p *Pool) Wake(pod string) { p.api.WakePod(pod) }

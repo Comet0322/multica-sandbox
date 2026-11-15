@@ -1,6 +1,6 @@
-# Sandbox (the pod image)
+# The pod image
 
-The sandbox is what runs a task: a pod of one non-root container that the
+A pod is what runs a task: one non-root container that the
 manager creates through the Kubernetes API from the operator's pod template.
 PID 1 is `tini`, which runs the stock `multica daemon` as uid 1001; the daemon
 starts every agent CLI itself, as the same user. Nothing runs as root or with

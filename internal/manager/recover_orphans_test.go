@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 )
 
 // A task Multica shows running on the manager's runtime in a workspace whose
@@ -113,7 +114,7 @@ func TestFirstSyncRecoversTheOrphansOfTheManagersRuntimes(t *testing.T) {
 		case r.URL.Path == "/api/runtimes":
 			listedFor.Store(r.Header.Get("X-Workspace-ID"))
 			writeJSON(w, []map[string]any{
-				{"id": "rt-own", "daemon_id": "company-sandbox-prod", "visibility": "public"},
+				{"id": "rt-own", "daemon_id": "example-sandbox-prod", "visibility": "public"},
 				{"id": "rt-member", "daemon_id": "alice-laptop", "visibility": "private"},
 			})
 			return true
@@ -124,7 +125,7 @@ func TestFirstSyncRecoversTheOrphansOfTheManagersRuntimes(t *testing.T) {
 		return false
 	})
 	pool, err := manager.New(manager.Config{
-		MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool", DaemonID: "company-sandbox-prod", Kube: testKube(),
+		MulticaURL: up.URL, PAT: harnessPAT, Pool: multica.Machine{Name: "Test Pool"}, DaemonID: "example-sandbox-prod", Kube: testKube(),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

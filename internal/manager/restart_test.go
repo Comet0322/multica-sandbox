@@ -12,7 +12,9 @@ import (
 
 // The manager keeps what each pod serves on the pod, so a manager that
 // restarts carries on: the running task runs on and reports as before, the
-// held pod takes its key's next task, and the idle and warm pods are kept.
+// held pod takes its key's next task, and the idle pod is kept. The warm pod
+// started and carries no record: a task may have been placed on it before
+// its record was written, so it is deleted rather than given another key.
 func TestARestartedManagerCarriesOnWithItsPods(t *testing.T) {
 	w := newKubeWorld(t)
 	hold := func(c *manager.Config) { c.HoldTimeout = 10 * time.Minute }
@@ -57,9 +59,17 @@ func TestARestartedManagerCarriesOnWithItsPods(t *testing.T) {
 	if code := running.heartbeat(); code != http.StatusNotFound {
 		t.Fatalf("heartbeat of a pod the restarted manager knows no registration of: %d, want 404", code)
 	}
-	for _, p := range pods {
+	for _, p := range []*simPod{running, held, idle} {
 		p.startRaw()
 	}
+	eventually(t, "the unrecorded warm pod deleted", func() bool {
+		for _, pd := range h2.kubePods() {
+			if pd.Name == warm.id {
+				return false
+			}
+		}
+		return true
+	})
 	if code := running.heartbeat(); code != http.StatusOK {
 		t.Fatalf("heartbeat after registering again: %d", code)
 	}
@@ -87,13 +97,8 @@ func TestARestartedManagerCarriesOnWithItsPods(t *testing.T) {
 	if got := h2.runTask("t5", pods); got != idle {
 		t.Fatalf("t5 went to %s, want the idle pod %s", got.id, idle.id)
 	}
-	// The warm pod is still there to take the next new key.
-	w.upstream.enqueueIssue("t6", "issue-6")
-	if got := h2.runTask("t6", pods); got != warm && got != running {
-		t.Fatalf("t6 went to %s", got.id)
-	}
-	if n := len(h2.kubePods()); n != 4 {
-		t.Fatalf("pods after the restart = %d, want the 4 kept", n)
+	if n := len(h2.kubePods()); n > 4 {
+		t.Fatalf("pods after the restart = %d, want at most the budget of 4", n)
 	}
 }
 

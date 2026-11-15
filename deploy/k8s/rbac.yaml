@@ -13,7 +13,7 @@ metadata:
   name: sandbox-manager
   labels:
     app.kubernetes.io/name: sandbox-manager
-# Pods that do not need the API (Multica, the sandbox pods) keep
+# Pods that do not need the API (Multica, the manager's pods) keep
 # automountServiceAccountToken: false; this account's token is mounted only
 # into the manager.
 automountServiceAccountToken: false

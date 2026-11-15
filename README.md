@@ -21,7 +21,7 @@ Runs Multica tasks on pods it creates through the Kubernetes API, one task at a 
 | `docs/` | Architecture and deployment guide |
 | `GLOSSARY.md` | Terms (decision records are kept outside the repository) |
 
-Test with `go test -race ./...`, and end to end with `deploy/k8s/e2e/scenarios.sh` against the local kind namespace. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, at the version the company server runs, `slim/v0.6.4`). Build the images from the repository root:
+Test with `go test -race ./...`, and end to end with `deploy/k8s/e2e/scenarios.sh` against the local kind namespace. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, pinned to Multica v0.6.4). Build the images from the repository root:
 
 ```bash
 docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:dev .

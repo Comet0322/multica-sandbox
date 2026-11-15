@@ -45,7 +45,7 @@ func (f *overridesFile) read() ([]byte, error) {
 // workspace the fake lists, with the overrides file, after one Sync.
 func newOverrideHarness(t *testing.T, up *multiMultica, file *overridesFile, cfg manager.Config) *harness {
 	t.Helper()
-	cfg.MulticaURL, cfg.PAT, cfg.Name = up.URL, patPool, "Shared Pool"
+	cfg.MulticaURL, cfg.PAT, cfg.Pool.Name = up.URL, patPool, "Shared Pool"
 	cfg.UpstreamBackoff = time.Minute
 	cfg.ReadOverrides = file.read
 	if len(cfg.Runtimes) == 0 {
@@ -179,10 +179,10 @@ func TestAnOldOverridesFileLoadsWithOneWarning(t *testing.T) {
 	if got := workspaceInfo(t, inv, wsB); got.Quota != 2 {
 		t.Fatalf("beta's quota was not applied: %+v", got)
 	}
-	if len(inv.OverrideProblems) != 1 || !strings.Contains(inv.OverrideProblems[0], `"alpha": rule no longer used`) {
+	if len(inv.OverrideProblems) != 1 || !strings.Contains(inv.OverrideProblems[0], `"alpha": rule is no longer used and is ignored`) {
 		t.Fatalf("want one warning naming rule, got %q", inv.OverrideProblems)
 	}
-	if n := strings.Count(h.logs.String(), "rule no longer used"); n != 1 {
+	if n := strings.Count(h.logs.String(), "rule is no longer used and is ignored"); n != 1 {
 		t.Fatalf("the warning was logged %d times over two syncs, want once:\n%s", n, h.logs.String())
 	}
 }
