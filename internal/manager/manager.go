@@ -221,9 +221,7 @@ func (c *Config) normalize() error {
 			return fmt.Errorf("machine and device name: %w", err)
 		}
 	}
-	if len(c.Runtimes) == 0 {
-		c.Runtimes = []policy.Kind{policy.KindPool}
-	}
+	c.Runtimes = policy.KindsOrPool(c.Runtimes)
 	seen := map[policy.Kind]bool{}
 	for _, k := range c.Runtimes {
 		if k != policy.KindPool && k != policy.KindClean {

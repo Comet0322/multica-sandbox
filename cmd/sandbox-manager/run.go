@@ -370,8 +370,5 @@ func runtimeKinds(v string) ([]policy.Kind, error) {
 		}
 		out = append(out, k)
 	}
-	if len(out) == 0 {
-		out = []policy.Kind{policy.KindPool}
-	}
-	return out, nil
+	return policy.KindsOrPool(out), nil
 }

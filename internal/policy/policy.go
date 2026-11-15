@@ -46,6 +46,15 @@ const (
 	KindClean Kind = "clean"
 )
 
+// KindsOrPool is the runtime kinds served: kinds, or the pool runtime alone
+// when none is given.
+func KindsOrPool(kinds []Kind) []Kind {
+	if len(kinds) == 0 {
+		return []Kind{KindPool}
+	}
+	return kinds
+}
+
 // Phase is where a pod is in its life.
 type Phase string
 
