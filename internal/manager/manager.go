@@ -41,7 +41,7 @@ const (
 	// DefaultHoldTimeout is the hold timeout the command line applies when
 	// none is configured.
 	DefaultHoldTimeout = 10 * time.Minute
-	// DefaultPodMaxIdle is how long an idle pool pod is kept when none is
+	// DefaultPodMaxIdle is how long an idle pool runtime pod is kept when none is
 	// configured.
 	DefaultPodMaxIdle = 24 * time.Hour
 )
@@ -141,7 +141,7 @@ type Config struct {
 	// runtimes. Empty means Name followed by " Clean", and CleanName.
 	CleanName       string
 	CleanDeviceName string
-	// PodMaxIdle is how long an idle pool pod is kept before it is deleted.
+	// PodMaxIdle is how long an idle pool runtime pod is kept before it is deleted.
 	// Zero means DefaultPodMaxIdle.
 	PodMaxIdle time.Duration
 	// DispatchInterval is the dispatch tick, the only place tasks are claimed:

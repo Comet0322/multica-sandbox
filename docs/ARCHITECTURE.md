@@ -60,9 +60,9 @@ package; see [AGENTS.md](../AGENTS.md)).
    Multica with the task token Multica issued, through the manager.
 6. **The task ends.** With a key, the pod is **held** for it for the
    department's hold timeout, so the issue's next task (the same agent again,
-   or the next agent of a handoff) lands on it. Without a key, a pool pod
+   or the next agent of a handoff) lands on it. Without a key, a pool runtime pod
    becomes idle at once and a clean pod is deleted.
-7. **The hold ends.** A pool pod becomes **idle**, free for any task of its
+7. **The hold ends.** A pool runtime pod becomes **idle**, free for any task of its
    department, and is deleted after its maximum idle lifetime; a clean pod is
    deleted.
 
@@ -116,8 +116,8 @@ registering them.
 
 When a pod is needed and the budget is full, the policy deletes, in order:
 
-1. an idle pool pod;
-2. a held pool pod;
+1. an idle pool runtime pod;
+2. a held pool runtime pod;
 3. a held clean pod;
 
 taking it from the department furthest over its share, and never a pod within
@@ -154,7 +154,7 @@ Multica, which the daemon passes to the agent unchanged.
 | The manager creates pods through the Kubernetes API | Pods are sized and placed by Kubernetes; the pod count follows demand within the budget. | The manager needs rights on pods in its namespace, and the namespace's admission policies apply to every pod. |
 | Pods are deleted, never cleaned for reuse | Nothing of a pod outlives it; no reset logic to trust. | Work an agent did not push is lost with the pod. |
 | Holds by key | A handoff within a squad finds the previous agent's unpushed work while the pod is held. | Held pods count against the budget, and a hold may be dropped when the budget is full. |
-| Pool pods shared within a department | Fewer pod starts; an issue's later tasks may reuse a warm cache. | Another issue of the department may see files left on the pod; the clean runtime exists for work that must not. |
+| Pool runtime pods shared within a department | Fewer pod starts; an issue's later tasks may reuse a warm cache. | Another issue of the department may see files left on the pod; the clean runtime exists for work that must not. |
 | Warm pods | Claims rarely wait for a pod to start. | Pods that use their requests while serving no one. |
 | State kept on the pods (labels and annotations) | The manager keeps no database; a restart takes over running tasks. | It needs the `patch` verb on pods; without it the manager stops claiming, and a restart deletes every pod. |
 | Stock Multica and stock daemon | No fork to maintain; the manager follows Multica's daemon protocol. | The manager depends on that protocol (pinned to v0.6.4 by fixtures) and on Multica's API for workspaces and tasks. |

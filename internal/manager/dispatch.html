@@ -176,7 +176,7 @@ tr.open .caret { transform: rotate(90deg); }
 	<p class="note">
 		<b>Fair share</b> is how many pods a workspace should have for the work there is now: its guarantee first, then the remaining pods split by weight, never more than its running pods plus its waiting tasks.
 		A guarantee is kept by count: other workspaces may not take the pods it keeps free, whichever pods those are.
-		A workspace below its share with tasks waiting gets the next pod. Running tasks are never stopped to rebalance; when the pod budget is full, idle pods are deleted first, then held pool pods, then held clean pods.
+		A workspace below its share with tasks waiting gets the next pod. Running tasks are never stopped to rebalance; when the pod budget is full, idle pods are deleted first, then held pool runtime pods, then held clean pods.
 		The page reads <code>/v1/dispatch</code> every 10 seconds.
 	</p>
 </main>

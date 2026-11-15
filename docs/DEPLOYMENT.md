@@ -160,7 +160,7 @@ kubectl apply -f deploy/k8s/manager.yaml -n <namespace>
 ```
 
 The manager's own pod must not carry the label
-`app.kubernetes.io/managed-by=sandbox-manager`, which marks its sandbox pods.
+`app.kubernetes.io/managed-by=sandbox-manager`, which marks its pods.
 
 The manager can also run outside the cluster (as `deploy/k8s/dev/manager.sh`
 does) with `KUBECONFIG` set, as long as the pods can reach its pod listener at
@@ -207,7 +207,7 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `SANDBOX_WARM_PODS` | `2` | Ready pods kept that have served no one. At least `1`, since the manager learns each workspace's runtimes from a pod's daemon (`0` is refused), and at most `SANDBOX_MAX_PODS`. |
 | `SANDBOX_POD_START_TIMEOUT` | `3m` | How long a new pod may take until its daemon calls the manager. Past it the pod is deleted, and pod creation backs off (10s, doubling up to 5m). Nothing was claimed for it, so no task fails. |
 | `SANDBOX_HOLD_TIMEOUT` | `10m` | How long a pod whose task ended is held for the task's key. `0` holds nothing. Overridable per workspace. |
-| `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool pod is kept before it is deleted. |
+| `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool runtime pod is kept before it is deleted. |
 | `SANDBOX_POOL_QUOTA` | `0` | The most pods one workspace's running tasks may occupy at once; `0` is no cap. Overridable per workspace. |
 | `SANDBOX_WORKSPACE_OVERRIDES_FILE` | none | Absolute path of the [per-workspace overrides](#per-workspace-overrides) file, read again on every sync. |
 
@@ -258,20 +258,20 @@ no key and is never held. A pod runs one task at a time and never serves
 another department (workspace).
 
 - **Pool runtime.** A task takes its key's held pod, else an idle pod of its
-  department, else a warm pod, else a new pod. Pool pods are shared within a
+  department, else a warm pod, else a new pod. Pool runtime pods are shared within a
   department: once a pod's hold ended, a task of another key, even another
   person's, may land on it and sees what earlier tasks left there.
 - **Clean runtime.** A task takes its key's held pod, else a warm pod, else a
   new pod. A clean pod never serves another key.
 
 When a task ends, its pod is held for the task's key for the hold timeout;
-without a key, a pool pod becomes idle at once and a clean pod is deleted.
-When a hold ends, a pool pod becomes idle and a clean pod is deleted. An idle
-pool pod is deleted after `SANDBOX_POD_MAX_IDLE`.
+without a key, a pool runtime pod becomes idle at once and a clean pod is deleted.
+When a hold ends, a pool runtime pod becomes idle and a clean pod is deleted. An idle
+pool runtime pod is deleted after `SANDBOX_POD_MAX_IDLE`.
 
 A **hold** is kept as long as possible but never guaranteed: when the budget is
-full and a pod is needed, the manager deletes an idle pool pod first, then a
-held pool pod, then a held clean pod, from the department furthest over its
+full and a pod is needed, the manager deletes an idle pool runtime pod first, then a
+held pool runtime pod, then a held clean pod, from the department furthest over its
 share, and never one within another department's guarantee. A handoff across
 pods (agent A hands an issue to agent B, and B lands on another pod) sees only
 what A pushed, through a git MCP server for example; anything A left
@@ -531,7 +531,7 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
   tasks that ran on them are failed upstream (Multica retries those eligible).
 - **Memory is per pod.** The pod template's limits bound each task; a task
   over them fails with the out-of-memory reason, and only that task.
-- **Pool pods are shared within a department.** Work that must not be seen by
+- **Pool runtime pods are shared within a department.** Work that must not be seen by
   another key of the department uses an agent bound to a clean runtime.
 - **Accepting an invitation opens the manager to that workspace.** The manager
   serves every workspace its account belongs to, and its runtimes are `public`

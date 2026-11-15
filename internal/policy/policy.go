@@ -84,7 +84,7 @@ type Config struct {
 	// HoldTimeout is how long a pod is held for its task's key once the
 	// task ended. Zero holds nothing.
 	HoldTimeout time.Duration
-	// MaxIdle is how long an idle pool pod is kept. Zero means
+	// MaxIdle is how long an idle pool runtime pod is kept. Zero means
 	// DefaultMaxIdle.
 	MaxIdle time.Duration
 	// MaxPods is the budget: the most pods, warm, starting, running, held
@@ -324,7 +324,7 @@ func (p *Policy) TaskStarted(id string) {
 }
 
 // TaskEnded records that a task is over. Its lease ends, and its pod is held
-// for the task's key; with no key or no hold timeout, a pool pod becomes
+// for the task's key; with no key or no hold timeout, a pool runtime pod becomes
 // idle and a clean pod is deleted. A removed tenant's pod is deleted.
 func (p *Policy) TaskEnded(id, reason string) []Decision {
 	ds := []Decision{EndLease{Task: id, Reason: reason}}

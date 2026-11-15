@@ -97,7 +97,7 @@ func TestBudgetDeletionOrder(t *testing.T) {
 	cfg := budget(3)
 	run(t, []scenario{
 		{
-			name:  "an idle pool pod goes first",
+			name:  "an idle pool runtime pod goes first",
 			cfg:   cfg,
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A"), warmPod("p3", "A")),
 			steps: steps(heldAndIdle(), []step{
@@ -105,7 +105,7 @@ func TestBudgetDeletionOrder(t *testing.T) {
 			}),
 		},
 		{
-			name:  "then a held pool pod",
+			name:  "then a held pool runtime pod",
 			cfg:   cfg,
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A"), warmPod("p3", "A")),
 			steps: steps(heldAndIdle(), []step{

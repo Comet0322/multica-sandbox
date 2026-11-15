@@ -37,7 +37,7 @@ func TestATaskRunsOnAPodWhichIsIdleAfterIt(t *testing.T) {
 		t.Fatal("t1 is over")
 	}
 	if _, backs := r.pool.snapshot(); len(backs) != 0 {
-		t.Fatalf("hand-backs %v: a pool pod with no hold is idle", backs)
+		t.Fatalf("hand-backs %v: a pool runtime pod with no hold is idle", backs)
 	}
 	if pv := r.core.View().Pods["p1"]; pv.Policy == nil || pv.Policy.Phase != policy.PhaseIdle {
 		t.Fatalf("p1 after its task: %+v", pv.Policy)

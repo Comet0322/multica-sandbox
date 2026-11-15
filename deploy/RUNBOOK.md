@@ -93,7 +93,7 @@ Tell the department's squads, before the move:
   was deleted for the budget, the next task lands on another pod and sees only
   what the previous agent pushed through the git MCP. An agent that hands work
   on should push it before it ends.
-- **Pool pods are shared within the department.** After its hold, a pool pod
+- **Pool runtime pods are shared within the department.** After its hold, a pool runtime pod
   may serve another issue of the same department, even another person's, and
   that task sees the files left there. Work that must not be seen that way
   uses an agent bound to the clean runtime.

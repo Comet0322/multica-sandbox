@@ -48,9 +48,9 @@ func (p *Policy) occupiedPods(tenant string) int {
 	return n
 }
 
-// capacity is the number of pods the guarantees are scaled to: the budget,
+// budget is the number of pods the guarantees are scaled to: the budget,
 // or the live pods when the pool keeps the budget.
-func (p *Policy) capacity() int {
+func (p *Policy) budget() int {
 	if p.cfg.MaxPods > 0 {
 		return p.cfg.MaxPods
 	}
@@ -66,12 +66,12 @@ func (p *Policy) guarantees() map[string]int {
 		out[id] = s.Guarantee
 		sum += s.Guarantee
 	}
-	capacity := p.capacity()
-	if sum <= capacity {
+	budget := p.budget()
+	if sum <= budget {
 		return out
 	}
 	for id, g := range out {
-		out[id] = g * capacity / sum
+		out[id] = g * budget / sum
 	}
 	return out
 }
@@ -113,7 +113,7 @@ func (p *Policy) mayTakePod(tenant string) bool {
 			taken++
 		}
 	}
-	return p.capacity()-taken-1 >= kept
+	return p.budget()-taken-1 >= kept
 }
 
 // fairOrder orders the targets with a queued task: the tenant with the least
@@ -147,7 +147,7 @@ func (p *Policy) mayDelete(victim, taker string, g map[string]int) bool {
 }
 
 // victim is the pod to delete when the budget is full and a task of taker
-// needs a pod; nil when none may go. Idle pool pods go first, then held pool
+// needs a pod; nil when none may go. Idle pool runtime pods go first, then held pool
 // pods, then held clean pods; within each, the pod of the tenant furthest
 // over its share, then the one held or idle longest. A pod a claim in flight
 // was made against is left alone. take says the taker may take a pod
@@ -221,7 +221,7 @@ func (p *Policy) Shares() []ShareInfo {
 	out := make([]ShareInfo, 0, len(p.tenants))
 	target := map[string]int{}
 	demand := map[string]int{}
-	left := p.capacity()
+	left := p.budget()
 	for id, s := range p.tenants {
 		info := ShareInfo{Tenant: id, Guarantee: s.Guarantee, GuaranteeInEffect: g[id], Weight: weightOf(s), Occupied: p.occupiedPods(id)}
 		for _, pd := range p.pods {
