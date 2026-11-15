@@ -45,6 +45,11 @@ type RuntimesConfig struct {
 	Name string
 	// DeviceName is shown under it; empty shows Name.
 	DeviceName string
+	// DaemonIDSuffix follows the manager's identity in the daemon_id these
+	// runtimes are registered and claimed under, so each runtime kind is a
+	// machine of its own (ADR 0009). Empty is the identity itself, which
+	// alone takes over the legacy daemon_id's runtimes.
+	DaemonIDSuffix string
 	// Providers limits which agent CLIs a pod reports become runtimes. Empty
 	// registers every reported provider.
 	Providers []string
@@ -74,6 +79,18 @@ func (c *Client) Runtimes(cfg RuntimesConfig) *Runtimes {
 		cfg.Now = time.Now
 	}
 	return &Runtimes{cfg: cfg, client: c, conn: c.Connect()}
+}
+
+// daemonID is the daemon_id these runtimes are registered and claimed under.
+func (r *Runtimes) daemonID() string { return r.client.KnownIdentity() + r.cfg.DaemonIDSuffix }
+
+// legacyID is the daemon_id these runtimes were registered under before,
+// empty when none.
+func (r *Runtimes) legacyID() string {
+	if r.cfg.DaemonIDSuffix != "" {
+		return ""
+	}
+	return r.client.LegacyDaemonID(r.cfg.WorkspaceID)
 }
 
 // Conn is the workspace's connection.
@@ -230,10 +247,10 @@ func (r *Runtimes) store(raw json.RawMessage, runtimes []RuntimeRef) {
 // identity, local mode, no custom profiles.
 func (r *Runtimes) body(captured json.RawMessage) (map[string]any, error) {
 	id := Identity{
-		WorkspaceID: r.cfg.WorkspaceID, DaemonID: r.client.KnownIdentity(), Name: r.cfg.Name, DeviceName: r.cfg.DeviceName,
+		WorkspaceID: r.cfg.WorkspaceID, DaemonID: r.daemonID(), Name: r.cfg.Name, DeviceName: r.cfg.DeviceName,
 		Providers: r.cfg.Providers, Source: "the pod", Mode: RuntimeMode,
 	}
-	if old := r.client.LegacyDaemonID(r.cfg.WorkspaceID); old != id.DaemonID {
+	if old := r.legacyID(); old != "" && old != id.DaemonID {
 		id.LegacyIDs = []string{old}
 	}
 	return RewriteRegistration(captured, id)
@@ -274,7 +291,7 @@ func (r *Runtimes) Heartbeat(ctx context.Context, runtimeID string) (string, err
 // Claim claims at most one task from the registered runtimes and records
 // the outcome. A nil result with a nil error means nothing is queued.
 func (r *Runtimes) Claim(ctx context.Context, runtimeIDs []string) (json.RawMessage, error) {
-	raw, err := r.conn.Claim(ctx, r.client.KnownIdentity(), runtimeIDs)
+	raw, err := r.conn.Claim(ctx, r.daemonID(), runtimeIDs)
 	r.RecordHealth("claim", err)
 	return raw, err
 }
@@ -304,9 +321,9 @@ func (r *Runtimes) RecoverOrphans(ctx context.Context) {
 		r.cfg.Log.Warn("list runtimes to recover orphaned tasks", "workspace_id", r.cfg.WorkspaceID, "error", err)
 		return
 	}
-	own, legacy := r.client.KnownIdentity(), r.client.LegacyDaemonID(r.cfg.WorkspaceID)
+	own, legacy := r.daemonID(), r.legacyID()
 	for _, rt := range runtimes {
-		if rt.DaemonID != own && rt.DaemonID != legacy {
+		if rt.DaemonID != own && (legacy == "" || rt.DaemonID != legacy) {
 			continue
 		}
 		if err := r.conn.RecoverOrphans(ctx, rt.ID); err != nil {

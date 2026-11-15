@@ -31,12 +31,17 @@ func newFakeSource(tenants ...string) *fakeSource {
 	return &fakeSource{queues: map[string][]core.Task{}, order: tenants, ended: map[string]string{}, pending: map[string]error{}, created: map[string]time.Time{}}
 }
 
-// add queues a task of a tenant for a person, created at t0+age.
+// add queues a pool task of a tenant for a person, created at t0+age.
 func (s *fakeSource) add(tenant, id, person string, age time.Duration) {
+	s.addTask(tenant, policy.KindPool, id, "issue:"+id, person, age)
+}
+
+// addTask queues a task of a tenant's runtimes of kind, with key.
+func (s *fakeSource) addTask(tenant string, kind policy.Kind, id, key, person string, age time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := core.Task{
-		Task:    policy.Task{ID: id, Tenant: tenant, Key: "issue:" + id},
+		Task:    policy.Task{ID: id, Tenant: tenant, Kind: kind, Key: key},
 		Email:   person + "@example.com",
 		Payload: json.RawMessage(fmt.Sprintf(`{"id":%q}`, id)),
 	}
@@ -50,7 +55,7 @@ func (s *fakeSource) Claimable() []string {
 	return slices.Clone(s.order)
 }
 
-func (s *fakeSource) Pending(_ context.Context, tenant string, _ policy.Kind) ([]policy.Pending, error) {
+func (s *fakeSource) Pending(_ context.Context, tenant string, kind policy.Kind) ([]policy.Pending, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.pending[tenant]; err != nil {
@@ -58,6 +63,9 @@ func (s *fakeSource) Pending(_ context.Context, tenant string, _ policy.Kind) ([
 	}
 	var out []policy.Pending
 	for _, t := range s.queues[tenant] {
+		if t.Kind != kind {
+			continue
+		}
 		out = append(out, policy.Pending{ID: t.ID, Priority: 1, CreatedAt: s.created[t.ID], Status: policy.StatusQueued})
 	}
 	return out, nil
@@ -68,12 +76,12 @@ func (s *fakeSource) Claim(_ context.Context, tenant string, kind policy.Kind) (
 	defer s.mu.Unlock()
 	s.claims = append(s.claims, tenant)
 	q := s.queues[tenant]
-	if len(q) == 0 {
+	i := slices.IndexFunc(q, func(t core.Task) bool { return t.Kind == kind })
+	if i < 0 {
 		return nil, nil
 	}
-	t := q[0]
-	t.Kind = kind
-	s.queues[tenant] = q[1:]
+	t := q[i]
+	s.queues[tenant] = slices.Delete(slices.Clone(q), i, i+1)
 	return &t, nil
 }
 

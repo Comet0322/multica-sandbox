@@ -40,7 +40,7 @@ const (
 	DefaultDrainTimeout = core.DefaultDrainTimeout
 	// DefaultHoldTimeout is the hold timeout the command line applies when
 	// none is configured.
-	DefaultHoldTimeout = 15 * time.Minute
+	DefaultHoldTimeout = 10 * time.Minute
 	// DefaultPodMaxIdle is how long an idle pool pod is kept when none is
 	// configured.
 	DefaultPodMaxIdle = 24 * time.Hour
@@ -145,9 +145,16 @@ type Config struct {
 	PlacementWait time.Duration
 	MaxLifetime   time.Duration
 	DrainGrace    time.Duration
-	// Runtimes are the runtime kinds the manager claims for. Empty means
-	// the pool kind.
+	// Runtimes are the runtime kinds the manager registers in every
+	// workspace and claims for (SANDBOX_RUNTIMES). Empty means the pool
+	// kind. Each kind's runtimes are a machine of their own upstream: the
+	// pool kind's daemon_id is DaemonID, another kind's DaemonID followed
+	// by "-<kind>".
 	Runtimes []policy.Kind
+	// CleanName and CleanDeviceName are Name and DeviceName for the clean
+	// runtimes. Empty means Name followed by " Clean", and CleanName.
+	CleanName       string
+	CleanDeviceName string
 	// PodMaxIdle is how long an idle pool pod is kept before it is deleted.
 	// Zero means DefaultPodMaxIdle.
 	PodMaxIdle time.Duration
@@ -229,10 +236,29 @@ func (c *Config) normalize() error {
 	if c.DeviceName == "" {
 		c.DeviceName = c.Name
 	}
-	for _, name := range []string{c.Name, c.DeviceName} {
+	if c.CleanName == "" {
+		c.CleanName = c.Name + " Clean"
+	}
+	if c.CleanDeviceName == "" {
+		c.CleanDeviceName = c.CleanName
+	}
+	for _, name := range []string{c.Name, c.DeviceName, c.CleanName, c.CleanDeviceName} {
 		if err := multica.CheckMachineName(name); err != nil {
 			return fmt.Errorf("machine and device name: %w", err)
 		}
+	}
+	if len(c.Runtimes) == 0 {
+		c.Runtimes = []policy.Kind{policy.KindPool}
+	}
+	seen := map[policy.Kind]bool{}
+	for _, k := range c.Runtimes {
+		if k != policy.KindPool && k != policy.KindClean {
+			return fmt.Errorf("unknown runtime kind %q (want pool or clean)", k)
+		}
+		if seen[k] {
+			return fmt.Errorf("runtime kind %s is listed twice", k)
+		}
+		seen[k] = true
 	}
 	if c.Quota < 0 {
 		return fmt.Errorf("quota must not be negative")
@@ -372,8 +398,16 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 		return nil, err
 	}
 	client := multica.NewClient(cfg.MulticaURL, cfg.PAT, cfg.DaemonID, log)
+	var sets []tasksource.RuntimeSet
+	for _, k := range cfg.Runtimes {
+		set := tasksource.RuntimeSet{Kind: k, Name: cfg.Name, DeviceName: cfg.DeviceName}
+		if k == policy.KindClean {
+			set.Name, set.DeviceName = cfg.CleanName, cfg.CleanDeviceName
+		}
+		sets = append(sets, set)
+	}
 	src := tasksource.New(tasksource.Config{
-		Log: log, Now: m.clock.Now, Client: client, Name: cfg.Name, DeviceName: cfg.DeviceName, Providers: cfg.Providers,
+		Log: log, Now: m.clock.Now, Client: client, Name: cfg.Name, DeviceName: cfg.DeviceName, Providers: cfg.Providers, Runtimes: sets,
 		RuntimeVisibility: cfg.RuntimeVisibility, Quota: cfg.Quota, AffinityRule: cfg.AffinityRule,
 		SyncInterval: cfg.SyncInterval, HeartbeatInterval: cfg.HeartbeatInterval, ReadOverrides: cfg.ReadOverrides,
 		Models: cfg.Models,

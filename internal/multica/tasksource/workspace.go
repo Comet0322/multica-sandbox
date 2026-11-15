@@ -83,15 +83,63 @@ func equalDuration(a, b *time.Duration) bool {
 }
 
 // workspace is the source's live state for one served workspace. Its runtime
-// registration and connection (rt) are its own, so one workspace failing
-// cannot touch another.
+// registrations and connections (one set per runtime kind) are its own, so
+// one workspace failing cannot touch another.
 type workspace struct {
-	cfg WorkspaceConfig
-	rt  *multica.Runtimes
+	cfg  WorkspaceConfig
+	sets []kindSet
 	// removed is set when the workspace was dropped; it stays until the core
 	// closes it (its drain ended), and is served again as the same object if
 	// it comes back first.
 	removed bool
+}
+
+// kindSet is a workspace's runtimes of one kind.
+type kindSet struct {
+	kind policy.Kind
+	rt   *multica.Runtimes
+}
+
+// conn is the workspace's connection, for what concerns no runtime kind
+// (failing a task, reading its status): every set acts with the same PAT.
+func (w *workspace) conn() *multica.Conn { return w.sets[0].rt.Conn() }
+
+// of is the workspace's runtimes of a kind, nil when the kind is off.
+func (w *workspace) of(kind policy.Kind) *multica.Runtimes {
+	for _, set := range w.sets {
+		if set.kind == kind {
+			return set.rt
+		}
+	}
+	return nil
+}
+
+// owning is the workspace's runtimes that own a runtime ID, nil when none.
+func (w *workspace) owning(runtimeID string) *multica.Runtimes {
+	for _, set := range w.sets {
+		if set.rt.Owns(runtimeID) {
+			return set.rt
+		}
+	}
+	return nil
+}
+
+// health is the latest outcome among the workspace's sets; nil before any.
+func (w *workspace) health() *multica.Health {
+	var latest *multica.Health
+	for _, set := range w.sets {
+		if h := set.rt.Health(); h != nil && (latest == nil || h.At.After(latest.At)) {
+			latest = h
+		}
+	}
+	return latest
+}
+
+// close closes the workspace's connections.
+func (w *workspace) close() {
+	for _, set := range w.sets {
+		set.rt.Conn().Close()
+	}
 }
 
 // ReloadResult lists the workspace IDs a reload touched.

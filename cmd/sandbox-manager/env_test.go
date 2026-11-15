@@ -4,12 +4,14 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 )
 
 func envLookup(env map[string]string) func(string) string {
@@ -60,6 +62,37 @@ func TestLoadSettingsDefaultsToPersonIssueWithAHold(t *testing.T) {
 	env["SANDBOX_HOLD_TIMEOUT"] = "0"
 	if s, err = loadSettings(envLookup(env)); err != nil || s.config.HoldTimeout != 0 {
 		t.Fatalf("0 must reset at once: %v, %v", s.config.HoldTimeout, err)
+	}
+}
+
+func TestLoadSettingsReadsTheRuntimeKindsAndTheirNames(t *testing.T) {
+	for v, want := range map[string][]policy.Kind{
+		"":             {policy.KindPool},
+		"pool":         {policy.KindPool},
+		"clean":        {policy.KindClean},
+		"pool,clean":   {policy.KindPool, policy.KindClean},
+		" Clean, pool": {policy.KindClean, policy.KindPool},
+	} {
+		env := baseEnv()
+		env["SANDBOX_RUNTIMES"] = v
+		s, err := loadSettings(envLookup(env))
+		if err != nil || !slices.Equal(s.config.Runtimes, want) {
+			t.Fatalf("%q: %v, %v; want %v", v, s.config.Runtimes, err, want)
+		}
+	}
+	for _, v := range []string{"pool,pool", "dirty"} {
+		env := baseEnv()
+		env["SANDBOX_RUNTIMES"] = v
+		if _, err := loadSettings(envLookup(env)); err == nil {
+			t.Fatalf("%q was accepted", v)
+		}
+	}
+	env := baseEnv()
+	env["SANDBOX_MANAGER_CLEAN_NAME"] = "Clean Sandbox"
+	env["SANDBOX_MANAGER_CLEAN_DEVICE_NAME"] = "clean pods"
+	s, err := loadSettings(envLookup(env))
+	if err != nil || s.config.CleanName != "Clean Sandbox" || s.config.CleanDeviceName != "clean pods" {
+		t.Fatalf("clean names: %q %q, %v", s.config.CleanName, s.config.CleanDeviceName, err)
 	}
 }
 
