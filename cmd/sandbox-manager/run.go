@@ -22,7 +22,7 @@ import (
 )
 
 // managerSettings is the manager's command-line environment. Every variable
-// is described in deploy/POOL.md.
+// is described in docs/DEPLOYMENT.md.
 type managerSettings struct {
 	podListen   string
 	adminListen string
@@ -185,10 +185,15 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	}
 
 	// Pods are created through the Kubernetes API (ADR 0009); two warm pods
-	// unless set.
+	// unless set. At least one: a workspace's runtimes are learnt from a
+	// pod's daemon registering them, so with no pod at all nothing would
+	// ever be claimed.
 	warm := 2
 	if getenv("SANDBOX_WARM_PODS") != "" {
 		warm = whole("SANDBOX_WARM_PODS")
+		if warm == 0 {
+			fail("SANDBOX_WARM_PODS must be at least 1: the manager learns each workspace's runtimes from a pod's daemon")
+		}
 	}
 	if getenv("SANDBOX_POD_TEMPLATE") == "" {
 		fail("SANDBOX_POD_TEMPLATE is required: the pod YAML the manager creates its pods from")

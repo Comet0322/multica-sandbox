@@ -13,7 +13,7 @@ This repository is our sandbox manager: the program that runs Multica tasks one 
 ## Checks
 
 - Go: `gofmt -l .`, `go vet ./...` and `go test -race ./...`, as a non-root user.
-- End to end: the local kind namespace in `deploy/k8s/dev` (`up.sh`, then `manager.sh`; see `deploy/k8s/README.md`) runs Multica v0.6.4, the manager and real pods. Build the pod image with `--build-context multica=../multica` and load it into kind. Automated namespace scenarios are not written yet; leave no pod or manager running after a manual run.
+- End to end: the local kind namespace in `deploy/k8s/dev` (`up.sh`; see `docs/DEPLOYMENT.md`) runs Multica v0.6.4 and real pods. `deploy/k8s/e2e/scenarios.sh` (or the quicker `smoke.sh`) runs the manager against it and cleans up after itself; `deploy/k8s/dev/manager.sh` runs it by hand. Build the fake pod image with `--build-context multica=../multica --target fake` and load it into kind after any change to `deploy/`. Leave no pod or manager running after a manual run.
 
 ## Agent skills
 

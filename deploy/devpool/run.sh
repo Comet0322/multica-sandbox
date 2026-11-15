@@ -26,7 +26,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 API=${API:-http://127.0.0.1:18080}
-devstate=$root/deploy/k8s/dev/.state
+devstate=${DEV_STATE:-$root/deploy/k8s/dev/.state}
 [ -f "$devstate/backend.env" ] || { echo "run deploy/k8s/dev/up.sh first" >&2; exit 1; }
 code=$(sed -n 's/^MULTICA_DEV_VERIFICATION_CODE=//p' "$devstate/backend.env")
 state=${DEVPOOL_STATE:-${TMPDIR:-/tmp}/devpool-state}

@@ -188,6 +188,18 @@ func TestBudgetDeletionOrder(t *testing.T) {
 			}),
 		},
 		{
+			name:  "a probe of a list with nothing queued never deletes a pod",
+			cfg:   budget(1),
+			setup: setup(tenant("A", plain), warmPod("p1", "A")),
+			steps: steps(runs(1, "p1", poolTask("a1", "A", "issue:1"), "p1"), []step{
+				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
+				{do: pending("A", policy.KindClean)},
+				{do: requestKinds(full(1), cleanOnly, nil, "A")},
+				{do: pending("A", policy.KindClean, queued("a2", 0, 0))},
+				{do: requestKinds(full(1), cleanOnly, nil, "A"), want: []string{"delete p1 (the pod budget is full)"}},
+			}),
+		},
+		{
 			name:  "without a budget of its own the policy deletes when the pool has nothing and nothing starts",
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", "issue:1"), "p1"), []step{

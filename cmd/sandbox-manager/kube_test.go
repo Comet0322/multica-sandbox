@@ -53,14 +53,27 @@ func TestLoadSettingsCreatesPodsThroughKubernetesWithATemplate(t *testing.T) {
 		t.Fatal("the template or the client is missing")
 	}
 
-	env["SANDBOX_WARM_PODS"] = "0"
+	env["SANDBOX_WARM_PODS"] = "1"
 	env["SANDBOX_NAMESPACE"] = "other"
 	s, err = loadSettings(envLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.config.Kube.WarmPods != 0 || s.config.Kube.Namespace != "other" {
-		t.Fatalf("warm %d, ns %q; want 0 and other", s.config.Kube.WarmPods, s.config.Kube.Namespace)
+	if s.config.Kube.WarmPods != 1 || s.config.Kube.Namespace != "other" {
+		t.Fatalf("warm %d, ns %q; want 1 and other", s.config.Kube.WarmPods, s.config.Kube.Namespace)
+	}
+}
+
+// The manager learns a workspace's runtimes from a pod's daemon registering
+// them, so with no warm pod and no pod at all nothing would ever be claimed.
+func TestLoadSettingsRefusesNoWarmPod(t *testing.T) {
+	dir := t.TempDir()
+	env := baseEnv()
+	env["SANDBOX_POD_TEMPLATE"] = writeFile(t, dir, "pod.yaml", "kind: Pod\nspec:\n  containers:\n    - {name: daemon, image: pod:1}\n")
+	env["KUBECONFIG"] = writeFile(t, dir, "kubeconfig", testKubeconfig)
+	env["SANDBOX_WARM_PODS"] = "0"
+	if _, err := loadSettings(envLookup(env)); err == nil || !strings.Contains(err.Error(), "SANDBOX_WARM_PODS must be at least 1") {
+		t.Fatalf("err = %v, want SANDBOX_WARM_PODS refused", err)
 	}
 }
 

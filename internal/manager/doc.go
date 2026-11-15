@@ -1,7 +1,7 @@
 // Package manager runs the sandbox manager: it registers the runtimes of each
 // Multica workspace, one set per runtime kind, and runs their tasks one at a
 // time on pods it creates through the Kubernetes API, each running the stock
-// Multica daemon. See deploy/POOL.md.
+// Multica daemon. See docs/DEPLOYMENT.md.
 //
 // Upstream, the manager is an ordinary daemon: it registers runtimes,
 // heartbeats and claims tasks. Downstream, it impersonates the Multica server

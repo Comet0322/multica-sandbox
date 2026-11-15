@@ -2,6 +2,9 @@
 
 Runs Multica tasks on pods it creates through the Kubernetes API, one task at a time per pod. Each pod runs Multica's stock daemon under `tini`; the manager plays the Multica server toward them and claims tasks upstream with a bot token.
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the components, the life of a task, pool and clean runtimes, fair sharing, warm pods and the budget, and the design trade-offs.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md): deploying into one namespace with Multica, the pod template, permissions, every setting, the local kind namespace; and [deploy/RUNBOOK.md](deploy/RUNBOOK.md) for moving departments.
+
 | Path | What |
 | --- | --- |
 | `cmd/sandbox-manager` | The manager |
@@ -14,10 +17,11 @@ Runs Multica tasks on pods it creates through the Kubernetes API, one task at a 
 | `internal/multica/daemonwire` | The daemon protocol types we exchange with Multica, pinned to v0.6.4 |
 | `internal/policy` | The policy: fair sharing, quota, placement by kind and key, holds, idle lifetime, budget deletion; knows no Kubernetes or Multica |
 | `internal/sandbox` | The sandbox service: creates pods from the pod template, watches them, records what each serves on it, deletes them |
-| `deploy/` | Dockerfiles, Kubernetes manifests and the local kind namespace, operator docs (`POOL.md`, `SANDBOX.md`, `k8s/README.md`) |
+| `deploy/` | Dockerfiles, the pod image's contents (`SANDBOX.md`), Kubernetes manifests, the local kind namespace, the end-to-end scenarios (`k8s/e2e`) and the runbook |
+| `docs/` | Architecture and deployment guide |
 | `GLOSSARY.md` | Terms (decision records are kept outside the repository) |
 
-Test with `go test -race ./...`. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, at the version the company server runs, `slim/v0.6.4`). Build the images from the repository root:
+Test with `go test -race ./...`, and end to end with `deploy/k8s/e2e/scenarios.sh` against the local kind namespace. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, at the version the company server runs, `slim/v0.6.4`). Build the images from the repository root:
 
 ```bash
 docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:dev .
