@@ -23,6 +23,16 @@ spec:
       labels:
         app.kubernetes.io/name: multica-backend
     spec:
+      # The image runs as root by default; the server and its migrator are
+      # static binaries that run as any user. Uploads go to /app/data, which
+      # was already the container's own (lost with the pod), now an emptyDir.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: backend
           image: ghcr.io/multica-ai/multica-backend:v0.6.4
@@ -42,4 +52,16 @@ spec:
             periodSeconds: 5
           resources:
             requests: {cpu: 100m, memory: 256Mi}
-            limits: {memory: 1Gi}
+            limits: {cpu: "2", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /app/data}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

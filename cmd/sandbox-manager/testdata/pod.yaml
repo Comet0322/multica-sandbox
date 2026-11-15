@@ -1,4 +1,13 @@
 kind: Pod
 spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile: {type: RuntimeDefault}
   containers:
-    - {name: daemon, image: pod:1}
+    - name: daemon
+      image: pod:1
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
