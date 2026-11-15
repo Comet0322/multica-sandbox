@@ -6,8 +6,8 @@
 // (which registers the workspace's runtimes upstream through the task
 // source), picks up the tasks the core places on it, reports them started
 // to Multica, and after a while completed (or, at the configured rate,
-// failed). A pod handed back is reset for a while before it is free again.
-// Nothing runs: no agent, no repository, no files.
+// failed). A pod handed back is deleted, and a new pod takes its place after
+// a simulated start. Nothing runs: no agent, no repository, no files.
 package devpool
 
 import (
@@ -37,8 +37,9 @@ type Config struct {
 	// FailRate is the share of tasks reported failed instead of completed,
 	// between 0 and 1.
 	FailRate float64
-	// ResetTime is how long a pod handed back takes to be free again.
-	ResetTime time.Duration
+	// StartTime is how long the pod that replaces a deleted one takes to
+	// start.
+	StartTime time.Duration
 	// Poll is how often each held pod looks for a task placed on it, besides
 	// being woken. Zero means two seconds.
 	Poll time.Duration
@@ -71,6 +72,8 @@ type Pool struct {
 
 	mu   sync.Mutex
 	pods []*pod
+	// created numbers the pods created, for their names.
+	created int
 }
 
 type pod struct {
@@ -98,11 +101,19 @@ func New(cfg Config, c Core, s Source, client *multica.Client) *Pool {
 	}
 	p := &Pool{cfg: cfg, log: cfg.Log, core: c, source: s, conn: client.Connect(),
 		wake: make(chan string, 64), changed: make(chan struct{}, 1)}
-	now := cfg.Now()
-	for i := range cfg.Pods {
-		p.pods = append(p.pods, &pod{id: fmt.Sprintf("sim-%02d", i), state: core.PodFree, registered: map[string]bool{}, since: now, running: map[string]bool{}})
+	for range cfg.Pods {
+		p.pods = append(p.pods, p.newPodLocked(core.PodFree))
 	}
 	return p
+}
+
+// newPodLocked is a new simulated pod, registered for nothing. Callers hold
+// p.mu, or own p alone.
+func (p *Pool) newPodLocked(state core.PodState) *pod {
+	now := p.cfg.Now()
+	p.created++
+	return &pod{id: fmt.Sprintf("sim-%02d", p.created-1), state: state, registered: map[string]bool{}, since: now,
+		freeAt: now.Add(p.cfg.StartTime), running: map[string]bool{}}
 }
 
 func (p *Pool) find(id string) *pod {
@@ -114,11 +125,11 @@ func (p *Pool) find(id string) *pod {
 	return nil
 }
 
-// settleLocked frees the pods whose reset is over. Callers hold p.mu.
+// settleLocked makes the pods whose start is over ready. Callers hold p.mu.
 func (p *Pool) settleLocked() {
 	now := p.cfg.Now()
 	for _, pd := range p.pods {
-		if pd.state == core.PodResetting && !now.Before(pd.freeAt) {
+		if pd.state == core.PodStarting && !now.Before(pd.freeAt) {
 			pd.state = core.PodFree
 		}
 	}
@@ -140,22 +151,21 @@ func (p *Pool) Acquire(context.Context) (string, error) {
 	return "", core.ErrNoCapacity
 }
 
-// HandBack starts a simulated reset.
+// HandBack deletes the simulated pod and starts a new one in its place.
 func (p *Pool) HandBack(_ context.Context, id string, why core.HandBack) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	pd := p.find(id)
-	if pd == nil || pd.state != core.PodHeld {
+	i := slices.IndexFunc(p.pods, func(pd *pod) bool { return pd.id == id && pd.state == core.PodHeld })
+	if i < 0 {
 		return nil
 	}
-	pd.state, pd.freeAt = core.PodResetting, p.cfg.Now().Add(p.cfg.ResetTime)
-	clear(pd.running)
-	p.log.Info("simulated pod reset", "pod_id", id, "reason", why.Reason)
+	p.pods[i] = p.newPodLocked(core.PodStarting)
+	p.log.Info("simulated pod deleted; a new one starts", "pod_id", id, "new_pod_id", p.pods[i].id, "reason", why.Reason)
 	return nil
 }
 
 func (p *Pool) info(pd *pod) core.PodInfo {
-	return core.PodInfo{ID: pd.id, Name: pd.id, State: pd.state, RegisteredAt: pd.since, LastSeen: p.cfg.Now()}
+	return core.PodInfo{ID: pd.id, Name: pd.id, State: pd.state, CreatedAt: pd.since, LastSeen: p.cfg.Now()}
 }
 
 // Pod reports one simulated pod.
@@ -236,6 +246,9 @@ func (p *Pool) Handler() http.Handler { return http.NotFoundHandler() }
 
 // PrunedTotal is always zero: simulated pods are never lost.
 func (p *Pool) PrunedTotal() int { return 0 }
+
+// Problem: simulated pods always start.
+func (p *Pool) Problem() string { return "" }
 
 // Run registers the pods for the served workspaces and runs the tasks placed
 // on them until ctx ends.

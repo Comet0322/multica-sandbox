@@ -10,17 +10,12 @@ import (
 	"sandbox-manager/internal/manager"
 )
 
-// recycleMulti plays the supervisor and restarted daemon for a pod serving
-// several workspaces, and returns its runtime IDs.
+// recycleMulti follows a clean pod deleted after its task: the simulated
+// daemon moves to a pod created in its place, which registers for every
+// workspace. It returns the new pod's runtime IDs.
 func (p *simPod) recycleMulti() []string {
 	p.h.t.Helper()
-	cmd := p.pollControl()
-	if cmd == nil || cmd.Command != "reset" {
-		p.h.t.Fatalf("want a reset command, got %+v", cmd)
-	}
-	if code := p.reportControl(cmd.ID, "done"); code != http.StatusOK {
-		p.h.t.Fatalf("report done: status %d", code)
-	}
+	*p = *p.h.newPod(p.name)
 	return p.startAll()
 }
 

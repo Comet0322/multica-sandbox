@@ -30,6 +30,19 @@ type managerSettings struct {
 	// and empty disables auditing.
 	auditFile string
 	config    manager.Config
+	// warnings name the settings that are set but no longer used.
+	warnings []string
+}
+
+// removedSettings are the settings of the GitOps pool that ADR 0009 removed.
+// One still set is ignored with a warning, so an old deployment starts.
+var removedSettings = []string{
+	"SANDBOX_POOL_SIZE",
+	"SANDBOX_POD_CAPACITY",
+	"SANDBOX_PLACEMENT", "SANDBOX_PLACEMENT_WAIT",
+	"SANDBOX_POD_MAX_LIFETIME", "SANDBOX_POD_DRAIN_GRACE",
+	"SANDBOX_POOL_RESET_TIMEOUT", "SANDBOX_POOL_HEARTBEAT_TIMEOUT", "SANDBOX_POOL_LOST_RETENTION",
+	"SANDBOX_POOL_DRAIN_TIMEOUT", "SANDBOX_POOL_LEASE_MAX",
 }
 
 // secretValue reads a secret from NAME or, when NAME_FILE is set, from that
@@ -132,23 +145,17 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 			CleanName:         getenv("SANDBOX_MANAGER_CLEAN_NAME"),
 			CleanDeviceName:   getenv("SANDBOX_MANAGER_CLEAN_DEVICE_NAME"),
 			DaemonID:          strings.TrimSpace(getenv("SANDBOX_MANAGER_DAEMON_ID")),
-			ExpectedSize:      whole("SANDBOX_POOL_SIZE"),
 			Providers:         list("SANDBOX_PROVIDERS"),
-			DrainTimeout:      duration("SANDBOX_POOL_DRAIN_TIMEOUT"),
-			HeartbeatTimeout:  duration("SANDBOX_POOL_HEARTBEAT_TIMEOUT"),
-			ResetTimeout:      duration("SANDBOX_POOL_RESET_TIMEOUT"),
-			LostRetention:     duration("SANDBOX_POOL_LOST_RETENTION"),
-			AffinityRule:      multica.AffinityRule(getenv("SANDBOX_PLACEMENT")),
-			Capacity:          whole("SANDBOX_POD_CAPACITY"),
-			PlacementWait:     duration("SANDBOX_PLACEMENT_WAIT"),
 			DispatchInterval:  wakeInterval(),
 			HoldTimeout:       holdTimeout(),
-			MaxLifetime:       duration("SANDBOX_POD_MAX_LIFETIME"),
-			DrainGrace:        duration("SANDBOX_POD_DRAIN_GRACE"),
 			PodMaxIdle:        duration("SANDBOX_POD_MAX_IDLE"),
 			ReconcileInterval: reconcileInterval(),
-			LeaseMax:          duration("SANDBOX_POOL_LEASE_MAX"),
 		},
+	}
+	for _, name := range removedSettings {
+		if getenv(name) != "" {
+			s.warnings = append(s.warnings, name+" is no longer used (ADR 0009) and is ignored")
+		}
 	}
 	switch s.config.RuntimeVisibility {
 	case "", "public", "private":
@@ -168,9 +175,6 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		fail("SANDBOX_RUNTIMES: %v", err)
 	}
 	s.config.Runtimes = kinds
-	if err := multica.CheckAffinityRule(s.config.AffinityRule); err != nil {
-		fail("SANDBOX_PLACEMENT: %v", err)
-	}
 	// The overrides file is read on every sync, so an edited file applies
 	// without a restart; its problems are reported, never fatal.
 	if path := getenv("SANDBOX_WORKSPACE_OVERRIDES_FILE"); path != "" {
@@ -180,17 +184,17 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		s.config.ReadOverrides = func() ([]byte, error) { return readConfigFile(path) }
 	}
 
-	if getenv("SANDBOX_POD_TEMPLATE") != "" {
-		// Pods are created through the Kubernetes API (ADR 0009); two warm
-		// pods unless set.
-		warm := 2
-		if getenv("SANDBOX_WARM_PODS") != "" {
-			warm = whole("SANDBOX_WARM_PODS")
-		}
-		kc, err := kubeSettings(getenv, whole("SANDBOX_MAX_PODS"), warm, duration("SANDBOX_POD_START_TIMEOUT"))
-		if err != nil {
-			fail("%v", err)
-		}
+	// Pods are created through the Kubernetes API (ADR 0009); two warm pods
+	// unless set.
+	warm := 2
+	if getenv("SANDBOX_WARM_PODS") != "" {
+		warm = whole("SANDBOX_WARM_PODS")
+	}
+	if getenv("SANDBOX_POD_TEMPLATE") == "" {
+		fail("SANDBOX_POD_TEMPLATE is required: the pod YAML the manager creates its pods from")
+	} else if kc, err := kubeSettings(getenv, whole("SANDBOX_MAX_PODS"), warm, duration("SANDBOX_POD_START_TIMEOUT")); err != nil {
+		fail("%v", err)
+	} else {
 		s.config.Kube = kc
 	}
 
@@ -210,6 +214,9 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 // runManager starts the manager and looks for workspaces again on SIGHUP
 // until ctx ends.
 func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error {
+	for _, w := range s.warnings {
+		log.Warn(w)
+	}
 	if s.auditFile != "" {
 		w, closeAudit, err := openAudit(s.auditFile)
 		if err != nil {

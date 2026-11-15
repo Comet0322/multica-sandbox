@@ -61,7 +61,8 @@ const (
 const (
 	DefaultMaxIdle = 24 * time.Hour
 	// DefaultPodWait bounds how long a claimed task whose pod was lost
-	// before it started waits for another.
+	// before it started waits for another, when the caller names no bound
+	// (the manager passes its pods' start timeout).
 	DefaultPodWait = 3 * time.Minute
 	// DefaultRemovedReason is the deletion reason of a removed tenant's
 	// pods.
@@ -313,12 +314,6 @@ func (p *Policy) PodLost(pod, failReason, endReason string) []Decision {
 		}
 	}
 	return append(ds, p.placeWaiting()...)
-}
-
-// PodInterrupted is PodLost: a pod whose daemon restarted ran its task no
-// further.
-func (p *Policy) PodInterrupted(pod, failReason, endReason string) []Decision {
-	return p.PodLost(pod, failReason, endReason)
 }
 
 // TaskStarted records that the pod picked up a task placed on it.

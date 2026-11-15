@@ -12,11 +12,11 @@ ADR 0009 runs everything in a single namespace:
 | `pod.yaml` | The example pod template (`SANDBOX_POD_TEMPLATE`): `tini` and the stock daemon, requests and limits, a liveness probe on the daemon's health endpoint, the fixed hostname `sandbox`, and no secret in the environment but the pod token the manager sets. It passes Pod Security `restricted`. Set its image and manager address. |
 | `rbac.yaml` | The manager's own service account, with a Role that may only `create`, `delete`, `get`, `list`, `watch` and `patch` pods, and its RoleBinding: for when the manager stops using the operator's kubeconfig. |
 
-The manager's Deployment is added here by a later `.scratch/k8s-executor` issue.
+A Deployment for the manager itself is not written yet.
 
 ## The pod
 
-The image is the `agents` target of `deploy/Dockerfile.pool`. A pod the manager creates runs `tini -- multica-pod-entrypoint-kube` (`deploy/pool/entrypoint-kube.sh`), which writes the daemon's config from `SANDBOX_POD_TOKEN` and `SANDBOX_MANAGER_URL`, sets the private umask and the daemon's home on the pod's volume, and execs the stock daemon. The template's `securityContext` keeps the root filesystem read-only. A pod is never reset; it is deleted after its task.
+The image is the `agents` target of `deploy/Dockerfile.pool`. A pod the manager creates runs `tini -- multica-pod-entrypoint-kube` (`deploy/pool/entrypoint-kube.sh`), which writes the daemon's config from `SANDBOX_POD_TOKEN` and `SANDBOX_MANAGER_URL`, sets the private umask and the daemon's home on the pod's volume, and execs the stock daemon. The template's `securityContext` keeps the root filesystem read-only. A pod is never reused across departments; it is deleted after its task, its hold or its idle lifetime.
 
 Without `spec.hostname` the pod's hostname is its name, which agents print into what reaches Multica. The template sets `sandbox`, and the manager sets the same when a template has none.
 

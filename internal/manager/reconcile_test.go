@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"sandbox-manager/internal/manager"
 )
 
@@ -51,8 +53,8 @@ func TestReconcileEndsTheLeasesOfTasksThatAreOver(t *testing.T) {
 				h.wantHeld("t1")
 			} else {
 				h.wantEnded("t1", tc.ended)
-				if inv := h.inventory(); inv.Resetting != 1 {
-					t.Fatalf("the pod must be reset: %+v", inv)
+				if inv := h.inventory(); inv.Idle != 1 {
+					t.Fatalf("the pod must be idle: %+v", inv)
 				}
 			}
 			if n := h.upstream.callCount("POST /api/daemon/tasks/t1/fail"); n != 0 {
@@ -269,7 +271,7 @@ func TestRunReconcilesOnItsIntervalAndNotWithoutOne(t *testing.T) {
 // Whatever happens, a lease ends at LeaseMax and its task is failed.
 func TestLeaseMaxEndsAnOldLeaseAndFailsItsTask(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, farHeartbeat, func(c *manager.Config) { c.LeaseMax = 10 * time.Minute })
+	h := newHarness(t, 1, func(c *manager.Config) { c.LeaseMax = 10 * time.Minute })
 	clock := h.withClock()
 	pod := h.newPod("pool-0")
 	leaseOne(t, h, pod, "t1")
@@ -294,7 +296,7 @@ func TestLeaseMaxDefaultsAndValidation(t *testing.T) {
 	t.Parallel()
 	t.Run("two hours by default", func(t *testing.T) {
 		t.Parallel()
-		h := newHarness(t, 1, farHeartbeat)
+		h := newHarness(t, 1)
 		clock := h.withClock()
 		pod := h.newPod("pool-0")
 		leaseOne(t, h, pod, "t1")
@@ -332,12 +334,8 @@ func TestFailureReportThatMulticaCouldNotTakeIsRetried(t *testing.T) {
 		return false
 	})
 
-	if status := pod.event("daemon-exited"); status != http.StatusOK {
-		t.Fatalf("event: status %d", status)
-	}
-	if n := h.inventory().PendingFailReports; n != 1 {
-		t.Fatalf("the unsent failure must be queued, pending %d", n)
-	}
+	h.loseDaemon(pod, "t1")
+	eventually(t, "the unsent failure queued", func() bool { return h.inventory().PendingFailReports == 1 })
 	// Reconciling while Multica is still down keeps it queued, once.
 	h.pool.ReconcileOnce(context.Background())
 	if n := h.inventory().PendingFailReports; n != 1 {
@@ -349,7 +347,7 @@ func TestFailureReportThatMulticaCouldNotTakeIsRetried(t *testing.T) {
 	if n := h.inventory().PendingFailReports; n != 0 {
 		t.Fatalf("pending %d after Multica took it", n)
 	}
-	if msg, ok := h.upstream.failureOf("t1"); !ok || msg != "the pod's daemon restarted" {
+	if msg, ok := h.upstream.failureOf("t1"); !ok || msg != "the pod running this task was lost: "+daemonExited {
 		t.Fatalf("failure upstream = %q, %v", msg, ok)
 	}
 }
@@ -374,10 +372,8 @@ func TestFailureReportMulticaRefusesIsDropped(t *testing.T) {
 				}
 				return true
 			})
-			pod.event("daemon-exited")
-			if n := h.inventory().PendingFailReports; n != 1 {
-				t.Fatalf("pending %d", n)
-			}
+			h.loseDaemon(pod, "t1")
+			eventually(t, "the failure queued", func() bool { return h.inventory().PendingFailReports == 1 })
 			h.pool.ReconcileOnce(context.Background())
 			if n := h.inventory().PendingFailReports; n != 0 {
 				t.Fatalf("a refusal means Multica has dealt with the task; pending %d", n)
@@ -393,7 +389,8 @@ func TestFailureReportMulticaRefusesIsDropped(t *testing.T) {
 				}
 				return false
 			})
-			pod2.event("daemon-exited")
+			h2.loseDaemon(pod2, "t2")
+			time.Sleep(50 * time.Millisecond)
 			if n := h2.inventory().PendingFailReports; n != 0 {
 				t.Fatalf("a first-attempt refusal was queued: %d", n)
 			}
@@ -403,7 +400,7 @@ func TestFailureReportMulticaRefusesIsDropped(t *testing.T) {
 
 func TestFailureReportIsGivenUpAfterThirtyMinutes(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, farHeartbeat)
+	h := newHarness(t, 1)
 	clock := h.withClock()
 	pod := h.newPod("pool-0")
 	leaseOne(t, h, pod, "t1")
@@ -414,7 +411,8 @@ func TestFailureReportIsGivenUpAfterThirtyMinutes(t *testing.T) {
 		}
 		return false
 	})
-	pod.event("daemon-exited")
+	h.loseDaemon(pod, "t1")
+	eventually(t, "the failure queued", func() bool { return h.inventory().PendingFailReports == 1 })
 	clock.advance(29 * time.Minute)
 	h.pool.ReconcileOnce(context.Background())
 	if n := h.inventory().PendingFailReports; n != 1 {
@@ -442,8 +440,8 @@ func TestTaskIsQueuedForRetryOnce(t *testing.T) {
 		}
 		return false
 	})
-	pod.event("daemon-exited")
-	pod.event("daemon-exited")
+	h.loseDaemon(pod, "t1")
+	eventually(t, "the failure queued", func() bool { return h.inventory().PendingFailReports == 1 })
 	h.pool.ReconcileOnce(context.Background())
 	h.pool.ReconcileOnce(context.Background())
 	if n := h.inventory().PendingFailReports; n != 1 {
@@ -451,27 +449,19 @@ func TestTaskIsQueuedForRetryOnce(t *testing.T) {
 	}
 }
 
-// The failure still goes out when the request that caused it is abandoned.
-func TestFailureReportSurvivesTheCancelledRequestThatCausedIt(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, 1)
-	pod := h.newPod("pool-0")
-	leaseOne(t, h, pod, "t1")
-	var delivered atomic.Bool
-	h.upstream.intercept(func(w http.ResponseWriter, r *http.Request) bool {
-		if r.URL.Path != "/api/daemon/tasks/t1/fail" {
-			return false
-		}
-		time.Sleep(400 * time.Millisecond)
-		if r.Context().Err() == nil {
-			delivered.Store(true)
-		}
-		return false
+// daemonExited is why a pod whose daemon container exited was lost.
+const daemonExited = "the pod's daemon container exited with code 1 (Error)"
+
+var exitedStatus = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
+	Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}},
+}}}
+
+// loseDaemon has the pod's daemon container exit, as Kubernetes reports it,
+// and waits until the manager tried to fail the pod's task upstream.
+func (h *harness) loseDaemon(p *simPod, task string) {
+	h.t.Helper()
+	h.setPodStatus(p.id, exitedStatus)
+	eventually(h.t, "the task failed upstream", func() bool {
+		return h.upstream.callCount("POST /api/daemon/tasks/"+task+"/fail") > 0
 	})
-	short := &http.Client{Transport: pod.client.Transport, Timeout: 100 * time.Millisecond}
-	req, _ := http.NewRequest(http.MethodPost, h.podAPI.URL+"/pod/control", strings.NewReader(`{"event":"daemon-exited"}`))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+pod.token)
-	_, _ = short.Do(req) // gives up before the manager is done
-	eventually(t, "the failure to reach Multica", func() bool { return delivered.Load() })
 }

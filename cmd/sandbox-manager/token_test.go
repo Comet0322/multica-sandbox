@@ -17,7 +17,9 @@ func TestLoadSettingsReadsTheTokenFromAFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("mul_pat_from_file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	env := map[string]string{"SANDBOX_POOL_TOKEN_FILE": path, "MULTICA_SERVER_URL": "http://multica:8080"}
+	env := baseEnv()
+	delete(env, "SANDBOX_POOL_TOKEN")
+	env["SANDBOX_POOL_TOKEN_FILE"] = path
 	s, err := loadSettings(envLookup(env))
 	if err != nil || s.config.PAT != "mul_pat_from_file" {
 		t.Fatalf("token from file: %v, %+v", err, s.config.PAT)
@@ -90,6 +92,7 @@ func TestStartupStopsWhenTheFirstWorkspaceListingFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.podListen, s.adminListen = "127.0.0.1:0", "127.0.0.1:0"
+	s.config.Kube = testKube()
 	err = runManager(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), s)
 	if err == nil || !strings.Contains(err.Error(), "list the account's workspaces") {
 		t.Fatalf("a rejected token must stop the manager, got %v", err)

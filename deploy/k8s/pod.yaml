@@ -1,17 +1,17 @@
-# Example pod template for the company's namespace (SANDBOX_POD_TEMPLATE,
-# ADR 0009). The manager creates every pod from it and fills in only the
+# Example pod template for the company's namespace (SANDBOX_POD_TEMPLATE).
+# The manager creates every pod from it and fills in only the
 # pod's name, labels, annotations, restart policy and pod token
 # (SANDBOX_POD_TOKEN, the only secret in the pod's environment). Everything
 # else is the operator's. Every PLACEHOLDER is set before use.
 #
 # The container runs tini and the stock daemon, and nothing else of ours
-# (deploy/pool/entrypoint-kube.sh). What the pod supervisor used to apply is
-# here or in the entrypoint:
+# (deploy/pool/entrypoint-kube.sh, the image's default entrypoint). The pod's
+# own settings are here or in the entrypoint:
 #   - the private umask: the entrypoint (umask 077);
 #   - the read-only root: securityContext.readOnlyRootFilesystem;
 #   - the daemon's home: the emptyDir at /home/pod, the only writable path,
 #     which the entrypoint fills from the image's template. A pod is deleted
-#     after its task (or its hold), never reset, so the volume goes with it.
+#     when it is no longer needed, so the volume goes with it.
 #
 # Admission: it passes Pod Security "restricted" (non-root, read-only root,
 # no capabilities, no privilege escalation, RuntimeDefault seccomp, no

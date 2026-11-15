@@ -10,22 +10,15 @@ import (
 	"strings"
 	"time"
 
-	"sandbox-manager/internal/multica"
-
 	"gopkg.in/yaml.v3"
 )
 
 // WorkspaceOverride replaces pool defaults for one workspace. A field left out
-// keeps the pool default. Pod capacity is pool-wide and cannot be overridden.
+// keeps the pool default.
 type WorkspaceOverride struct {
-	// Placement is the workspace's affinity rule (SANDBOX_PLACEMENT).
-	AffinityRule multica.AffinityRule `yaml:"placement"`
-	// HoldTimeout is the hold timeout of the bindings its tasks open
-	// (SANDBOX_HOLD_TIMEOUT); 0 resets a pod as soon as its last task ends.
+	// HoldTimeout is how long a pod is held for its task's key once the task
+	// ended (SANDBOX_HOLD_TIMEOUT); 0 holds nothing.
 	HoldTimeout *time.Duration `yaml:"hold_timeout"`
-	// MaxLifetime is the maximum lifetime of the bindings its tasks open
-	// (SANDBOX_POD_MAX_LIFETIME); 0 means none.
-	MaxLifetime *time.Duration `yaml:"max_lifetime"`
 	// Quota overrides SANDBOX_POOL_QUOTA; 0 means no cap.
 	Quota *int `yaml:"quota"`
 	// Guarantee is the number of pods kept for the workspace even while it
@@ -34,17 +27,17 @@ type WorkspaceOverride struct {
 	// Weight shares out the pods beyond the guarantees between workspaces
 	// with work; 1 by default.
 	Weight *int `yaml:"weight"`
+	// Ignored are the settings the entry names that ADR 0009 removed: they
+	// are read with a warning and ignored.
+	Ignored []string `yaml:"-"`
 }
 
+// removedOverrides are the per-workspace settings of the GitOps pool.
+var removedOverrides = []string{"placement", "rule", "max_lifetime"}
+
 func (o WorkspaceOverride) check() error {
-	if err := multica.CheckAffinityRule(o.AffinityRule); err != nil {
-		return err
-	}
 	if o.HoldTimeout != nil && *o.HoldTimeout < 0 {
 		return errors.New("hold_timeout must not be negative")
-	}
-	if o.MaxLifetime != nil && *o.MaxLifetime < 0 {
-		return errors.New("max_lifetime must not be negative")
 	}
 	if o.Quota != nil && *o.Quota < 0 {
 		return errors.New("quota must not be negative")
@@ -85,6 +78,7 @@ func decodeOverride(node *yaml.Node) (WorkspaceOverride, error) {
 	if node.Kind == yaml.ScalarNode && node.Tag == "!!null" {
 		return o, nil
 	}
+	ignored := dropRemoved(node)
 	if err := durationsAsText(node); err != nil {
 		return o, err
 	}
@@ -98,7 +92,27 @@ func decodeOverride(node *yaml.Node) (WorkspaceOverride, error) {
 	if err := dec.Decode(&o); err != nil {
 		return o, oneLine(err)
 	}
+	o.Ignored = ignored
 	return o, o.check()
+}
+
+// dropRemoved takes the settings ADR 0009 removed out of an entry and names
+// them.
+func dropRemoved(node *yaml.Node) []string {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	var names []string
+	kept := node.Content[:0:0]
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if slices.Contains(removedOverrides, node.Content[i].Value) {
+			names = append(names, node.Content[i].Value)
+			continue
+		}
+		kept = append(kept, node.Content[i], node.Content[i+1])
+	}
+	node.Content = kept
+	return names
 }
 
 // durationsAsText checks the durations of an entry with time.ParseDuration,
@@ -109,7 +123,7 @@ func durationsAsText(node *yaml.Node) error {
 	}
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		key, value := node.Content[i], node.Content[i+1]
-		if (key.Value != "hold_timeout" && key.Value != "max_lifetime") || value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
+		if key.Value != "hold_timeout" || value.Kind != yaml.ScalarNode || value.Tag == "!!null" {
 			continue
 		}
 		if _, err := time.ParseDuration(value.Value); err != nil {
@@ -164,14 +178,14 @@ func (s *Source) resolveWorkspaceSettings(ctx context.Context, list []WorkspaceC
 	for i := range list {
 		wc := &list[i]
 		known[wc.Slug] = true
-		wc.AffinityRule, wc.Quota, wc.HoldTimeout, wc.MaxLifetime = s.cfg.AffinityRule, s.cfg.Quota, nil, nil
+		wc.Quota, wc.HoldTimeout = s.cfg.Quota, nil
 		wc.Guarantee, wc.Weight = 0, 0
 		o, ok := overrides[wc.Slug]
 		if !ok || wc.Slug == "" {
 			continue
 		}
-		if o.AffinityRule != "" {
-			wc.AffinityRule = o.AffinityRule
+		if len(o.Ignored) > 0 {
+			problems = append(problems, fmt.Sprintf("override %q: %s no longer used (ADR 0009); ignored", wc.Slug, strings.Join(o.Ignored, ", ")))
 		}
 		if o.Quota != nil {
 			wc.Quota = *o.Quota
@@ -182,7 +196,7 @@ func (s *Source) resolveWorkspaceSettings(ctx context.Context, list []WorkspaceC
 		if o.Weight != nil {
 			wc.Weight = *o.Weight
 		}
-		wc.HoldTimeout, wc.MaxLifetime = o.HoldTimeout, o.MaxLifetime
+		wc.HoldTimeout = o.HoldTimeout
 	}
 	for slug := range overrides {
 		if !known[slug] {

@@ -1,0 +1,4 @@
+kind: Pod
+spec:
+  containers:
+    - {name: daemon, image: pod:1}

@@ -44,8 +44,8 @@ func TestIdlePodPollingGetsExactlyOneClaimedTask(t *testing.T) {
 	if n := h.upstream.claimCount(); n != 1 {
 		t.Fatalf("want exactly 1 upstream claim, got %d", n)
 	}
-	if inv := h.inventory(); inv.Leased != 1 || inv.Idle != 0 {
-		t.Fatalf("want the pod leased, got %+v", inv)
+	if inv := h.inventory(); inv.Running != 1 || inv.Warm != 0 {
+		t.Fatalf("want the pod running, got %+v", inv)
 	}
 }
 
@@ -74,8 +74,8 @@ func TestTwoIdlePodsTwoTasksEachGetOneWithoutDuplicates(t *testing.T) {
 	if len(gotA) != 1 || len(gotB) != 1 || gotA[0] == gotB[0] {
 		t.Fatalf("want one distinct task each, got %v and %v", gotA, gotB)
 	}
-	if inv := h.inventory(); inv.Leased != 2 {
-		t.Fatalf("want 2 leased, got %+v", inv)
+	if inv := h.inventory(); inv.Running != 2 {
+		t.Fatalf("want 2 running, got %+v", inv)
 	}
 }
 
@@ -149,23 +149,22 @@ func TestLeaseIsRecordedAndReleasedOnCompleteOrFail(t *testing.T) {
 		t.Fatalf("bad lease for t2: %+v", l)
 	}
 
-	if status := a.report("t1", "complete"); status != http.StatusOK {
-		t.Fatalf("complete: status %d", status)
-	}
 	if status := b.report("t2", "fail"); status != http.StatusOK {
 		t.Fatalf("fail: status %d", status)
+	}
+	if status := a.report("t1", "complete"); status != http.StatusOK {
+		t.Fatalf("complete: status %d", status)
 	}
 	for _, l := range h.leases() {
 		if l.EndedAt == nil || l.EndedAt.Before(l.StartedAt) {
 			t.Fatalf("lease %s not closed: %+v", l.TaskID, l)
 		}
 	}
-	if inv := h.inventory(); inv.Leased != 0 || inv.Resetting != 2 {
-		t.Fatalf("want both pods released into reset, got %+v", inv)
+	if inv := h.inventory(); inv.Running != 0 || inv.Idle != 2 {
+		t.Fatalf("want both pods idle, got %+v", inv)
 	}
-	// A released pod takes new work once it was reset and registered again,
-	// and the old task is no longer its own.
-	a.completeReset()
+	// An idle pod takes new work of its workspace, the one idle the shortest
+	// time first, and the old task is no longer its own.
 	h.upstream.enqueue("t3")
 	if got := a.claimBatch(); !slices.Equal(got, []string{"t3"}) {
 		t.Fatalf("want t3 after release, got %v", got)

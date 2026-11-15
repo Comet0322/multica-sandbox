@@ -45,10 +45,6 @@ type DaemonAPIConfig struct {
 	// Forward relays a pod request to Multica under the route's rules
 	// (Client.Forward).
 	Forward func(w http.ResponseWriter, r *http.Request, route *Route)
-	// PodPaths are served on the same listener ahead of the daemon protocol,
-	// before any pod is identified: the sandbox service's registration and
-	// control channel. An agent's task token never reaches them.
-	PodPaths map[string]http.Handler
 }
 
 // Backend is what the DaemonAPI asks the manager. Every method answers for
@@ -141,8 +137,7 @@ func (a *DaemonAPI) refuse(w http.ResponseWriter, r *http.Request, podID, why st
 	http.Error(w, why, http.StatusForbidden)
 }
 
-// Handler serves the standard daemon protocol to pods, and the PodPaths
-// beside it. Callers are identified by the pod token they present as their
+// Handler serves the standard daemon protocol to pods. Callers are identified by the pod token they present as their
 // bearer token; the source address plays no part, since a mesh may rewrite
 // it. An agent CLI's own task token ("mat_") is relayed upstream without
 // identifying the pod.
@@ -159,10 +154,6 @@ func (a *DaemonAPI) Handler() http.Handler {
 				return
 			}
 			writeJSON(w, http.StatusOK, okBody)
-			return
-		}
-		if h, ok := a.cfg.PodPaths[r.URL.Path]; ok {
-			h.ServeHTTP(w, r)
 			return
 		}
 		token := bearer(r)
@@ -208,9 +199,6 @@ func bearer(r *http.Request) string {
 // with its task token: anything but the daemon protocol, the pod's own calls
 // and the paths the manager answers for the daemon itself.
 func (a *DaemonAPI) isAgentPath(path string) bool {
-	if _, ok := a.cfg.PodPaths[path]; ok {
-		return false
-	}
 	switch path {
 	case "/api/workspaces", "/api/tokens/current/renew":
 		return false

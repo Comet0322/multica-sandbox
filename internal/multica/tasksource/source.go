@@ -59,9 +59,8 @@ type Config struct {
 	// under its own daemon_id (see DaemonIDSuffix), name and device name.
 	// Empty registers the pool kind alone, under Name and DeviceName.
 	Runtimes []RuntimeSet
-	// Quota and AffinityRule are the defaults of every workspace.
-	Quota        int
-	AffinityRule multica.AffinityRule
+	// Quota is the default of every workspace.
+	Quota int
 	// SyncInterval is how often SyncLoop lists the workspaces. Zero means
 	// DefaultSyncInterval.
 	SyncInterval time.Duration
@@ -302,7 +301,7 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 	next := slices.Clone(workspaces)
 	seen := map[string]bool{}
 	for i := range next {
-		if err := next[i].normalize(s.cfg.Name, s.cfg.AffinityRule); err != nil {
+		if err := next[i].normalize(s.cfg.Name); err != nil {
 			return ReloadResult{}, err
 		}
 		if seen[next[i].WorkspaceID] {
@@ -349,13 +348,15 @@ func (s *Source) Close(tenant string) {
 	}
 }
 
-// recoverOrphansOnce runs on the first successful Sync. The leases of an
-// earlier manager are gone with it and every pod is reset, so whatever Multica
-// still shows running on the manager's runtimes will never finish: it is
-// failed in every served workspace, which lets Multica retry it, without
-// waiting for a pod to register the workspace. The first Sync runs before pods
-// are served, so no live task can be hit. Best effort: a failure leaves the
-// tasks to Multica's own timeout, or to the recovery a pod's registration runs.
+// recoverOrphansOnce runs on the first successful Sync, after the core took
+// over the pods an earlier manager left. In a workspace with no work taken
+// over, whatever Multica still shows running on the manager's runtimes will
+// never finish: it is failed, which lets Multica retry it, without waiting for
+// a pod to register the workspace. In a workspace with work taken over, only
+// the tasks shown dispatched that the core does not hold are failed. The
+// first Sync runs before pods are served, so no live task can be hit. Best
+// effort: a failure leaves the tasks to Multica's own timeout, or to the
+// recovery a pod's registration runs.
 func (s *Source) recoverOrphansOnce(ctx context.Context) {
 	s.mu.Lock()
 	if s.orphansRecovered {

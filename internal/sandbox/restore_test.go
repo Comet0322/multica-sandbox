@@ -112,10 +112,11 @@ func TestKubeRecordsWhatAPodServesOnThePod(t *testing.T) {
 }
 
 func TestKubeShowsRefusedRecords(t *testing.T) {
-	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1})
+	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1})
 	h.client.PrependReactor("patch", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "", errors.New("no patch"))
 	})
+	h.run()
 	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
 	h.ready()
 	id, _ := h.svc.Create(context.Background())

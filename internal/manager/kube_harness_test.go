@@ -14,11 +14,11 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 
 	"sandbox-manager/internal/manager"
-	"sandbox-manager/internal/policy"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -38,26 +38,41 @@ func newKubeWorld(t *testing.T) *kubeWorld {
 }
 
 func podTemplate() *corev1.Pod {
-	return &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "daemon", Image: "pod:test"}}}}
+	return &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+		Name: "daemon", Image: "pod:test",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("1Gi")}},
+	}}}}
 }
 
 // manager starts a manager on the world, as the command line does: it takes
 // over the pods a previous one left, finds its workspaces, then runs its pod
 // side. Its stop ends it.
 func (w *kubeWorld) manager(warm, maxPods int, opts ...func(*manager.Config)) *harness {
-	t := w.t
-	t.Helper()
-	cfg := manager.Config{
-		MulticaURL: w.upstream.URL, PAT: harnessPAT, Name: "Test Pool",
-		Runtimes:    []policy.Kind{policy.KindPool},
-		HoldTimeout: 10 * time.Minute,
-		Kube: &sandbox.KubeConfig{
-			Client: w.client, Namespace: kubeNS, Template: podTemplate(),
-			WarmPods: warm, MaxPods: maxPods, TickInterval: 5 * time.Millisecond,
-		},
-	}
+	w.t.Helper()
+	cfg := manager.Config{MulticaURL: w.upstream.URL, PAT: harnessPAT, Name: "Test Pool"}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	h := startManager(w.t, w.client, cfg, warm, maxPods, func(ctx context.Context, m *manager.Manager) error {
+		_, err := m.Sync(ctx)
+		return err
+	})
+	h.upstream = w.upstream
+	return h
+}
+
+// startManager starts a manager with cfg on the Kubernetes API client, its
+// sandbox service keeping warm pods within maxPods: it takes over the pods a
+// previous one left, finds its workspaces with serve, then runs its pod
+// side. Its stop ends it.
+func startManager(t *testing.T, client *fake.Clientset, cfg manager.Config, warm, maxPods int, serve func(context.Context, *manager.Manager) error) *harness {
+	t.Helper()
+	cfg.Kube = &sandbox.KubeConfig{
+		Client: client, Namespace: kubeNS, Template: podTemplate(),
+		WarmPods: warm, MaxPods: maxPods, TickInterval: 5 * time.Millisecond,
+		// Tests move the clock by hours; a pod that has not called in yet
+		// must not time out meanwhile.
+		StartTimeout: 1000 * time.Hour,
 	}
 	logs, audit := &syncBuffer{}, &syncBuffer{}
 	cfg.AuditLog = audit
@@ -70,16 +85,22 @@ func (w *kubeWorld) manager(warm, maxPods int, opts ...func(*manager.Config)) *h
 	if err := m.Restore(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Sync(ctx); err != nil {
+	if err := serve(ctx, m); err != nil {
 		t.Fatal(err)
 	}
 	go m.RunPods(ctx)
-	h := &harness{t: t, upstream: w.upstream, pool: m, logs: logs, audit: audit, kube: w.client, stop: cancel}
+	h := &harness{t: t, pool: m, logs: logs, audit: audit, kube: client, stop: cancel, adopted: map[string]bool{}}
 	h.podAPI = httptest.NewServer(m.PodHandler())
 	h.admin = httptest.NewServer(m.AdminHandler())
 	t.Cleanup(h.podAPI.Close)
 	t.Cleanup(h.admin.Close)
 	return h
+}
+
+// testKube is a sandbox service on a fake Kubernetes API of its own, for a
+// manager that is only built.
+func testKube() *sandbox.KubeConfig {
+	return &sandbox.KubeConfig{Client: fake.NewSimpleClientset(), Namespace: kubeNS, Template: podTemplate()}
 }
 
 // kubePods lists the pods in the namespace.
@@ -101,12 +122,18 @@ func (h *harness) kubePod(name string) corev1.Pod {
 	return *pd
 }
 
+// kubeHas reports whether the pod exists in Kubernetes.
+func (h *harness) kubeHas(name string) bool {
+	_, err := h.kube.CoreV1().Pods(kubeNS).Get(context.Background(), name, metav1.GetOptions{})
+	return err == nil
+}
+
 // adopt plays the daemon of a pod the service created, with its pod token.
 func (h *harness) adopt(pd corev1.Pod) *simPod {
 	h.t.Helper()
 	transport := &http.Transport{}
 	h.t.Cleanup(transport.CloseIdleConnections)
-	p := &simPod{h: h, name: pd.Name, id: pd.Name, seen: true, client: &http.Client{Transport: transport, Timeout: 10 * time.Second}}
+	p := &simPod{h: h, name: pd.Name, id: pd.Name, client: &http.Client{Transport: transport, Timeout: 10 * time.Second}}
 	for _, e := range pd.Spec.Containers[0].Env {
 		if e.Name == sandbox.PodTokenEnv {
 			p.token = e.Value
@@ -123,8 +150,8 @@ func (h *harness) startedPods(n int) []*simPod {
 	h.t.Helper()
 	eventually(h.t, "the warm pods", func() bool { return len(h.kubePods()) >= n })
 	var out []*simPod
-	for _, pd := range h.kubePods() {
-		p := h.adopt(pd)
+	for range n {
+		p := h.newPod("")
 		p.start()
 		out = append(out, p)
 	}

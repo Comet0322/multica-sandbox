@@ -162,10 +162,6 @@ func daemonContainer(pd *corev1.Pod) (int, error) {
 	return 0, fmt.Errorf("the pod has %d containers and none is named %q", len(cs), DaemonContainer)
 }
 
-// PodStarting is a pod created but not yet ready. Callers that know only the
-// GitOps states see it as PodResetting: not yet free, and live.
-const PodStarting PodState = "starting"
-
 // KubeService is the sandbox service for pods it creates through the
 // Kubernetes API from a pod template. A pod is ready once its daemon first
 // calls the manager with the pod's token. Create takes a ready pod no one
@@ -216,6 +212,8 @@ type kubePod struct {
 	waiting string
 	// record is what the pod serves, as last recorded (see Record).
 	record PodRecord
+	// lostWhy is why a lost pod was lost.
+	lostWhy string
 }
 
 // NewKube returns a sandbox service with no pods. Run starts it.
@@ -231,6 +229,9 @@ func (k *KubeService) now() time.Time { return k.cfg.Now() }
 
 // MaxPods is the most pods the service has at once: the budget.
 func (k *KubeService) MaxPods() int { return k.cfg.MaxPods }
+
+// StartTimeout is how long a new pod may take to get ready.
+func (k *KubeService) StartTimeout() time.Duration { return k.cfg.StartTimeout }
 
 func (k *KubeService) unlock() {
 	notes := k.notes
@@ -436,7 +437,7 @@ func (k *KubeService) loseLocked(pd *kubePod, why string) {
 		return
 	}
 	held := pd.state == PodHeld
-	pd.state, pd.lostAt = PodLost, k.now()
+	pd.state, pd.lostAt, pd.lostWhy = PodLost, k.now(), why
 	if held && k.cfg.Notify != nil {
 		n, id := k.cfg.Notify, pd.id
 		k.notes = append(k.notes, func() { n.Lost(id, why) })
@@ -484,7 +485,7 @@ func (k *KubeService) Authenticate(token string) (PodID, bool) {
 	return id, true
 }
 
-// Create acquires a ready pod no one holds, the earliest created first. With
+// Create acquires a ready pod no one holds, the one ready longest first. With
 // none it returns ErrNoCapacity, with the reason pods are not starting when
 // one is known, and has one more pod created.
 func (k *KubeService) Create(ctx context.Context) (PodID, error) {
@@ -493,7 +494,7 @@ func (k *KubeService) Create(ctx context.Context) (PodID, error) {
 	k.sweepLocked()
 	var pick *kubePod
 	for _, pd := range k.pods {
-		if pd.state == PodFree && (pick == nil || pd.seq < pick.seq) {
+		if pd.state == PodFree && (pick == nil || pd.readyAt.Before(pick.readyAt) || pd.readyAt.Equal(pick.readyAt) && pd.seq < pick.seq) {
 			pick = pd
 		}
 	}
@@ -518,7 +519,11 @@ func (k *KubeService) Delete(ctx context.Context, id PodID, label AuditLabel) er
 	if pd == nil || pd.state == PodLost {
 		return nil
 	}
-	pd.state, pd.lostAt = PodLost, k.now()
+	// A pod deleted on purpose leaves the inventory at once; only a lost pod
+	// stays listed, with its reason.
+	delete(k.pods, id)
+	delete(k.tokens, pd.token)
+	delete(k.dirty, id)
 	k.log.Info("pod deleted", "pod", id, "reason", label.Reason)
 	if k.cfg.Audit != nil {
 		k.cfg.Audit.Record(AuditRecord{
@@ -699,14 +704,12 @@ func (k *KubeService) Inventory() Inventory {
 	return inv
 }
 
-// info reports a starting pod as resetting, the GitOps state callers know
-// for a live pod that is not free yet.
 func (pd *kubePod) info() PodInfo {
-	state := pd.state
-	if state == PodStarting {
-		state = PodResetting
+	reason := pd.lostWhy
+	if pd.state == PodStarting {
+		reason = pd.waiting
 	}
-	return PodInfo{ID: pd.id, Label: string(pd.id), State: state, RegisteredAt: pd.createdAt, LastSeen: pd.lastSeen}
+	return PodInfo{ID: pd.id, Label: string(pd.id), State: pd.state, CreatedAt: pd.createdAt, LastSeen: pd.lastSeen, Reason: reason}
 }
 
 // PutFiles is not supported.

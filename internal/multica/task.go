@@ -43,8 +43,8 @@ func ParseClaimed(raw json.RawMessage) (ClaimedTask, error) {
 }
 
 // Person is the user ID of the human who authorized the task
-// (attribution.originator.id), the initiator in affinity keys. Empty when no
-// human did, as for autopilot runs.
+// (attribution.originator.id). Empty when no human did, as for autopilot
+// runs.
 func (t ClaimedTask) Person() string {
 	if o := t.Attribution.Originator; o != nil {
 		return strings.ToLower(strings.TrimSpace(o.ID))

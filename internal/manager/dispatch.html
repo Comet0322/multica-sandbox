@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pool Dispatch</title>
+<title>Pod Dispatch</title>
 <style>
 :root {
 	--bg: #f7f7f5;
@@ -65,10 +65,11 @@ h2 { font-size: 15px; font-weight: 600; margin: 28px 0 4px; }
 .pod { height: 54px; border-radius: 6px; padding: 5px 7px; font-size: 11px; line-height: 1.3; overflow: hidden; border: 2px solid transparent; transition: opacity .15s; }
 .pod .ws { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pod .sub { opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pod.hold { background: var(--panel) !important; border-style: dashed; }
-.pod.idle { background: var(--track); color: var(--muted); }
-.pod.resetting { background: repeating-linear-gradient(135deg, var(--track) 0 6px, var(--panel) 6px 12px); color: var(--muted); border-color: var(--line); }
-.pod.lost { background: var(--danger-bg); color: var(--short); }
+.pod.held { background: var(--panel) !important; border-style: dashed; }
+.pod.idle { background: var(--panel) !important; border-style: dotted; }
+.pod.warm { background: var(--track); color: var(--muted); }
+.pod.starting { background: repeating-linear-gradient(135deg, var(--track) 0 6px, var(--panel) 6px 12px); color: var(--muted); border-color: var(--line); }
+.pod.failed { background: var(--danger-bg); color: var(--short); }
 .grid.focus .pod:not(.lit) { opacity: .25; }
 
 /* Workspaces */
@@ -90,10 +91,10 @@ tr.open .caret { transform: rotate(90deg); }
 .wsname i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
 .wssub { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .zero { color: var(--muted); opacity: .6; }
-.slots { display: flex; flex-wrap: wrap; gap: 3px; max-width: 220px; }
-.slot { width: 14px; height: 14px; border-radius: 3px; border: 2px solid transparent; }
-.slot.free { border: 2px dashed var(--line); background: transparent; }
-.slot.extra { outline: 2px solid var(--over); outline-offset: 1px; }
+.share { display: flex; flex-wrap: wrap; gap: 3px; max-width: 220px; }
+.cell { width: 14px; height: 14px; border-radius: 3px; border: 2px solid transparent; }
+.cell.free { border: 2px dashed var(--line); background: transparent; }
+.cell.extra { outline: 2px solid var(--over); outline-offset: 1px; }
 .state { white-space: nowrap; font-weight: 500; }
 .podcell { display: flex; align-items: center; gap: 8px; }
 .ratio { white-space: nowrap; color: var(--muted); font-size: 12px; }
@@ -115,7 +116,7 @@ tr.open .caret { transform: rotate(90deg); }
 @media (max-width: 760px) {
 	.cols { grid-template-columns: minmax(0, 1fr); }
 	tr.detail > td { padding-left: 14px; }
-	.slots { display: none; }
+	.share { display: none; }
 	.wssub { display: none; }
 	td, th { padding-left: 6px; padding-right: 6px; }
 }
@@ -124,22 +125,24 @@ tr.open .caret { transform: rotate(90deg); }
 <body>
 <main>
 	<header>
-		<h1>Pool dispatch</h1>
+		<h1>Pod dispatch</h1>
 		<div class="status" id="status">Loading…</div>
 	</header>
 	<div class="error" id="error"></div>
+	<div class="error" id="problem"></div>
 	<div class="summary" id="summary"></div>
 
 	<h2>Pods</h2>
-	<p class="lead">What every pod is doing now. Hover a pod for its tasks; hover a workspace below to find its pods.</p>
+	<p class="lead">What every pod is doing now, one task at a time. Hover a pod for its task; hover a workspace below to find its pods.</p>
 	<div class="panel">
 		<div class="grid" id="grid"></div>
 		<div class="legend">
-			<span><i style="background:var(--neutral)"></i>running tasks</span>
-			<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>in hold</span>
-			<span><i style="background:var(--track)"></i>free</span>
-			<span><i style="background:repeating-linear-gradient(135deg, var(--track) 0 3px, var(--panel) 3px 6px);border-color:var(--line)"></i>resetting</span>
-			<span><i style="background:var(--danger-bg)"></i>lost</span>
+			<span><i style="background:var(--neutral)"></i>running a task</span>
+			<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>held for its key</span>
+			<span><i style="background:var(--panel);border:2px dotted var(--neutral)"></i>idle (pool, its department only)</span>
+			<span><i style="background:var(--track)"></i>warm (served no one)</span>
+			<span><i style="background:repeating-linear-gradient(135deg, var(--track) 0 3px, var(--panel) 3px 6px);border-color:var(--line)"></i>starting</span>
+			<span><i style="background:var(--danger-bg)"></i>failed</span>
 		</div>
 	</div>
 
@@ -164,8 +167,8 @@ tr.open .caret { transform: rotate(90deg); }
 		</table>
 	</div>
 	<div class="legend">
-		<span><i style="background:var(--track);border-color:var(--neutral)"></i>pod running its tasks</span>
-		<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>pod in hold (kept for the next task of the same issue)</span>
+		<span><i style="background:var(--track);border-color:var(--neutral)"></i>pod running a task</span>
+		<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>pod held or idle (kept for the next task of the same issue, or of the department)</span>
 		<span><i style="background:transparent;border:2px dashed var(--line)"></i>share not in use</span>
 		<span><i style="background:var(--track);border-color:var(--neutral);outline:2px solid var(--over);outline-offset:1px"></i>beyond its share</span>
 	</div>
@@ -173,7 +176,7 @@ tr.open .caret { transform: rotate(90deg); }
 	<p class="note">
 		<b>Fair share</b> is how many pods a workspace should have for the work there is now: its guarantee first, then the remaining pods split by weight, never more than its running pods plus its waiting tasks.
 		A guarantee is kept by count: other workspaces may not take the pods it keeps free, whichever pods those are.
-		A workspace below its share with tasks waiting gets the next free pod. Running tasks are never stopped to rebalance; pods move as tasks end, and holds are given up first.
+		A workspace below its share with tasks waiting gets the next pod. Running tasks are never stopped to rebalance; when the pod budget is full, idle pods are deleted first, then held pool pods, then held clean pods.
 		The page reads <code>/v1/dispatch</code> every 10 seconds.
 	</p>
 </main>
@@ -245,7 +248,7 @@ function colors(v) {
 	const out = {};
 	let i = 0;
 	for (const p of v.pods) {
-		if (p.state === "leased" && p.workspace_id && !out[p.workspace_id]) out[p.workspace_id] = pal[i++ % pal.length];
+		if (p.workspace_id && !out[p.workspace_id]) out[p.workspace_id] = pal[i++ % pal.length];
 	}
 	return out;
 }
@@ -267,26 +270,30 @@ function standing(w, ts) {
 
 function renderSummary(v) {
 	const p = v.pool, t = v.totals;
-	let running = 0, holding = 0, starting = 0, short = 0;
+	let starting = 0, short = 0;
 	for (const w of v.workspaces) {
-		running += w.running_pods; holding += w.holding_pods;
 		const ts = byState(w);
 		starting += ts.starting.length;
 		if (standing(w, ts).rank === 0) short++;
 	}
 	const item = (k, val) => el("span", {}, el("b", {}, val), " " + k);
 	const group = (title, items) => el("span", {}, el("b", {}, title + ": "), ...items.flatMap((x, i) => i ? [", ", x] : [x]));
-	const pods = [item("running tasks", running), item("in hold", holding), item("free", t.unoccupied_pods)];
-	if (p.resetting) pods.push(item("resetting", p.resetting));
-	if (p.lost) pods.push(item("lost", p.lost));
+	const pods = [item("running", p.running), item("held", p.held), item("idle", p.idle), item("warm", p.warm)];
+	if (p.starting) pods.push(item("starting", p.starting));
+	if (p.failed) pods.push(item("failed", p.failed));
 	const tasks = [item("waiting", t.queued)];
 	if (starting) tasks.push(item("starting", starting));
 	tasks.push(item("running", t.leased));
-	const podTitle = "Pods " + p.live + (p.expected && p.expected !== p.live ? " of " + p.expected : "");
+	const podTitle = "Pods " + p.live + (p.max ? " of " + p.max : "");
 	const wsItems = [item("served", v.workspaces.length)];
 	const waitingWs = el("span", { class: short ? "short" : "" }, el("b", { class: short ? "short" : "" }, short), " waiting for a pod");
 	wsItems.push(waitingWs);
 	document.getElementById("summary").replaceChildren(group(podTitle, pods), group("Tasks", tasks), group("Workspaces", wsItems));
+	// Why pods cannot be created or started: no node capacity, an image that
+	// cannot be pulled, refused credentials.
+	const problem = document.getElementById("problem");
+	problem.style.display = p.problem ? "block" : "none";
+	problem.textContent = p.problem ? "Pods cannot be created or started: " + p.problem : "";
 }
 
 function renderGrid(v, col) {
@@ -300,30 +307,37 @@ function renderGrid(v, col) {
 	const grid = document.getElementById("grid");
 	grid.replaceChildren();
 	if (v.pods.length === 0) {
-		grid.append(el("div", { class: "empty", style: "grid-column:1/-1" }, "No pod has registered yet."));
+		grid.append(el("div", { class: "empty", style: "grid-column:1/-1" }, "No pod yet."));
 	}
 	for (const p of v.pods) {
-		let cls = "pod " + p.state, style = "", ws = "", sub = "";
-		const tip = [p.name || p.id, p.state];
-		if (p.state === "leased" && p.workspace_id) {
+		// p.phase is warm, starting, running, held, idle or failed.
+		let cls = "pod " + p.phase, style = "", ws = "", sub = p.kind || "";
+		const tip = [p.name || p.id, p.phase];
+		if (p.kind) tip.push(p.kind + " runtime");
+		if (p.workspace_id && p.phase !== "failed") {
 			const c = colorOf(col, p.workspace_id);
 			ws = names[p.workspace_id] || p.workspace_id.slice(0, 8);
-			if (p.hold) {
-				cls += " hold";
+			if (p.phase === "held") {
 				style = "border-color:" + c[1] + ";color:" + c[1];
-				sub = p.kept ? "kept" : "hold " + Math.ceil(p.hold_remaining_seconds / 60) + "m";
-				tip.push(p.kept ? "kept for the workspace until evicted" : "hold, reset in " + p.hold_remaining_seconds + "s");
+				sub = "held " + Math.ceil(p.hold_remaining_seconds / 60) + "m";
+				tip.push("held for " + (p.key || "its key") + ", " + p.hold_remaining_seconds + "s left");
+			} else if (p.phase === "idle") {
+				style = "border-color:" + c[1] + ";color:" + c[1];
+				sub = "idle";
 			} else {
 				style = "background:" + c[0] + ";color:" + c[1];
-				sub = plural(p.tasks, "task");
-				tip.push(p.used_slots + " of " + p.capacity_slots + " slots");
+				if (p.key) tip.push(p.key);
 			}
 			tip.push(ws);
 			const tasks = onPod[p.id] || [];
-			if (tasks.length) tip.push("tasks " + tasks.map(t => shortID(t.id)).join(", "));
+			if (tasks.length) tip.push("task " + tasks.map(t => shortID(t.id)).join(", "));
 			if (p.initiators) tip.push(p.initiators.join(", "));
 		} else {
-			ws = p.state === "idle" ? "free" : p.state;
+			ws = p.phase;
+		}
+		if (p.reason) {
+			sub = p.reason;
+			tip.push(p.reason);
 		}
 		const node = el("div", { class: cls, style, title: tip.join(" · "), "data-ws": p.workspace_id || "" },
 			el("div", { class: "ws" }, ws), el("div", { class: "sub" }, sub), el("div", { class: "sub" }, p.name || ""));
@@ -344,11 +358,11 @@ function focus(id) {
 	for (const r of document.querySelectorAll("tr.ws")) r.classList.toggle("lit", !!id && r.dataset.ws === id);
 }
 
-function slots(w, c) {
-	const box = el("div", { class: "slots" });
+function share(w, c) {
+	const box = el("div", { class: "share" });
 	const n = Math.max(w.target_pods, w.occupied_pods);
 	for (let i = 0; i < n; i++) {
-		let cls = "slot", style = "";
+		let cls = "cell", style = "";
 		if (i < w.running_pods) style = "background:" + c[0] + ";border-color:" + c[1];
 		else if (i < w.occupied_pods) style = "background:var(--panel);border:2px dashed " + c[1];
 		else cls += " free";
@@ -375,7 +389,7 @@ function podName(t) { return t.pod_name || (t.pod_id ? shortID(t.pod_id) : ""); 
 
 function settingsText(w) {
 	const g = w.guarantee === w.guarantee_in_effect ? w.guarantee : w.guarantee_in_effect + " (of " + w.guarantee + " configured)";
-	return "guarantee " + g + " · weight " + w.weight + (w.quota ? " · quota " + w.quota + " tasks" : " · no quota");
+	return "guarantee " + g + " · weight " + w.weight + (w.quota ? " · quota " + w.quota + " pods" : " · no quota");
 }
 
 function detail(w, ts, now) {
@@ -425,7 +439,7 @@ function renderRows(v, col) {
 		const tr = el("tr", { class: "ws" + (isOpen ? " open" : "") + (st.rank === 0 ? " needs" : ""), "data-ws": w.workspace_id },
 			el("td", {}, name, el("div", { class: "wssub" }, settingsText(w))),
 			el("td", { class: "state " + st.cls }, st.text),
-			el("td", {}, el("div", { class: "podcell" }, slots(w, c), el("span", { class: "ratio" }, w.occupied_pods + " / " + w.target_pods))),
+			el("td", {}, el("div", { class: "podcell" }, share(w, c), el("span", { class: "ratio" }, w.occupied_pods + " / " + w.target_pods))),
 			el("td", { class: "num" + (st.rank === 0 ? " short" : "") }, num(ts.queued.length)),
 			el("td", { class: "num" }, num(ts.starting.length + ts.running.length)),
 			el("td", { class: "num" }, num(ts.ended.length)),

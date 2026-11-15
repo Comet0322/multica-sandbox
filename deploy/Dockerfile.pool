@@ -1,22 +1,22 @@
-# Pooled sandbox pod image. A pod is one container, not running as root:
-# pod-supervisor is PID 1 and supervises the stock Multica daemon, which starts
-# the agent CLIs itself, all as uid 1001. The root filesystem is meant to run
-# read-only; the only writable area is the pod's HOME volume (/home/pod), which
-# holds every per-task location (workspaces, TMPDIR, the agents' caches), so a
-# reset, which clears HOME, leaves nothing of a task behind. Build from the
+# Sandbox pod image. A pod is one container, not running as root: tini is PID
+# 1 and runs the stock Multica daemon, which starts the agent CLIs itself, all
+# as uid 1001. The root filesystem is meant to run read-only; the only
+# writable area is the pod's HOME volume (/home/pod), which holds every
+# per-task location (workspaces, TMPDIR, the agents' caches). A pod is never
+# reused across departments and is deleted, never reset. Build from the
 # repository root, with a checkout of Multica (the version the daemon is built
 # from) as the named build context "multica":
 #   docker build -f deploy/Dockerfile.pool --build-context multica=../multica \
 #     -t multica-sandbox-pool:<tag> .
-# Run: see pool/k8s/sandbox/pool.yaml and pool/compose/pool.yaml, which set the
-# user, the group 2000, the volume, the process limit and the dropped
-# capabilities. The default target installs real agent CLIs; --target fake uses
-# a fake Claude Code for credential-free testing.
+# Run: the manager creates the pods from a pod template (deploy/k8s/pod.yaml),
+# which sets the user, the group 2000, the volume, the resources and the
+# dropped capabilities. The default target installs real agent CLIs; --target
+# fake uses a fake Claude Code for credential-free testing.
 ARG GO_IMAGE=golang:1.27.3-alpine
 ARG BASE_IMAGE=node:22-slim
 
 # The stock daemon is Multica's, built from the "multica" build context's
-# server/; the supervisor is ours, built from this repository.
+# server/. Nothing of this repository's Go code runs in the pod.
 FROM ${GO_IMAGE} AS builder
 WORKDIR /src/server
 COPY --from=multica server/go.mod server/go.sum ./
@@ -25,15 +25,10 @@ COPY --from=multica server/ ./
 ARG VERSION=dev
 ARG COMMIT=unknown
 RUN CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /out/multica ./cmd/multica
-WORKDIR /src/sandbox-manager
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . ./
-RUN CGO_ENABLED=0 go build -ldflags "-s -w" -o /out/pod-supervisor ./cmd/pod-supervisor
 
 FROM ${BASE_IMAGE} AS base
-# Addresses baked into the image. Defaults are placeholders; the cluster
-# manifests (or a rebuild) set the real in-cluster addresses.
+# Addresses baked into the image. Defaults are placeholders; the pod template
+# sets the manager's address (SANDBOX_MANAGER_URL), and a rebuild the mirror's.
 ARG MANAGER_URL=http://sandbox-manager.multica-sandbox.svc.cluster.local:8080
 ARG PACKAGE_MIRROR_URL=http://package-mirror.multica-sandbox.svc.cluster.local
 
@@ -80,19 +75,15 @@ RUN git config --system safe.directory '*' \
 	&& git config --system user.email "agent@multica.local"
 
 COPY --from=builder /out/multica /usr/local/bin/multica
-COPY --from=builder /out/pod-supervisor /usr/local/bin/pod-supervisor
-COPY deploy/pool/entrypoint.sh /usr/local/bin/multica-pod-entrypoint
-# Pods the manager creates through Kubernetes (ADR 0009) run this one instead:
-# their template sets command ["tini", "--", "multica-pod-entrypoint-kube"].
+# The entrypoint writes the daemon's config from the pod token the manager set
+# in the pod's environment, then becomes the daemon.
 COPY deploy/pool/entrypoint-kube.sh /usr/local/bin/multica-pod-entrypoint-kube
 
 # The daemon's CLI settings (manager address and a placeholder token), copied
 # into HOME by the entrypoint at container start with the placeholder replaced
-# by the pod token the manager issued, and kept across resets by the
-# supervisor's skip list. The runtime-private agent configuration (home/) stays
-# here, read-only; the entrypoint copies only its Claude skills into HOME,
-# which the skip list keeps (see home/README.md). Nothing here is a real
-# secret.
+# by the pod token. The runtime-private agent configuration (home/) stays
+# here, read-only; the entrypoint copies only its Claude skills into HOME (see
+# home/README.md). Nothing here is a real secret.
 COPY deploy/home/ /etc/multica-sandbox/home-template/
 RUN mkdir -p /etc/multica-sandbox/daemon-template/.multica \
 	&& printf '{"server_url":"%s","token":"pool-placeholder"}\n' "${MANAGER_URL}" \
@@ -104,9 +95,9 @@ RUN mkdir -p /etc/multica-sandbox/daemon-template/.multica \
 
 # /home/pod is the only writable path. Its mount point is owned by the pod's
 # user and group 2000, with setgid, as Kubernetes makes a volume with fsGroup;
-# Docker and compose copy the image's ownership into a new volume. /tmp points
-# into it, so a program that ignores TMPDIR and writes to /tmp still writes
-# under HOME, where the reset reaches. Build leftovers are removed.
+# Docker copies the image's ownership into a new volume. /tmp points into it,
+# so a program that ignores TMPDIR and writes to /tmp still writes under HOME,
+# on the pod's own volume. Build leftovers are removed.
 RUN rm -rf /tmp \
 	&& mkdir -p /home/pod/tmp \
 	&& ln -s /home/pod/tmp /tmp \
@@ -117,11 +108,9 @@ RUN rm -rf /tmp \
 # location is under POD_DAEMON_HOME: the workspaces root (a subdirectory, as
 # the daemon refuses to start with its working directory at or below the
 # task-context marker it writes there) and the agents' temporary directories
-# (the supervisor sets TMPDIR to HOME/tmp). MULTICA_GC_ENABLED=false: only the
-# supervisor cleans the pod.
-ENV POD_CONTROL_URL=${MANAGER_URL}/pod/control \
-	POD_REGISTER_URL=${MANAGER_URL}/pod/register \
-	POD_DAEMON_HOME=/home/pod \
+# (the entrypoint sets TMPDIR to HOME/tmp). MULTICA_GC_ENABLED=false: the pod
+# is deleted after its task, so the daemon has nothing to clean.
+ENV POD_DAEMON_HOME=/home/pod \
 	POD_DAEMON_HOME_TEMPLATE=/etc/multica-sandbox/daemon-template \
 	MULTICA_WORKSPACES_ROOT=/home/pod/workspaces \
 	MULTICA_AGENT_TEMP_BASE=/home/pod/tmp \
@@ -129,15 +118,14 @@ ENV POD_CONTROL_URL=${MANAGER_URL}/pod/control \
 	MULTICA_DAEMON_AUTO_UPDATE=false \
 	OPENCODE_CONFIG=/etc/multica-sandbox/home-template/.config/opencode/opencode.json
 
-# The daemon's local health endpoint (loopback only). The cluster has no probe
-# of its own for the pod: the supervisor exits, and the kubelet restarts the
-# container, when the manager stops knowing the pod.
+# The daemon's local health endpoint (loopback only). In Kubernetes the pod
+# template's liveness probe checks the same endpoint.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 	CMD curl -fsS -o /dev/null http://127.0.0.1:19514/health
 VOLUME ["/home/pod"]
 # Nothing in the image needs root, and nothing runs as root.
 USER 1001:2000
-ENTRYPOINT ["/usr/local/bin/multica-pod-entrypoint"]
+ENTRYPOINT ["tini", "--", "multica-pod-entrypoint-kube"]
 
 # AGENT_COMMANDS lists the agent CLIs installed in a stage. A name without an
 # installed CLI must not be listed: the daemon would offer a runtime for it.

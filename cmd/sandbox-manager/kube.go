@@ -18,9 +18,8 @@ import (
 // inClusterNamespace is where Kubernetes tells a pod its own namespace.
 const inClusterNamespace = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
-// kubeSettings reads the settings of the sandbox service that creates pods
-// through the Kubernetes API (ADR 0009). They apply only when
-// SANDBOX_POD_TEMPLATE is set; without it the manager serves GitOps pods.
+// kubeSettings reads the settings of the sandbox service, which creates the
+// pods through the Kubernetes API from SANDBOX_POD_TEMPLATE (ADR 0009).
 //
 // The credentials come from KUBECONFIG when it is set (the operator's own,
 // for now), else from the pod's service account. The namespace is

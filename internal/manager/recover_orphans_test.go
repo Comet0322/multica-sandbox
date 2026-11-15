@@ -12,12 +12,12 @@ import (
 	"sandbox-manager/internal/manager"
 )
 
-// The manager keeps its leases in memory. A task that was running when the
-// manager restarted is gone from the registry, its pod is reset, and nothing
-// would ever finish it: Multica kept it "running" until its own timeout (hours).
-// The first time the restarted manager registers the pool's runtime it asks
-// Multica to fail what is still running on it (the same call a restarted
-// daemon makes), which also lets Multica retry the task.
+// A task Multica shows running on the manager's runtime in a workspace whose
+// work no pod carries is one nothing would ever finish: Multica kept it
+// "running" until its own timeout (hours). The first time the manager
+// registers the runtime it asks Multica to fail what is still running on it
+// (the same call a restarted daemon makes), which also lets Multica retry the
+// task.
 func TestFirstRegistrationAsksMulticaToRecoverOrphanedTasks(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 2)
@@ -124,7 +124,7 @@ func TestFirstSyncRecoversTheOrphansOfTheManagersRuntimes(t *testing.T) {
 		return false
 	})
 	pool, err := manager.New(manager.Config{
-		MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool", DaemonID: "company-sandbox-prod",
+		MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool", DaemonID: "company-sandbox-prod", Kube: testKube(),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

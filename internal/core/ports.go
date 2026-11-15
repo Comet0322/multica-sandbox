@@ -59,20 +59,22 @@ type PodState string
 
 // Pod states.
 const (
-	PodFree      PodState = "free"
-	PodHeld      PodState = "held"
-	PodResetting PodState = "resetting"
-	PodLost      PodState = "lost"
+	PodStarting PodState = "starting"
+	PodFree     PodState = "free"
+	PodHeld     PodState = "held"
+	PodLost     PodState = "lost"
 )
 
 // PodInfo is one pod as its Pool reports it.
 type PodInfo struct {
 	ID string
-	// Name is the label the pod registered with, shown only.
-	Name         string
-	State        PodState
-	RegisteredAt time.Time
-	LastSeen     time.Time
+	// Name is the pod's name, shown only.
+	Name      string
+	State     PodState
+	CreatedAt time.Time
+	LastSeen  time.Time
+	// Reason is why a lost pod was lost, or why a starting pod still waits.
+	Reason string
 }
 
 // HandBack says why a pod is handed back, for the audit trail: the reason
@@ -88,14 +90,14 @@ type HandBack struct {
 // the core calls them without holding its lock; the others answer from the
 // Pool's own state and may be called under it.
 type Pool interface {
-	// Acquire takes a free pod that has been reset; ErrNoCapacity when the
+	// Acquire takes a ready pod that served no one; ErrNoCapacity when the
 	// pool has none.
 	Acquire(ctx context.Context) (string, error)
-	// HandBack returns an acquired pod, which the Pool resets.
+	// HandBack returns an acquired pod, which the Pool deletes.
 	HandBack(ctx context.Context, pod string, why HandBack) error
 	// Pod reports one pod; false when the Pool does not know it.
 	Pod(id string) (PodInfo, bool)
-	// Pods lists every pod the Pool knows, in registration order.
+	// Pods lists every pod the Pool knows, in creation order.
 	Pods() []PodInfo
 	// Tenants lists the tenants a pod can serve, sorted.
 	Tenants(pod string) []string
@@ -118,10 +120,10 @@ const (
 	NotHeld Verdict = iota
 	// Allowed: the pod holds a task of the tenant.
 	Allowed
-	// Denied: the pod works for another tenant, or between its work and
-	// its reset.
+	// Denied: the pod works for another tenant, or served a task and has
+	// none placed on it now.
 	Denied
-	// Clean: the core holds the pod, but it runs nothing and has no binding,
+	// Clean: the core holds the pod, but it is still warm: it served no one,
 	// so it is as clean as a free pod.
 	Clean
 )

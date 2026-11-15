@@ -59,7 +59,7 @@ func newKindsSource(t *testing.T, sets []tasksource.RuntimeSet) (*tasksource.Sou
 	t.Cleanup(srv.Close)
 	s := tasksource.New(tasksource.Config{
 		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), Name: "Pool", RuntimeVisibility: "private",
-		AffinityRule: multica.DefaultAffinityRule, Runtimes: sets,
+		Runtimes: sets,
 	})
 	s.Connect(&fakeCore{busy: map[string]bool{}}, &fakePods{})
 	if _, err := s.Sync(context.Background()); err != nil {

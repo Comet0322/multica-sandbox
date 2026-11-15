@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/sandbox"
@@ -14,7 +15,8 @@ import (
 // held pod takes its key's next task, and the idle and warm pods are kept.
 func TestARestartedManagerCarriesOnWithItsPods(t *testing.T) {
 	w := newKubeWorld(t)
-	h1 := w.manager(4, 4)
+	hold := func(c *manager.Config) { c.HoldTimeout = 10 * time.Minute }
+	h1 := w.manager(4, 4, hold)
 	pods := h1.startedPods(4)
 
 	w.upstream.enqueueIssue("t1", "issue-1")
@@ -46,7 +48,7 @@ func TestARestartedManagerCarriesOnWithItsPods(t *testing.T) {
 	}
 	h1.stop()
 
-	h2 := w.manager(4, 4)
+	h2 := w.manager(4, 4, hold)
 	for _, p := range pods {
 		p.h = h2
 	}

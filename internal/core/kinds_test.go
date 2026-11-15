@@ -94,10 +94,10 @@ func TestAHeldPodIsDeletedForTheBudgetBeforeAnythingIsClaimed(t *testing.T) {
 	}
 	r.dispatch()
 	if claims, _, _ := r.source.snapshot(); len(claims) != 1 {
-		t.Fatalf("claims %v while the pod is on its way back", claims)
+		t.Fatalf("claims %v while the new pod starts", claims)
 	}
 
-	r.pool.reset("p1")
+	r.pool.ready("p1")
 	r.dispatch()
 	if got := r.next("p1"); got != "t2" {
 		t.Fatalf("p1 picked up %q, want t2", got)

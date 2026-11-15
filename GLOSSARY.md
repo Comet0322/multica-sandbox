@@ -2,8 +2,6 @@
 
 Runs Multica agent tasks in company-run execution environments, so members get a cloud runtime without a machine of their own.
 
-ADR 0009 changes several terms: pods are created per task through the Kubernetes API instead of started by GitOps and reset. Terms marked _(ADR 0009)_ already have their new meaning. Terms marked _(until ADR 0009 lands)_ describe the GitOps pool that `.scratch/k8s-executor` replaces.
-
 ## Language
 
 **Managed Sandbox**:
@@ -11,15 +9,15 @@ The product name members see for the cloud runtime the pool provides. Used only 
 _Avoid_: Using "sandbox" for a pod or for the pool
 
 **Pool**:
-The pods the manager runs tasks on. _(ADR 0009)_ The manager creates them in one namespace, up to its budget. Until ADR 0009 lands, it is the fixed set of pods registered with one sandbox service.
-_Avoid_: Sandbox pool, cluster
+The pods the manager runs tasks on. The manager creates them in one namespace, up to its budget.
+_Avoid_: Sandbox pool, cluster, pool size
 
 **Pod**:
-One execution environment that runs the stock Multica daemon and agent CLIs. _(ADR 0009)_ It runs one task at a time and is deleted, never reset.
-_Avoid_: Sandbox, container, pool pod, worker
+One execution environment that runs the stock Multica daemon and agent CLIs. It runs one task at a time and is deleted, never reset.
+_Avoid_: Sandbox, container, pool pod, worker, slot
 
 **Pod token**:
-The credential that identifies one pod to the manager for as long as the pod exists. _(ADR 0009)_ The sandbox service sets it in the pod's environment when it creates the pod. Until then, the pod receives it when it registers.
+The credential that identifies one pod to the manager for as long as the pod exists. The sandbox service sets it in the pod's environment when it creates the pod.
 _Avoid_: Pod IP, boot nonce, pool placeholder
 
 **Manager**:
@@ -50,14 +48,11 @@ The part of the manager that serves the pods: the sandbox service, and the Multi
 _Avoid_: Worker gateway, executor
 
 **Sandbox service**:
-The module that owns the pods themselves. Callers use it through Create, Delete, PutFiles, GetFiles and Exec.
-- _(ADR 0009)_ It creates pods from the operator's pod template through the Kubernetes API, watches them, and deletes them.
-- Until then, it owns the GitOps pods' registration, control channel, resets, liveness and free set.
-
+The module that owns the pods themselves. Callers use it through Create, Delete, PutFiles, GetFiles and Exec. It creates pods from the operator's pod template through the Kubernetes API, watches them, records on each pod what it serves, and deletes them.
 _Avoid_: Pod manager, provider, runtime, executor
 
 **Pod template**:
-_(ADR 0009)_ The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, labels, annotations, restart policy and pod token, and a neutral hostname (`sandbox`) when the template sets none.
+The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, labels, annotations, restart policy and pod token, and a neutral hostname (`sandbox`) when the template sets none.
 _Avoid_: Pod spec (for the file), manifest
 
 **Acquire**:
@@ -65,19 +60,19 @@ Taking a ready pod that serves no one from the sandbox service (a successful Cre
 _Avoid_: Create (outside the interface), allocate, check out
 
 **Hand back**:
-Returning an acquired pod to the sandbox service (Delete). _(ADR 0009)_ The pod is deleted. Until then, the service resets it before anyone can acquire it again.
-_Avoid_: Delete (outside the interface), release, free
+Returning an acquired pod to the sandbox service (Delete). The pod is deleted.
+_Avoid_: Delete (outside the interface), release, free, reset
 
 **Lease**:
 The period during which one pod runs one task.
 _Avoid_: Claim, assignment, allocation
 
 **Pool runtime**:
-_(ADR 0009)_ The runtime kind whose tasks may use an idle pod of their department that served another key.
+The runtime kind whose tasks may use an idle pod of their department that served another key.
 _Avoid_: Shared runtime, default runtime
 
 **Clean runtime**:
-_(ADR 0009)_ The runtime kind whose pods never serve another key. A clean task gets its key's held pod or a pod that has served no one.
+The runtime kind whose pods never serve another key. A clean task gets its key's held pod or a pod that has served no one.
 _Avoid_: Fresh runtime, isolated runtime
 
 **Key**:
@@ -85,35 +80,32 @@ The issue a task belongs to, else its chat session. A pod is held for one key. T
 _Avoid_: Affinity key, sharing key, binding key
 
 **Hold**:
-The time after a task ends during which its pod waits for the next task of the same key, up to the department's hold timeout. _(ADR 0009)_ It is kept as long as possible but never guaranteed: it ends early when the budget is full. Work that a later pod must see is pushed by the agent.
-_Avoid_: Grace, keep-alive, warm pod
+The time after a task ends during which its pod waits for the next task of the same key, up to the department's hold timeout. It is kept as long as possible but never guaranteed: it ends early when the budget is full. Work that a later pod must see is pushed by the agent.
+_Avoid_: Grace, keep-alive, warm pod, binding
 
 **Warm pod**:
-_(ADR 0009)_ A new, ready pod that has served no one and belongs to no department or runtime kind until its first task.
+A new, ready pod that has served no one and belongs to no department or runtime kind until its first task.
 _Avoid_: Free pod, spare, standby
 
 **Idle pod**:
-_(ADR 0009)_ A pool runtime pod whose hold ended. Another key of the same department may use it, until its maximum idle lifetime.
+A pool runtime pod whose hold ended. Another key of the same department may use it, until its maximum idle lifetime.
 _Avoid_: Free pod, free (for an idle pod)
 
 **Budget**:
-_(ADR 0009)_ The most pods the manager may have at once (`SANDBOX_MAX_PODS`), counting warm, starting, running, held and idle pods.
-_Avoid_: Capacity, pool size, quota
+The most pods the manager may have at once (`SANDBOX_MAX_PODS`), counting warm, starting, running, held and idle pods.
+_Avoid_: Capacity, slots, pool size, quota
 
 **Tenant**:
 What the policy scopes quota, guarantees and keys to. For Multica it is a workspace; the policy knows nothing else of it.
 _Avoid_: Workspace (inside the policy), customer
 
 **Occupancy**:
-The pods a workspace takes up. Fair sharing counts it in whole pods.
-- _(ADR 0009)_ Its running, held and idle pods.
-- Until then, those its bindings hold, running or in hold, and those reserved for its claims.
-
+The pods a workspace takes up, counted in whole pods by fair sharing: its running, held and idle pods.
 _Avoid_: Usage, load
 
 **Guarantee**:
 The number of pods kept for one workspace: while it occupies fewer, no other workspace may take the rest, even when it has nothing to run.
-_Avoid_: Reservation (that is a claim's), minimum, floor
+_Avoid_: Reservation (a ready pod exists before each claim instead), minimum, floor
 
 **Weight**:
 A workspace's share of the pods beyond the guarantees: the next claim goes to the workspace with the least occupancy beyond its guarantee per unit of weight.
@@ -124,25 +116,5 @@ The most pods one workspace's running tasks may occupy at once; pods in hold do 
 _Avoid_: Limit, max leases
 
 **Eviction**:
-Ending a hold early. _(ADR 0009)_ This happens because the budget is full: the pod is deleted, or an idle pod is given to another key. Until then, it happens because a task with a different key needs the pod.
+Ending a hold early because the budget is full: the pod is deleted, or an idle pod is given to another key.
 _Avoid_: Preemption, reclaim
-
-### Until ADR 0009 lands
-
-These go away with the GitOps pool.
-
-**Reset**:
-Returning a pod to its clean initial state so it can be lent to anyone. Pods created through Kubernetes are deleted instead.
-_Avoid_: Cleanup, wipe, recycle
-
-**Binding**:
-The period from a pod's first lease until its reset, during which the pod belongs to one affinity key and may serve several leases.
-_Avoid_: Session, allocation
-
-**Capacity**:
-The amount of each resource a pod offers to running tasks; the first resource is slots, the number of tasks it runs at once.
-_Avoid_: Concurrency, size
-
-**Reservation**:
-Capacity the manager sets aside before claiming a task upstream, so every claimed task already has a place to run. With ADR 0009, a ready pod exists before each claim instead.
-_Avoid_: Booking, pre-allocation

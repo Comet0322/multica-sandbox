@@ -15,7 +15,11 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/sandbox"
 )
 
 const (
@@ -68,9 +72,9 @@ func TestLoadSettingsReadsTheEnvironment(t *testing.T) {
 	env := map[string]string{
 		"SANDBOX_POOL_TOKEN":              "mul_pat_pool",
 		"MULTICA_SERVER_URL":              "http://multica:8080",
-		"SANDBOX_POOL_SIZE":               "4",
+		"SANDBOX_POD_TEMPLATE":            testdata("pod.yaml"),
+		"KUBECONFIG":                      testdata("kubeconfig"),
 		"SANDBOX_PROVIDERS":               "claude, codex",
-		"SANDBOX_POOL_DRAIN_TIMEOUT":      "5m",
 		"SANDBOX_POOL_ADMIN_LISTEN":       "127.0.0.1:9000",
 		"SANDBOX_POOL_QUOTA":              "6",
 		"SANDBOX_POOL_SYNC_INTERVAL":      "45s",
@@ -82,13 +86,13 @@ func TestLoadSettingsReadsTheEnvironment(t *testing.T) {
 	}
 	c := s.config
 	if c.PAT != "mul_pat_pool" || s.podListen != ":8790" || s.adminListen != "127.0.0.1:9000" ||
-		c.ExpectedSize != 4 || len(c.Providers) != 2 || c.DrainTimeout != 5*time.Minute ||
+		len(c.Providers) != 2 ||
 		c.Quota != 6 || c.SyncInterval != 45*time.Second || c.RuntimeVisibility != "private" {
 		t.Fatalf("unexpected settings: %+v", s)
 	}
-	env["SANDBOX_POOL_SIZE"] = "many"
+	env["SANDBOX_POOL_QUOTA"] = "many"
 	if _, err := loadSettings(func(k string) string { return env[k] }); err == nil {
-		t.Fatal("a bad pool size must be refused")
+		t.Fatal("a bad quota must be refused")
 	}
 }
 
@@ -98,7 +102,7 @@ func servedBy(t *testing.T, up *fakeMultica, syncInterval time.Duration, hup cha
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool, err := manager.New(manager.Config{
-		MulticaURL: up.URL, PAT: "mul_pat_pool", SyncInterval: syncInterval,
+		MulticaURL: up.URL, PAT: "mul_pat_pool", SyncInterval: syncInterval, Kube: testKube(),
 	}, log)
 	if err != nil {
 		t.Fatal(err)
@@ -176,4 +180,12 @@ func TestWorkspacesFollowTheSyncInterval(t *testing.T) {
 	served := servedBy(t, up, 20*time.Millisecond, make(chan os.Signal))
 	up.set(testWorkspaceA, testWorkspaceB)
 	eventually(t, "the interval to add B", func() bool { return len(served()) == 2 })
+}
+
+// testKube is a sandbox service configuration on a fake Kubernetes API.
+func testKube() *sandbox.KubeConfig {
+	return &sandbox.KubeConfig{
+		Client: fake.NewSimpleClientset(), Namespace: "sandbox-test",
+		Template: &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "daemon", Image: "pod:1"}}}},
+	}
 }

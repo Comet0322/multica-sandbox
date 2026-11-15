@@ -159,9 +159,9 @@ func TestReloadDrainTimeoutEndsLeasesAndFailsTasks(t *testing.T) {
 	}
 }
 
-// A removed workspace's pods are not kept for it: a binding in hold is reset
-// at once, and a running one when the drain timeout ends its task.
-func TestReloadResetsTheRemovedWorkspacesPods(t *testing.T) {
+// A removed workspace's pods are not kept for it: a held pod is deleted at
+// once, and a running one when the drain timeout ends its task.
+func TestReloadDeletesTheRemovedWorkspacesPods(t *testing.T) {
 	t.Parallel()
 	a, b := &fakeWorkspace{id: wsA}, &fakeWorkspace{id: wsB}
 	up := newMultiMultica(t, a, b)
@@ -187,18 +187,12 @@ func TestReloadResetsTheRemovedWorkspacesPods(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitReload(t, "the drain to give up", func() bool { return len(h.inventory().Draining) == 0 })
-	if inv := h.inventory(); inv.Resetting != 2 {
-		t.Fatalf("both pods of the removed workspace should be resetting: %+v", inv)
-	}
-	resets := map[string]string{}
-	for _, r := range h.auditRecords() {
-		if r.Action == manager.AuditReset {
-			resets[r.PodID] = r.Reason
-		}
+	if inv := h.inventory(); inv.Running != 0 || inv.Held != 0 {
+		t.Fatalf("both pods of the removed workspace should be deleted: %+v", inv)
 	}
 	for _, p := range []*simPod{held, running} {
-		if resets[p.id] != "reset started: workspace removed" {
-			t.Fatalf("pod %s: audit reset %q, want the workspace removal", p.id, resets[p.id])
+		if !deletedFor(h, p.id, "pod deleted: workspace removed") {
+			t.Fatalf("pod %s: no deletion for the workspace removal in %+v", p.id, h.auditRecords())
 		}
 	}
 }
@@ -214,7 +208,6 @@ func TestReloadRefusesInvalidConfigAndKeepsTheCurrentOne(t *testing.T) {
 		"empty":      {},
 		"duplicate":  {{WorkspaceID: wsA}, {WorkspaceID: wsA}},
 		"bad ID":     {{WorkspaceID: "nope"}},
-		"placement":  {{WorkspaceID: wsA, AffinityRule: "pod"}},
 		"bad quota":  {{WorkspaceID: wsA, Quota: -1}},
 		"drops both": nil,
 	}

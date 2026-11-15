@@ -64,13 +64,11 @@ func TestLoadSettingsCreatesPodsThroughKubernetesWithATemplate(t *testing.T) {
 	}
 }
 
-func TestLoadSettingsServesGitOpsPodsWithoutATemplate(t *testing.T) {
-	s, err := loadSettings(envLookup(baseEnv()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s.config.Kube != nil {
-		t.Fatal("Kubernetes settings without a template")
+func TestLoadSettingsRequiresAPodTemplate(t *testing.T) {
+	env := baseEnv()
+	delete(env, "SANDBOX_POD_TEMPLATE")
+	if _, err := loadSettings(envLookup(env)); err == nil || !strings.Contains(err.Error(), "SANDBOX_POD_TEMPLATE is required") {
+		t.Fatalf("err = %v, want the template required", err)
 	}
 }
 

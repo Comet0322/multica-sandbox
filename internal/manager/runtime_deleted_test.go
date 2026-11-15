@@ -100,7 +100,7 @@ func TestAnotherNotFoundDoesNotDropTheRegistration(t *testing.T) {
 
 func TestDroppedRegistrationTellsPodsToLookAgainOnceInAWhile(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, withWake(time.Hour), farHeartbeat)
+	h := newHarness(t, 1, withWake(time.Hour))
 	clock := h.withClock()
 	// The harness's first Sync found the workspace and sent the hint; let its
 	// rate limit pass.

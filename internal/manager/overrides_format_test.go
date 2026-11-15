@@ -11,7 +11,8 @@ import (
 func TestOverridesFileFormat(t *testing.T) {
 	t.Parallel()
 	raw := strings.Join([]string{
-		`zero: {hold_timeout: 0, max_lifetime: 0}`,
+		`zero: {hold_timeout: 0}`,
+		`old: {rule: person-issue, placement: task, max_lifetime: 1h, quota: 1}`,
 		`json: {"quota": 2, "hold_timeout": "90s"}`,
 		`empty:`,
 		`unitless: {hold_timeout: 5}`,
@@ -22,13 +23,16 @@ func TestOverridesFileFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o := got["zero"]; o.HoldTimeout == nil || *o.HoldTimeout != 0 || o.MaxLifetime == nil || *o.MaxLifetime != 0 {
+	if o := got["zero"]; o.HoldTimeout == nil || *o.HoldTimeout != 0 {
 		t.Errorf("a bare 0 should mean zero, as in the environment: %+v", o)
 	}
 	if o := got["json"]; o.Quota == nil || *o.Quota != 2 || o.HoldTimeout == nil || *o.HoldTimeout != 90*time.Second {
 		t.Errorf("JSON entry: %+v", o)
 	}
-	if o, ok := got["empty"]; !ok || o != (manager.WorkspaceOverride{}) {
+	if o, ok := got["old"]; !ok || o.Quota == nil || *o.Quota != 1 || strings.Join(o.Ignored, ",") != "rule,placement,max_lifetime" {
+		t.Errorf("removed settings are read and named, the others applied: %+v %v", o, ok)
+	}
+	if o, ok := got["empty"]; !ok || o.Quota != nil || o.HoldTimeout != nil || o.Guarantee != nil || o.Weight != nil || o.Ignored != nil {
 		t.Errorf("an empty entry overrides nothing: %+v %v", o, ok)
 	}
 	if o := got["shared"]; o.Guarantee == nil || *o.Guarantee != 2 || o.Weight == nil || *o.Weight != 3 {

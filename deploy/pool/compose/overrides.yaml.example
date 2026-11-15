@@ -1,9 +1,0 @@
-# Per-workspace overrides of the pool defaults, keyed by workspace slug.
-# Copy to $OVERRIDES_DIR/overrides.yaml (default ./overrides/overrides.yaml),
-# readable by uid 65532. A field left out keeps the pool default; pod capacity
-# stays pool-wide. See deploy/POOL.md, per-workspace overrides.
-acme:
-  placement: person   # SANDBOX_PLACEMENT
-  hold_timeout: 1h    # SANDBOX_HOLD_TIMEOUT; 0 resets at once
-  max_lifetime: 4h    # SANDBOX_POD_MAX_LIFETIME; 0 means none
-  quota: 6            # SANDBOX_POOL_QUOTA; 0 is no cap

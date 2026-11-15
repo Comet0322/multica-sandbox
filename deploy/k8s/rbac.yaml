@@ -1,4 +1,4 @@
-# The manager's own identity in the namespace (ADR 0009), for when the
+# The manager's own identity in the namespace, for when the
 # operator stops running it with a personal kubeconfig. It may create,
 # delete, get, list, watch and patch pods, which is all the manager does (it
 # patches a pod's labels and annotations to record what the pod serves), and

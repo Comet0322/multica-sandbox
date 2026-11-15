@@ -4,13 +4,13 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"sandbox-manager/internal/manager"
-	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/policy"
 )
 
@@ -18,24 +18,28 @@ func envLookup(env map[string]string) func(string) string {
 	return func(k string) string { return env[k] }
 }
 
+// testdata is the absolute path of a file in testdata/, as file settings
+// must be.
+func testdata(name string) string {
+	p, err := filepath.Abs(filepath.Join("testdata", name))
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
 func baseEnv() map[string]string {
 	return map[string]string{
-		"SANDBOX_POOL_TOKEN": "mul_pat_pool",
-		"MULTICA_SERVER_URL": "http://multica:8080",
+		"SANDBOX_POOL_TOKEN":   "mul_pat_pool",
+		"MULTICA_SERVER_URL":   "http://multica:8080",
+		"SANDBOX_POD_TEMPLATE": testdata("pod.yaml"),
+		"KUBECONFIG":           testdata("kubeconfig"),
 	}
 }
 
-func TestLoadSettingsReadsPlacementLifetimeAndAudit(t *testing.T) {
+func TestLoadSettingsReadsHoldIdleAndAudit(t *testing.T) {
 	env := baseEnv()
-	env["SANDBOX_POOL_HEARTBEAT_TIMEOUT"] = "30s"
-	env["SANDBOX_POOL_RESET_TIMEOUT"] = "3m"
-	env["SANDBOX_POOL_LOST_RETENTION"] = "7m"
-	env["SANDBOX_PLACEMENT"] = "person-agent"
-	env["SANDBOX_POD_CAPACITY"] = "8"
-	env["SANDBOX_PLACEMENT_WAIT"] = "20s"
 	env["SANDBOX_HOLD_TIMEOUT"] = "5m"
-	env["SANDBOX_POD_MAX_LIFETIME"] = "1h"
-	env["SANDBOX_POD_DRAIN_GRACE"] = "2m"
 	env["SANDBOX_POD_MAX_IDLE"] = "6h"
 	env["SANDBOX_AUDIT_FILE"] = "/var/log/audit.jsonl"
 	s, err := loadSettings(envLookup(env))
@@ -43,25 +47,47 @@ func TestLoadSettingsReadsPlacementLifetimeAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := s.config
-	if c.HeartbeatTimeout != 30*time.Second || c.ResetTimeout != 3*time.Minute || c.LostRetention != 7*time.Minute || c.AffinityRule != multica.RulePersonAgent ||
-		c.Capacity != 8 || c.PlacementWait != 20*time.Second || c.HoldTimeout != 5*time.Minute ||
-		c.MaxLifetime != time.Hour || c.DrainGrace != 2*time.Minute || c.PodMaxIdle != 6*time.Hour || s.auditFile != "/var/log/audit.jsonl" {
+	if c.HoldTimeout != 5*time.Minute || c.PodMaxIdle != 6*time.Hour || s.auditFile != "/var/log/audit.jsonl" {
 		t.Fatalf("unexpected settings: %+v", s)
 	}
 }
 
-func TestLoadSettingsDefaultsToPersonIssueWithAHold(t *testing.T) {
+// The settings of the GitOps pool are ignored with a warning, so an old
+// deployment still starts.
+func TestLoadSettingsWarnsOfRemovedSettings(t *testing.T) {
+	env := baseEnv()
+	for _, name := range removedSettings {
+		env[name] = "1"
+	}
+	s, err := loadSettings(envLookup(env))
+	if err != nil {
+		t.Fatalf("an old setting stopped the manager: %v", err)
+	}
+	if len(s.warnings) != len(removedSettings) {
+		t.Fatalf("warnings %q, want one per removed setting", s.warnings)
+	}
+	for i, name := range removedSettings {
+		if !strings.HasPrefix(s.warnings[i], name+" is no longer used") {
+			t.Errorf("warning %q does not name %s", s.warnings[i], name)
+		}
+	}
+	if s, _ := loadSettings(envLookup(baseEnv())); len(s.warnings) != 0 {
+		t.Fatalf("warnings with no removed setting: %q", s.warnings)
+	}
+}
+
+func TestLoadSettingsDefaultsToAHold(t *testing.T) {
 	env := baseEnv()
 	s, err := loadSettings(envLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.config.HoldTimeout != manager.DefaultHoldTimeout || s.config.AffinityRule != "" {
-		t.Fatalf("unset: hold %v, placement %q", s.config.HoldTimeout, s.config.AffinityRule)
+	if s.config.HoldTimeout != manager.DefaultHoldTimeout {
+		t.Fatalf("unset: hold %v", s.config.HoldTimeout)
 	}
 	env["SANDBOX_HOLD_TIMEOUT"] = "0"
 	if s, err = loadSettings(envLookup(env)); err != nil || s.config.HoldTimeout != 0 {
-		t.Fatalf("0 must reset at once: %v, %v", s.config.HoldTimeout, err)
+		t.Fatalf("0 must hold nothing: %v, %v", s.config.HoldTimeout, err)
 	}
 }
 
@@ -113,6 +139,15 @@ func TestLoadSettingsReadsTheDaemonIdentity(t *testing.T) {
 func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 	up := newFakeMultica(t, testWorkspaceA)
 	env := map[string]string{
+		"SANDBOX_POD_TEMPLATE":            testdata("pod.yaml"),
+		"KUBECONFIG":                      testdata("kubeconfig"),
+		"SANDBOX_NAMESPACE":               "sandbox-test",
+		"SANDBOX_MAX_PODS":                "6",
+		"SANDBOX_WARM_PODS":               "1",
+		"SANDBOX_POD_START_TIMEOUT":       "2m",
+		"SANDBOX_POD_MAX_IDLE":            "12h",
+		"SANDBOX_RUNTIMES":                "pool,clean",
+		"SANDBOX_MANAGER_CLEAN_NAME":      "Clean Sandbox",
 		"MULTICA_SERVER_URL":              up.URL,
 		"SANDBOX_POOL_TOKEN":              "mul_pat_pool",
 		"SANDBOX_MANAGER_LISTEN":          "127.0.0.1:0",
@@ -122,26 +157,15 @@ func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 		"SANDBOX_POOL_SYNC_INTERVAL":      "45s",
 		"SANDBOX_POOL_RUNTIME_VISIBILITY": "public",
 		"SANDBOX_MANAGER_NAME":            "Managed Sandbox",
-		"SANDBOX_POOL_SIZE":               "4",
 		"SANDBOX_PROVIDERS":               "claude,codex",
-		"SANDBOX_POOL_DRAIN_TIMEOUT":      "5m",
-		"SANDBOX_POOL_HEARTBEAT_TIMEOUT":  "30s",
-		"SANDBOX_POOL_RESET_TIMEOUT":      "3m",
-		"SANDBOX_POOL_LOST_RETENTION":     "7m",
-		"SANDBOX_PLACEMENT":               "person-issue",
-		"SANDBOX_POD_CAPACITY":            "8",
-		"SANDBOX_PLACEMENT_WAIT":          "20s",
 		"SANDBOX_POOL_WAKE_INTERVAL":      "2s",
 		"SANDBOX_HOLD_TIMEOUT":            "5m",
-		"SANDBOX_POD_MAX_LIFETIME":        "1h",
-		"SANDBOX_POD_DRAIN_GRACE":         "2m",
 		"SANDBOX_POOL_RECONCILE_INTERVAL": "1m",
-		"SANDBOX_POOL_LEASE_MAX":          "3h",
 		"SANDBOX_MODELS":                  "claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2",
 	}
 	s, err := loadSettings(envLookup(env))
-	if err != nil {
-		t.Fatalf("a remaining setting was refused: %v", err)
+	if err != nil || len(s.warnings) != 0 {
+		t.Fatalf("a remaining setting was refused: %v %q", err, s.warnings)
 	}
 	pool, err := manager.New(s.config, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
@@ -158,10 +182,9 @@ func TestLoadSettingsRefusesBadSettings(t *testing.T) {
 		want string
 	}{
 		"bad duration":      {map[string]string{"SANDBOX_HOLD_TIMEOUT": "soon"}, "SANDBOX_HOLD_TIMEOUT"},
-		"negative duration": {map[string]string{"SANDBOX_POD_DRAIN_GRACE": "-1m"}, "SANDBOX_POD_DRAIN_GRACE"},
-		"bad capacity":      {map[string]string{"SANDBOX_POD_CAPACITY": "-2"}, "SANDBOX_POD_CAPACITY"},
-		"bad placement":     {map[string]string{"SANDBOX_PLACEMENT": "pod"}, "SANDBOX_PLACEMENT"},
-		"old issue rule":    {map[string]string{"SANDBOX_PLACEMENT": "issue"}, "SANDBOX_PLACEMENT"},
+		"negative duration": {map[string]string{"SANDBOX_POD_MAX_IDLE": "-1m"}, "SANDBOX_POD_MAX_IDLE"},
+		"bad pod count":     {map[string]string{"SANDBOX_MAX_PODS": "-2"}, "SANDBOX_MAX_PODS"},
+		"no pod template":   {map[string]string{"SANDBOX_POD_TEMPLATE": ""}, "SANDBOX_POD_TEMPLATE is required"},
 		"bad models":        {map[string]string{"SANDBOX_MODELS": "claude"}, "SANDBOX_MODELS"},
 	}
 	for name, tc := range cases {

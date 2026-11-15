@@ -34,14 +34,6 @@ type handBack struct {
 	why HandBack
 }
 
-// PodInterrupted tells the core a pod it holds restarted by itself: its
-// started tasks are gone.
-func (c *Core) PodInterrupted(id, why string) {
-	c.podGone(id, why, func(pol *policy.Policy) []policy.Decision {
-		return pol.PodInterrupted(id, "the pod's daemon restarted", why)
-	})
-}
-
 // PodLost tells the core a pod it holds went silent.
 func (c *Core) PodLost(id, why string) {
 	c.podGone(id, why, podLost(id, why))
@@ -194,14 +186,14 @@ func (c *Core) heldOrderLocked() []string {
 }
 
 // livePods counts the pods the pool can lend: every pod it knows but the
-// lost ones, and those of them on their way to ready (resetting or
-// starting). The policy weighs the budget with them.
+// lost ones, and those of them still starting. The policy weighs the budget
+// with them.
 func (c *Core) livePods() (live, starting int) {
 	for _, p := range c.pool.Pods() {
 		switch p.State {
 		case PodLost:
 			continue
-		case PodResetting:
+		case PodStarting:
 			starting++
 		}
 		live++

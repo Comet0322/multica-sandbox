@@ -19,8 +19,8 @@ func TestCancelAckEndsTheLease(t *testing.T) {
 		t.Fatalf("cancel-ack: status %d", status)
 	}
 	h.wantEnded("t1", "pod reported cancel-ack")
-	if inv := h.inventory(); inv.Resetting != 1 || inv.Leased != 0 {
-		t.Fatalf("the pod must be reset after the lease: %+v", inv)
+	if inv := h.inventory(); inv.Idle != 1 || inv.Running != 0 {
+		t.Fatalf("the pod must be idle after the lease: %+v", inv)
 	}
 	if _, failed := h.upstream.failureOf("t1"); failed {
 		t.Fatalf("a cancelled task must not be failed upstream")
@@ -73,8 +73,8 @@ func TestTerminalReportMulticaRefusedEndsTheLease(t *testing.T) {
 				if n := h.upstream.callCount("POST /api/daemon/tasks/t1/fail"); action != "fail" && n != 0 {
 					t.Fatalf("the manager must not fail the task again, %d fail calls", n)
 				}
-				if inv := h.inventory(); inv.Resetting != 1 {
-					t.Fatalf("the pod must be reset: %+v", inv)
+				if inv := h.inventory(); inv.Idle != 1 {
+					t.Fatalf("the pod must be idle: %+v", inv)
 				}
 			})
 		}

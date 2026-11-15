@@ -26,17 +26,6 @@ func TestATasksKeyIsItsIssueElseItsChatSession(t *testing.T) {
 	}
 }
 
-func TestTheOldRuleNamesStillLoad(t *testing.T) {
-	for _, rule := range []multica.AffinityRule{multica.RuleTask, multica.RulePersonIssue, multica.RulePersonAgent, multica.RulePerson, multica.RuleWorkspace} {
-		if err := multica.CheckAffinityRule(rule); err != nil {
-			t.Errorf("CheckAffinityRule(%s): %v", rule, err)
-		}
-	}
-	if err := multica.CheckAffinityRule("pod"); err == nil {
-		t.Error("an unknown rule is accepted")
-	}
-}
-
 func TestAClaimWithoutAnIDIsRefused(t *testing.T) {
 	if _, err := multica.ParseClaimed(json.RawMessage(`{"agent_id":"ag-1"}`)); err == nil {
 		t.Fatal("a task without an ID was accepted")

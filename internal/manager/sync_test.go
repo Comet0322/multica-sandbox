@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -15,6 +14,8 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 const patPool = "mul_pat_pool_account"
@@ -188,25 +189,16 @@ func (m *syncMultica) modes(workspaceID string) []string {
 
 func newSyncHarness(t *testing.T, up *syncMultica, mutate ...func(*manager.Config)) *harness {
 	t.Helper()
-	logs, audit := &syncBuffer{}, &syncBuffer{}
 	cfg := manager.Config{
 		MulticaURL: up.URL, PAT: patPool, Name: "Pool",
-		UpstreamBackoff: time.Minute, AuditLog: audit,
-		DrainTimeout: time.Minute, DrainPoll: 5 * time.Millisecond,
+		UpstreamBackoff: time.Minute,
+		DrainTimeout:    time.Minute, DrainPoll: 5 * time.Millisecond,
 	}
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &harness{t: t, pool: pool, logs: logs, audit: audit}
-	h.podAPI = httptest.NewServer(pool.PodHandler())
-	h.admin = httptest.NewServer(pool.AdminHandler())
-	t.Cleanup(h.podAPI.Close)
-	t.Cleanup(h.admin.Close)
-	return h
+	// The test runs the first Sync itself.
+	return startManager(t, fake.NewSimpleClientset(), cfg, botPods, botPods, func(context.Context, *manager.Manager) error { return nil })
 }
 
 func TestSyncServesTheAccountsWorkspaces(t *testing.T) {
@@ -341,7 +333,7 @@ func TestPoolRunsOnlyUnderTheBotAccount(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "bot account") {
 		t.Fatalf("a pool without the bot account's ticket: want an error naming it, got %v", err)
 	}
-	if _, err := manager.New(manager.Config{MulticaURL: "http://127.0.0.1:1", PAT: patPool}, nil); err != nil {
+	if _, err := manager.New(manager.Config{MulticaURL: "http://127.0.0.1:1", PAT: patPool, Kube: testKube()}, nil); err != nil {
 		t.Fatalf("the bot account's ticket alone must be valid: %v", err)
 	}
 }
@@ -504,7 +496,7 @@ func (m *syncMultica) pathCount(p string) int {
 func TestSyncHintsPodsToRegisterAWorkspaceThatHasNoRegistration(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
-	h := newSyncHarness(t, up, withWake(time.Hour), farHeartbeat)
+	h := newSyncHarness(t, up, withWake(time.Hour))
 	clock := h.withClock()
 	sync := func() {
 		t.Helper()

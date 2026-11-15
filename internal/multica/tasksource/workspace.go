@@ -21,15 +21,10 @@ type WorkspaceConfig struct {
 	// Quota is the most pods the workspace's running tasks may occupy at
 	// once; 0 means no cap.
 	Quota int
-	// AffinityRule is the workspace's affinity rule, read but no longer
-	// used (ADR 0009). Empty inherits the pool's.
-	AffinityRule multica.AffinityRule
 	// Slug is the workspace's slug, which overrides are keyed by.
 	Slug string
 	// HoldTimeout is the workspace's own; nil inherits the pool's.
-	// MaxLifetime is read but no longer used (ADR 0009).
 	HoldTimeout *time.Duration
-	MaxLifetime *time.Duration
 	// Guarantee is the number of pods kept for the workspace; Weight shares
 	// out the pods beyond the guarantees, 0 counting as 1 (see
 	// policy.TenantSettings).
@@ -37,7 +32,7 @@ type WorkspaceConfig struct {
 	Weight    int
 }
 
-func (w *WorkspaceConfig) normalize(defaultName string, defaultRule multica.AffinityRule) error {
+func (w *WorkspaceConfig) normalize(defaultName string) error {
 	if _, err := uuid.Parse(w.WorkspaceID); err != nil {
 		return fmt.Errorf("workspace ID must be a UUID")
 	}
@@ -48,20 +43,13 @@ func (w *WorkspaceConfig) normalize(defaultName string, defaultRule multica.Affi
 	if w.Guarantee < 0 || w.Weight < 0 {
 		return fmt.Errorf("workspace %s: guarantee and weight must not be negative", w.WorkspaceID)
 	}
-	if w.AffinityRule == "" {
-		w.AffinityRule = defaultRule
-	}
-	if err := multica.CheckAffinityRule(w.AffinityRule); err != nil {
-		return fmt.Errorf("workspace %s: %w", w.WorkspaceID, err)
-	}
 	if w.RuntimeName == "" {
 		w.RuntimeName = defaultName
 	}
 	return nil
 }
 
-// Settings are the workspace's policy settings. Its affinity rule and
-// maximum lifetime are no longer among them (ADR 0009).
+// Settings are the workspace's policy settings.
 func (w WorkspaceConfig) Settings() policy.TenantSettings {
 	return policy.TenantSettings{Quota: w.Quota, HoldTimeout: w.HoldTimeout, Guarantee: w.Guarantee, Weight: w.Weight}
 }
@@ -69,11 +57,9 @@ func (w WorkspaceConfig) Settings() policy.TenantSettings {
 // setSettings takes next's slug and settings, the ones a reload may change
 // while the workspace is served, and reports whether a setting changed.
 func (w *WorkspaceConfig) setSettings(next WorkspaceConfig) bool {
-	changed := w.Quota != next.Quota || w.AffinityRule != next.AffinityRule ||
-		!equalDuration(w.HoldTimeout, next.HoldTimeout) || !equalDuration(w.MaxLifetime, next.MaxLifetime) ||
+	changed := w.Quota != next.Quota || !equalDuration(w.HoldTimeout, next.HoldTimeout) ||
 		w.Guarantee != next.Guarantee || w.Weight != next.Weight
-	w.Slug, w.Quota, w.AffinityRule = next.Slug, next.Quota, next.AffinityRule
-	w.HoldTimeout, w.MaxLifetime = next.HoldTimeout, next.MaxLifetime
+	w.Slug, w.Quota, w.HoldTimeout = next.Slug, next.Quota, next.HoldTimeout
 	w.Guarantee, w.Weight = next.Guarantee, next.Weight
 	return changed
 }
@@ -146,8 +132,7 @@ func (w *workspace) close() {
 type ReloadResult struct {
 	Added   []string
 	Removed []string
-	// Updated had its quota, affinity rule, hold timeout, maximum lifetime,
-	// guarantee or weight changed, which applies to claims and placements
+	// Updated had its quota, hold timeout, guarantee or weight changed, which applies to claims and placements
 	// from now on.
 	Updated []string
 	// Unapplied had its runtime name changed, which needs a restart; the
