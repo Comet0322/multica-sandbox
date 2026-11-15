@@ -29,7 +29,7 @@ import (
 type Service interface {
 	sandbox.Service
 	// Authenticate returns the pod that holds a pod token.
-	Authenticate(token string) (sandbox.PodID, bool)
+	Authenticate(ticket string) (sandbox.PodID, bool)
 	// Inventory lists every pod with its state.
 	Inventory() sandbox.Inventory
 	// Pod reports one pod; false when the service does not know it.
@@ -271,8 +271,8 @@ var _ multica.Backend = backend{}
 
 func (b backend) NotReady() string { return b.p.source.NotReady() }
 
-func (b backend) PodByToken(token string) (string, bool) {
-	id, ok := b.p.svc.Authenticate(token)
+func (b backend) PodByToken(ticket string) (string, bool) {
+	id, ok := b.p.svc.Authenticate(ticket)
 	return string(id), ok
 }
 

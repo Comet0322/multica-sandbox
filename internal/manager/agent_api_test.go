@@ -73,7 +73,7 @@ func TestAgentPathsWithoutATaskTokenAreRefused(t *testing.T) {
 	pod := h.newPod("pool-0")
 	pod.start()
 
-	if status := pod.callWithToken(pod.token, http.MethodGet, "/api/issues/abc"); status != http.StatusForbidden {
+	if status := pod.callWithToken(pod.ticket, http.MethodGet, "/api/issues/abc"); status != http.StatusForbidden {
 		t.Errorf("pod token on an agent path: status %d, want 403", status)
 	}
 	if status := pod.callWithToken("mul_some_pat", http.MethodGet, "/api/issues/abc"); status != http.StatusUnauthorized {

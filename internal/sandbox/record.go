@@ -288,7 +288,7 @@ func podToken(obj *corev1.Pod) string {
 		return ""
 	}
 	for _, e := range obj.Spec.Containers[i].Env {
-		if e.Name == PodTokenEnv && strings.HasPrefix(e.Value, podTokenPrefix) {
+		if e.Name == PodTicketEnv && strings.HasPrefix(e.Value, podTicketPrefix) {
 			return e.Value
 		}
 	}
@@ -356,11 +356,11 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 	for i := range items {
 		obj := &items[i]
 		id := PodID(obj.Name)
-		token := podToken(obj)
+		ticket := podToken(obj)
 		rec, served, err := parseRecord(obj)
 		_, ended := podGone(obj, false)
 		switch {
-		case token == "" || k.tokens[token] != "" || k.pods[id] != nil:
+		case ticket == "" || k.tickets[ticket] != "" || k.pods[id] != nil:
 			k.log.Warn("deleting a pod with no pod token of its own", "pod", id)
 			drop = append(drop, obj.Name)
 			continue
@@ -380,7 +380,7 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 			continue
 		}
 		k.seq++
-		pd := &kubePod{id: id, token: token, seq: k.seq, createdAt: obj.CreationTimestamp.Time, startBy: now}
+		pd := &kubePod{id: id, ticket: ticket, seq: k.seq, createdAt: obj.CreationTimestamp.Time, startBy: now}
 		if served {
 			pd.state, pd.readyAt, pd.record = PodHeld, now, rec
 			out = append(out, RestoredPod{ID: id, Record: rec})
@@ -388,7 +388,7 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 			// Its daemon calling in makes it ready, as for a new pod.
 			pd.state = PodStarting
 		}
-		k.pods[id], k.tokens[token] = pd, id
+		k.pods[id], k.tickets[ticket] = pd, id
 	}
 	unlock()
 	for _, name := range drop {

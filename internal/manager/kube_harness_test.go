@@ -136,11 +136,11 @@ func (h *harness) adopt(pd corev1.Pod) *simPod {
 	h.t.Cleanup(transport.CloseIdleConnections)
 	p := &simPod{h: h, name: pd.Name, id: pd.Name, client: &http.Client{Transport: transport, Timeout: 10 * time.Second}}
 	for _, e := range pd.Spec.Containers[0].Env {
-		if e.Name == sandbox.PodTokenEnv {
-			p.token = e.Value
+		if e.Name == sandbox.PodTicketEnv {
+			p.ticket = e.Value
 		}
 	}
-	if p.token == "" {
+	if p.ticket == "" {
 		h.t.Fatalf("pod %s has no pod token", pd.Name)
 	}
 	return p

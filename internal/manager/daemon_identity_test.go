@@ -171,7 +171,7 @@ func TestPodsAreInvisibleUpstream(t *testing.T) {
 		}
 	}
 	for _, r := range up.allRequests() {
-		for _, pod := range []string{"pool-0", "pool-1", first.id, second.id, first.token, second.token} {
+		for _, pod := range []string{"pool-0", "pool-1", first.id, second.id, first.ticket, second.ticket} {
 			if strings.Contains(r.Raw, pod) {
 				t.Fatalf("%s %s carries the pod's %q: %s", r.Method, r.Path, pod, r.Raw)
 			}

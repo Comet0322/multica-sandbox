@@ -110,7 +110,7 @@ func TestAuditIsJSONLinesWithoutCredentials(t *testing.T) {
 	if len(h.auditRecords()) < 3 {
 		t.Fatalf("expected several records, got %q", raw)
 	}
-	for _, sealed := range []string{harnessPAT, pod.token, "Bearer"} {
+	for _, sealed := range []string{harnessPAT, pod.ticket, "Bearer"} {
 		if strings.Contains(raw, sealed) {
 			t.Fatalf("audit log contains %q: %s", sealed, raw)
 		}

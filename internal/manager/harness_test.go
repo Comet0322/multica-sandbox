@@ -326,8 +326,8 @@ type simPod struct {
 	h    *harness
 	name string
 	// id is the pod's name in Kubernetes, token its pod token.
-	id, token string
-	client    *http.Client
+	id, ticket string
+	client     *http.Client
 }
 
 // newPod plays the daemon of the next warm pod the manager created that no
@@ -366,7 +366,7 @@ func (p *simPod) call(method, path string, body any) (int, []byte) {
 	if err != nil {
 		p.h.t.Fatal(err)
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.ticket)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

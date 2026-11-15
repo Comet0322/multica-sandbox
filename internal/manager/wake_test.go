@@ -38,7 +38,7 @@ func (p *simPod) dialWake() (*wakeSocket, *http.Response, error) {
 	d := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
 	}
-	header := http.Header{"Authorization": {"Bearer " + p.token}}
+	header := http.Header{"Authorization": {"Bearer " + p.ticket}}
 	conn, resp, err := d.Dial("ws"+strings.TrimPrefix(p.h.podAPI.URL, "http")+"/api/daemon/ws", header)
 	if err != nil {
 		return nil, resp, err
@@ -103,7 +103,7 @@ func TestWakeSocketUpgradesOnlyPodsWithAKnownToken(t *testing.T) {
 	h := newHarness(t, 2, withWake(time.Hour))
 	known := h.newPod("pool-0")
 	known.start()
-	stranger := &simPod{h: h, name: "stranger", token: "mpt_forged", client: &http.Client{}}
+	stranger := &simPod{h: h, name: "stranger", ticket: "mpt_forged", client: &http.Client{}}
 
 	ws, resp, err := known.dialWake()
 	if err != nil {
