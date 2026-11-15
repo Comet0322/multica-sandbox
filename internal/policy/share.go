@@ -7,7 +7,7 @@ import (
 
 // Fair sharing between tenants. A pod never serves another tenant, so
 // tenants share the pods in whole pods: a tenant occupies its running, held
-// and idle pods, and the warm pods reserved for its claims.
+// and idle pods, and the warm pods its claims in flight were made against.
 //
 // Each tenant has a guarantee and a weight (TenantSettings):
 //
@@ -31,11 +31,11 @@ func occupiedBy(pd *podState, tenant string) bool {
 	if pd.tenant != "" {
 		return pd.tenant == tenant
 	}
-	return pd.reservation != nil && pd.reservation.target.Tenant == tenant
+	return pd.claim != nil && pd.claim.target.Tenant == tenant
 }
 
 // occupied reports whether a pod counts toward some tenant's occupancy.
-func occupied(pd *podState) bool { return pd.tenant != "" || pd.reservation != nil }
+func occupied(pd *podState) bool { return pd.tenant != "" || pd.claim != nil }
 
 // occupiedPods counts the pods a tenant occupies.
 func (p *Policy) occupiedPods(tenant string) int {
@@ -167,7 +167,7 @@ func (p *Policy) victim(taker string, take bool) *podState {
 	}
 	var best *podState
 	for _, pd := range p.sortedPods() {
-		if rank(pd) == 0 || pd.reservation != nil || !p.mayDelete(pd.tenant, taker, g) || (!take && pd.tenant != taker) {
+		if rank(pd) == 0 || pd.claim != nil || !p.mayDelete(pd.tenant, taker, g) || (!take && pd.tenant != taker) {
 			continue
 		}
 		if best == nil {

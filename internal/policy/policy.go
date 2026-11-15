@@ -143,11 +143,11 @@ type podState struct {
 	phase   Phase
 	// tenant, kind and key are set by the pod's first task; key changes
 	// with each task.
-	tenant      string
-	kind        Kind
-	key         string
-	task        *taskState
-	reservation *reservation
+	tenant string
+	kind   Kind
+	key    string
+	task   *taskState
+	claim  *claimInFlight
 	// since is when the pod was held or became idle; until is when its
 	// hold ends.
 	since, until time.Time
@@ -161,30 +161,30 @@ type taskState struct {
 	waitingSince time.Time
 }
 
-type reservation struct {
-	id     ReservationID
+type claimInFlight struct {
+	id     ClaimID
 	pod    *podState
 	target Target
 }
 
 // Policy is the policy's state. See the package comment.
 type Policy struct {
-	cfg          Config
-	pods         map[string]*podState
-	seq          uint64
-	tenants      map[string]TenantSettings
-	backoff      map[string]time.Time
-	pending      map[Target]*pendingList
-	tasks        map[string]*taskState
-	waiting      []*taskState
-	reservations map[ReservationID]*reservation
+	cfg      Config
+	pods     map[string]*podState
+	seq      uint64
+	tenants  map[string]TenantSettings
+	backoff  map[string]time.Time
+	pending  map[Target]*pendingList
+	tasks    map[string]*taskState
+	waiting  []*taskState
+	inFlight map[ClaimID]*claimInFlight
 	// lastTarget is the target claimed for last; targets claimed for
 	// without a queued task take turns after it.
 	lastTarget Target
 	// livePods is the number of live pods, as the latest claim request
 	// said.
-	livePods int
-	nextRes  ReservationID
+	livePods  int
+	nextClaim ClaimID
 }
 
 // New returns a policy with no pods and no tenants.
@@ -207,7 +207,7 @@ func New(cfg Config) (*Policy, error) {
 	return &Policy{
 		cfg: cfg, pods: map[string]*podState{}, tenants: map[string]TenantSettings{},
 		backoff: map[string]time.Time{}, pending: map[Target]*pendingList{}, tasks: map[string]*taskState{},
-		reservations: map[ReservationID]*reservation{},
+		inFlight: map[ClaimID]*claimInFlight{},
 	}, nil
 }
 
@@ -299,8 +299,8 @@ func (p *Policy) PodLost(pod, failReason, endReason string) []Decision {
 	if pd == nil {
 		return nil
 	}
-	if r := pd.reservation; r != nil {
-		delete(p.reservations, r.id)
+	if r := pd.claim; r != nil {
+		delete(p.inFlight, r.id)
 	}
 	delete(p.pods, pod)
 	var ds []Decision
@@ -361,7 +361,7 @@ func (p *Policy) Tick() []Decision {
 	ds := p.placeWaiting()
 	now := p.cfg.Now()
 	for _, pd := range p.sortedPods() {
-		if pd.reservation != nil {
+		if pd.claim != nil {
 			continue // left to the claim's outcome
 		}
 		if pd.phase == PhaseHeld && !now.Before(pd.until) {
@@ -395,7 +395,7 @@ func (p *Policy) Busy(tenant string) bool {
 			return true
 		}
 	}
-	for _, r := range p.reservations {
+	for _, r := range p.inFlight {
 		if r.target.Tenant == tenant {
 			return true
 		}
@@ -413,8 +413,8 @@ type PodInfo struct {
 	Key string
 	// Task is the task placed on or running on the pod.
 	Task string
-	// Reserved is set while a claim in flight was made against the pod.
-	Reserved bool
+	// Claimed is set while a claim in flight was made against the pod.
+	Claimed bool
 	// Since is when a held pod was held or an idle pod became idle; Until
 	// is when a hold ends.
 	Since, Until time.Time
@@ -426,7 +426,7 @@ func (p *Policy) Pod(id string) (PodInfo, bool) {
 	if pd == nil {
 		return PodInfo{}, false
 	}
-	info := PodInfo{Phase: pd.phase, Tenant: pd.tenant, Kind: pd.kind, Key: pd.key, Reserved: pd.reservation != nil, Since: pd.since, Until: pd.until}
+	info := PodInfo{Phase: pd.phase, Tenant: pd.tenant, Kind: pd.kind, Key: pd.key, Claimed: pd.claim != nil, Since: pd.since, Until: pd.until}
 	if pd.task != nil {
 		info.Task = pd.task.ID
 	}
@@ -446,8 +446,8 @@ func (p *Policy) idle(pd *podState, since time.Time) {
 
 // delete forgets a pod the caller is to delete.
 func (p *Policy) delete(pd *podState, d Delete) Decision {
-	if r := pd.reservation; r != nil {
-		delete(p.reservations, r.id)
+	if r := pd.claim; r != nil {
+		delete(p.inFlight, r.id)
 	}
 	delete(p.pods, pd.id)
 	return d
@@ -466,10 +466,11 @@ func (p *Policy) sortedPods() []*podState {
 
 // placeFor is the pod a task goes to, nil when none can take it now: its
 // key's held pod, then (pool) an idle pod of its tenant, then a warm pod.
-// reserved, the pod readied for the task's claim, is preferred among equals.
-func (p *Policy) placeFor(ts *taskState, reserved *podState) *podState {
+// claimedOn, the pod the task's claim was made against, is preferred among
+// equals.
+func (p *Policy) placeFor(ts *taskState, claimedOn *podState) *podState {
 	free := func(pd *podState) bool {
-		return pd.tenants[ts.Tenant] && (pd.reservation == nil || pd == reserved)
+		return pd.tenants[ts.Tenant] && (pd.claim == nil || pd == claimedOn)
 	}
 	if ts.Key != "" {
 		for _, pd := range p.sortedPods() {
@@ -479,23 +480,23 @@ func (p *Policy) placeFor(ts *taskState, reserved *podState) *podState {
 		}
 	}
 	if ts.Kind == KindPool {
-		if pd := p.idlePod(ts.Tenant, reserved); pd != nil {
+		if pd := p.idlePod(ts.Tenant, claimedOn); pd != nil {
 			return pd
 		}
 	}
-	return p.warmPod(ts.Tenant, reserved)
+	return p.warmPod(ts.Tenant, claimedOn)
 }
 
 // idlePod is an idle pod of the tenant no other claim was made against:
-// reserved when it is one, else the one idle the shortest time, so the
+// claimedOn when it is one, else the one idle the shortest time, so the
 // others age out.
-func (p *Policy) idlePod(tenant string, reserved *podState) *podState {
+func (p *Policy) idlePod(tenant string, claimedOn *podState) *podState {
 	var best *podState
 	for _, pd := range p.sortedPods() {
-		if pd.phase != PhaseIdle || pd.tenant != tenant || !pd.tenants[tenant] || (pd.reservation != nil && pd != reserved) {
+		if pd.phase != PhaseIdle || pd.tenant != tenant || !pd.tenants[tenant] || (pd.claim != nil && pd != claimedOn) {
 			continue
 		}
-		if pd == reserved {
+		if pd == claimedOn {
 			return pd
 		}
 		if best == nil || pd.since.After(best.since) {
@@ -506,14 +507,14 @@ func (p *Policy) idlePod(tenant string, reserved *podState) *podState {
 }
 
 // warmPod is a warm pod registered for the tenant that no other claim was
-// made against: reserved when it is one, else the earliest acquired.
-func (p *Policy) warmPod(tenant string, reserved *podState) *podState {
+// made against: claimedOn when it is one, else the earliest acquired.
+func (p *Policy) warmPod(tenant string, claimedOn *podState) *podState {
 	var best *podState
 	for _, pd := range p.pods {
-		if pd.phase != PhaseWarm || !pd.tenants[tenant] || (pd.reservation != nil && pd != reserved) {
+		if pd.phase != PhaseWarm || !pd.tenants[tenant] || (pd.claim != nil && pd != claimedOn) {
 			continue
 		}
-		if pd == reserved {
+		if pd == claimedOn {
 			return pd
 		}
 		if best == nil || pd.seq < best.seq {

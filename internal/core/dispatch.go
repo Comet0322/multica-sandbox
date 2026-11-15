@@ -24,8 +24,8 @@ func (c *Core) applyLocked(ds []policy.Decision) (claim *policy.Claim, acquire b
 			claim = &d
 		case policy.Acquire:
 			acquire = true
-		case policy.Release:
-			// The reservation held nothing on the pool's side.
+		case policy.ClaimClosed:
+			// A closed claim held nothing on the pool's side.
 		case policy.Place:
 			c.placeLocked(d)
 		case policy.Delete:
@@ -100,7 +100,7 @@ func (c *Core) dropClaimedLocked(taskID string) {
 // DispatchOnce is the dispatch tick, the only place tasks are claimed. It
 // reads the pending lists, forgets held pods the pool no longer lends, wakes
 // pods that hold a placed task, and claims at most one task against a
-// reservation on a held pod, acquiring one when the policy asks; the pod the
+// held pod to claim against, acquiring one when the policy asks; the pod the
 // task is placed on is woken to pick it up.
 func (c *Core) DispatchOnce(ctx context.Context) {
 	c.readPending(ctx)
@@ -144,11 +144,11 @@ func (c *Core) readPending(ctx context.Context) {
 	}
 }
 
-// claimRound asks the policy for a reservation on a held pod and claims from
+// claimRound asks the policy for a held pod to claim against and claims from
 // the tenant it picks, trying the next tenant when a claim returns nothing,
-// until a claim returns a task or the policy grants no more reservations.
+// until a claim returns a task or the policy grants no more claims.
 // When the policy asks for a pod, one is acquired from the pool; once the
-// pool has none, the policy may reserve a pod in hold instead. Every claim is
+// pool has none, the policy may pick a pod in hold instead. Every claim is
 // made against a held pod, so every claimed task has somewhere to run. A
 // halted pool stops every claim.
 func (c *Core) claimRound(ctx context.Context) {
@@ -188,13 +188,13 @@ func (c *Core) claimRound(ctx context.Context) {
 			// One tenant's upstream failing must not hold back the others.
 			c.log.Warn("claim task", "pod_id", claim.Pod, "workspace_id", claim.Tenant, "error", err)
 			c.mu.Lock()
-			c.applyLocked(c.policy.ClaimReturned(claim.Reservation, nil, true))
+			c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, true))
 			c.mu.Unlock()
 			continue
 		}
 		if task == nil {
 			c.mu.Lock()
-			c.applyLocked(c.policy.ClaimReturned(claim.Reservation, nil, false))
+			c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, false))
 			c.mu.Unlock()
 			continue
 		}
@@ -209,7 +209,7 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 	if !strings.EqualFold(task.Tenant, claim.Tenant) {
 		why := "the managed runtime does not serve this task's workspace"
 		c.mu.Lock()
-		c.applyLocked(c.policy.ClaimReturned(claim.Reservation, nil, false))
+		c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, false))
 		c.mu.Unlock()
 		c.auditDenied(claim.Tenant, task, why)
 		c.fail(ctx, claim.Tenant, task.ID, why)
@@ -218,7 +218,7 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 	task.Tenant, task.Kind = claim.Tenant, claim.Kind
 	c.mu.Lock()
 	c.claimed[task.ID] = &claimedTask{task: task, claimedAt: c.now()}
-	c.applyLocked(c.policy.ClaimReturned(claim.Reservation, &task.Task, false))
+	c.applyLocked(c.policy.ClaimReturned(claim.ID, &task.Task, false))
 	c.mu.Unlock()
 	c.settle(ctx)
 }

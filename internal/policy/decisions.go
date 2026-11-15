@@ -8,24 +8,25 @@ type Decision interface {
 	decision()
 }
 
-// ReservationID names a reservation for the claim made against it.
-type ReservationID uint64
+// ClaimID names a claim in flight, made against one ready pod.
+type ClaimID uint64
 
 // Claim tells the caller to claim one task upstream from Tenant's runtimes of
-// Kind, against Reservation on Pod, a ready pod any such task can run on. Its
-// outcome goes back through ClaimReturned.
+// Kind, made against Pod, a ready pod any such task can run on. Its outcome
+// goes back through ClaimReturned with ID.
 type Claim struct {
-	Tenant      string
-	Kind        Kind
-	Reservation ReservationID
-	Pod         string
+	Tenant string
+	Kind   Kind
+	ID     ClaimID
+	Pod    string
 }
 
-// Release says a reservation is no longer held: the claim returned nothing,
-// failed, or its task went to another pod. The pod keeps its phase.
-type Release struct {
-	Reservation ReservationID
-	Pod         string
+// ClaimClosed says the claim made against Pod is over without a task placed
+// on it: the claim returned nothing, failed, or its task went to another pod.
+// The pod keeps its phase and may take another claim.
+type ClaimClosed struct {
+	Claim ClaimID
+	Pod   string
 }
 
 // Place puts a claimed task on a pod. Its lease starts when the pod picks it
@@ -61,22 +62,22 @@ type EndLease struct {
 	Reason string
 }
 
-func (Claim) decision()    {}
-func (Release) decision()  {}
-func (Place) decision()    {}
-func (Delete) decision()   {}
-func (Fail) decision()     {}
-func (EndLease) decision() {}
-func (Acquire) decision()  {}
+func (Claim) decision()       {}
+func (ClaimClosed) decision() {}
+func (Place) decision()       {}
+func (Delete) decision()      {}
+func (Fail) decision()        {}
+func (EndLease) decision()    {}
+func (Acquire) decision()     {}
 
 func (Acquire) String() string { return "acquire" }
 
 func (d Claim) String() string {
-	return fmt.Sprintf("claim %s/%s res=%d pod=%s", d.Tenant, d.Kind, d.Reservation, d.Pod)
+	return fmt.Sprintf("claim %s/%s id=%d pod=%s", d.Tenant, d.Kind, d.ID, d.Pod)
 }
 
-func (d Release) String() string {
-	return fmt.Sprintf("release res=%d pod=%s", d.Reservation, d.Pod)
+func (d ClaimClosed) String() string {
+	return fmt.Sprintf("closed claim=%d pod=%s", d.Claim, d.Pod)
 }
 
 func (d Place) String() string { return fmt.Sprintf("place %s pod=%s", d.Task, d.Pod) }

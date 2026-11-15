@@ -62,8 +62,8 @@ func TestAPodIsReadyBeforeEachClaim(t *testing.T) {
 			name:  "a claim that returns nothing releases its pod, which stays warm",
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: []step{
-				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool res=1 pod=p1"}},
-				{do: claimedNothing(1), want: []string{"release res=1 pod=p1"}},
+				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool id=1 pod=p1"}},
+				{do: claimedNothing(1), want: []string{"closed claim=1 pod=p1"}},
 				{do: info("p1"), want: []string{"warm"}},
 			},
 		},
@@ -72,7 +72,7 @@ func TestAPodIsReadyBeforeEachClaim(t *testing.T) {
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
-				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A"), want: []string{"claim A/pool res=2 pod=p1"}},
+				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A"), want: []string{"claim A/pool id=2 pod=p1"}},
 			}),
 		},
 		{
@@ -80,7 +80,7 @@ func TestAPodIsReadyBeforeEachClaim(t *testing.T) {
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
-				{do: requestKinds(pool{live: 2}, cleanOnly, nil, "A"), want: []string{"claim A/clean res=2 pod=p2"}},
+				{do: requestKinds(pool{live: 2}, cleanOnly, nil, "A"), want: []string{"claim A/clean id=2 pod=p2"}},
 			}),
 		},
 		{
@@ -218,7 +218,7 @@ func TestGuaranteesAndFairShare(t *testing.T) {
 			setup: setup(tenant("A", plain), tenant("B", policy.TenantSettings{Guarantee: 1}), warmPod("p1", "A", "B"), warmPod("p2", "A", "B")),
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A")},
-				{do: requestKinds(pool{live: 2}, poolOnly, nil, "B"), want: []string{"claim B/pool res=2 pod=p2"}},
+				{do: requestKinds(pool{live: 2}, poolOnly, nil, "B"), want: []string{"claim B/pool id=2 pod=p2"}},
 			}),
 		},
 		{
@@ -227,7 +227,7 @@ func TestGuaranteesAndFairShare(t *testing.T) {
 			steps: steps(runs(1, "p1", poolTask("a1", "A", ""), "p1"), []step{
 				{do: pending("A", policy.KindPool, queued("a2", 0, time.Hour))},
 				{do: pending("B", policy.KindPool, queued("b1", 0, 0))},
-				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A", "B"), want: []string{"claim B/pool res=2 pod=p2"}},
+				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A", "B"), want: []string{"claim B/pool id=2 pod=p2"}},
 			}),
 		},
 		{
@@ -237,11 +237,11 @@ func TestGuaranteesAndFairShare(t *testing.T) {
 			steps: []step{
 				{do: pending("A", policy.KindPool, queued("a1", 0, 0), queued("a2", 0, 0))},
 				{do: pending("B", policy.KindPool, queued("b1", 0, time.Hour), queued("b2", 0, time.Hour))},
-				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim B/pool res=1 pod=p1"}},
+				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim B/pool id=1 pod=p1"}},
 				{do: claimed(1, poolTask("b1", "B", "")), want: []string{"place b1 pod=p1"}},
-				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim A/pool res=2 pod=p2"}},
+				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim A/pool id=2 pod=p2"}},
 				{do: claimed(2, poolTask("a1", "A", "")), want: []string{"place a1 pod=p2"}},
-				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim A/pool res=3 pod=p3"}},
+				{do: requestKinds(pool{live: 3}, poolOnly, nil, "A", "B"), want: []string{"claim A/pool id=3 pod=p3"}},
 			},
 		},
 		{
@@ -250,7 +250,7 @@ func TestGuaranteesAndFairShare(t *testing.T) {
 			steps: steps(runs(1, "p1", poolTask("a1", "A", "issue:1"), "p1"), []step{
 				{do: requestKinds(pool{live: 2}, cleanOnly, nil, "A")},
 				{do: ended("a1"), want: []string{"end-lease a1 (done)"}},
-				{do: requestKinds(pool{live: 2}, cleanOnly, nil, "A"), want: []string{"claim A/clean res=2 pod=p2"}},
+				{do: requestKinds(pool{live: 2}, cleanOnly, nil, "A"), want: []string{"claim A/clean id=2 pod=p2"}},
 			}),
 		},
 	})
@@ -284,7 +284,7 @@ func TestTenantsAndLosses(t *testing.T) {
 			name:  "a task whose pod was lost before it started takes the next pod, or fails after the pod wait",
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: []step{
-				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool res=1 pod=p1"}},
+				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool id=1 pod=p1"}},
 				{do: claimed(1, poolTask("a1", "A", "")), want: []string{"place a1 pod=p1"}},
 				{do: lost("p1")},
 				{do: requestKinds(pool{live: 0}, poolOnly, nil, "A"), want: []string{"acquire"}},
@@ -295,7 +295,7 @@ func TestTenantsAndLosses(t *testing.T) {
 			name:  "a waiting task fails after the pod wait",
 			setup: setup(tenant("A", plain), warmPod("p1", "A")),
 			steps: []step{
-				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool res=1 pod=p1"}},
+				{do: requestKinds(pool{live: 1}, poolOnly, nil, "A"), want: []string{"claim A/pool id=1 pod=p1"}},
 				{do: claimed(1, poolTask("a1", "A", "")), want: []string{"place a1 pod=p1"}},
 				{do: lost("p1")},
 				{after: 3*time.Minute + time.Second, do: tick(), want: []string{"fail a1 (no pod could take the task in time)"}},
@@ -305,7 +305,7 @@ func TestTenantsAndLosses(t *testing.T) {
 			name:  "a claim whose pod was lost in flight places its task elsewhere",
 			setup: setup(tenant("A", plain), warmPod("p1", "A"), warmPod("p2", "A")),
 			steps: []step{
-				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A"), want: []string{"claim A/pool res=1 pod=p1"}},
+				{do: requestKinds(pool{live: 2}, poolOnly, nil, "A"), want: []string{"claim A/pool id=1 pod=p1"}},
 				{do: lost("p1")},
 				{do: claimed(1, poolTask("a1", "A", "")), want: []string{"place a1 pod=p2"}},
 			},

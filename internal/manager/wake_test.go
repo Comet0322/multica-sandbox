@@ -157,7 +157,7 @@ func TestDispatchClaimsForIdlePodAndWakesIt(t *testing.T) {
 	}
 	// The task waits on its pod; the lease starts when the pod claims it.
 	if inv := h.inventory(); inv.Running != 1 {
-		t.Fatalf("want the pod reserved, got %+v", inv)
+		t.Fatalf("want the pod taken by the claimed task, got %+v", inv)
 	}
 	if ls := h.leases(); len(ls) != 0 {
 		t.Fatalf("no lease before the pod claims, got %+v", ls)
@@ -213,7 +213,7 @@ func TestDispatchWakesTheTargetPodWhenTaskIsPlacedElsewhere(t *testing.T) {
 		t.Fatalf("pod a: want the frame for t1, got %q", got)
 	}
 
-	// a runs t1, so dispatch reserves idle b, claims t2 against it and wakes
+	// a runs t1, so dispatch picks idle b, claims t2 against it and wakes
 	// only b.
 	h.upstream.enqueue("t2")
 	h.dispatch()

@@ -161,7 +161,7 @@ func (c *Core) healHeldLocked() {
 	}
 }
 
-// heldOrderLocked lists the held pods to reserve for a claim, best first:
+// heldOrderLocked lists the held pods to make a claim against, best first:
 // the preferred ones, then the others, each in acquisition order. Callers
 // hold c.mu.
 func (c *Core) heldOrderLocked() []string {

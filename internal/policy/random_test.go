@@ -42,7 +42,7 @@ func randomRun(t *testing.T, seed uint64) {
 	live := map[string]bool{}
 	taskPod := map[string]string{}
 	started := map[string]bool{}
-	claims := map[policy.ReservationID]policy.Claim{}
+	claims := map[policy.ClaimID]policy.Claim{}
 	taskMeta := map[string]policy.Task{}
 	tasks, places := 0, 0
 	podSeq := 0
@@ -52,7 +52,7 @@ func randomRun(t *testing.T, seed uint64) {
 		for _, d := range ds {
 			switch d := d.(type) {
 			case policy.Claim:
-				claims[d.Reservation] = d
+				claims[d.ID] = d
 			case policy.Place:
 				task := d.Task
 				rec := pods[d.Pod]

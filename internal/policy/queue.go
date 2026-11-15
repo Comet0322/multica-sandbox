@@ -57,7 +57,7 @@ func (p *Policy) PendingUnknown(tenant string, kind Kind) {
 // since their last list.
 func (p *Policy) claimOrder(req ClaimRequest) []Target {
 	inFlight := map[Target]int{}
-	for _, r := range p.reservations {
+	for _, r := range p.inFlight {
 		inFlight[r.target]++
 	}
 	var targets []Target
@@ -124,7 +124,7 @@ func (p *Policy) claimSent(tg Target) {
 		return
 	}
 	n := 0
-	for _, r := range p.reservations {
+	for _, r := range p.inFlight {
 		if r.target == tg {
 			n++
 		}
@@ -170,7 +170,7 @@ type ClaimRequest struct {
 	Starting int
 }
 
-// RequestClaim picks the target to claim for and reserves a ready pod any
+// RequestClaim picks the target to claim for and sets aside a ready pod any
 // task of it can run on: an idle pod of the tenant for the pool kind, else a
 // warm pod. It returns at most one Claim. Nothing is claimed while tasks
 // still wait for a pod. When the first target that may claim has no ready
@@ -209,13 +209,13 @@ func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
 			}
 			continue
 		}
-		p.nextRes++
-		r := &reservation{id: p.nextRes, pod: pd, target: tg}
-		p.reservations[r.id] = r
-		pd.reservation = r
+		p.nextClaim++
+		r := &claimInFlight{id: p.nextClaim, pod: pd, target: tg}
+		p.inFlight[r.id] = r
+		pd.claim = r
 		p.lastTarget = tg
 		p.claimSent(tg)
-		return append(ds, Claim{Tenant: tg.Tenant, Kind: tg.Kind, Reservation: r.id, Pod: pd.id})
+		return append(ds, Claim{Tenant: tg.Tenant, Kind: tg.Kind, ID: r.id, Pod: pd.id})
 	}
 	return ds
 }
@@ -229,7 +229,7 @@ func (p *Policy) probing(tg Target) bool {
 		return false
 	}
 	inFlight := 0
-	for _, r := range p.reservations {
+	for _, r := range p.inFlight {
 		if r.target == tg {
 			inFlight++
 		}
@@ -260,12 +260,12 @@ func (p *Policy) needPod(req ClaimRequest, tenant string, take bool) []Decision 
 
 // ClaimReturned records a claim's outcome: the task it returned, nil when it
 // returned none, with failed set when the upstream call failed. The task
-// goes where placeFor says; the pod reserved for it is released and keeps
+// goes where placeFor says; the pod the claim was made against is free again and keeps
 // its phase when the task goes elsewhere.
-func (p *Policy) ClaimReturned(id ReservationID, t *Task, failed bool) []Decision {
-	r := p.reservations[id]
+func (p *Policy) ClaimReturned(id ClaimID, t *Task, failed bool) []Decision {
+	r := p.inFlight[id]
 	if r == nil {
-		// The reserved pod went away while the claim was in flight.
+		// The pod the claim was made against went away while it was in flight.
 		if t == nil {
 			return nil
 		}
@@ -276,29 +276,29 @@ func (p *Policy) ClaimReturned(id ReservationID, t *Task, failed bool) []Decisio
 		p.wait(ts)
 		return nil
 	}
-	delete(p.reservations, id)
-	r.pod.reservation = nil
+	delete(p.inFlight, id)
+	r.pod.claim = nil
 	if failed {
 		p.backoff[r.target.Tenant] = p.cfg.Now().Add(p.cfg.Backoff)
 	} else {
 		delete(p.backoff, r.target.Tenant)
 	}
 	p.claimAnswered(r.target, t, failed)
-	release := Release{Reservation: id, Pod: r.pod.id}
+	closed := ClaimClosed{Claim: id, Pod: r.pod.id}
 	if t == nil {
-		return []Decision{release}
+		return []Decision{closed}
 	}
 	ts := &taskState{Task: *t}
 	pd := p.placeFor(ts, r.pod)
 	if pd == nil {
 		p.wait(ts)
-		return []Decision{release}
+		return []Decision{closed}
 	}
 	d := p.put(pd, ts)
 	if pd == r.pod {
 		return []Decision{d}
 	}
-	return []Decision{d, release}
+	return []Decision{d, closed}
 }
 
 // Queued lists a tenant's queued tasks not claimed yet, of every kind, in
@@ -323,7 +323,7 @@ func (p *Policy) running(tenant string) int {
 			n++
 		}
 	}
-	for _, r := range p.reservations {
+	for _, r := range p.inFlight {
 		if r.target.Tenant == tenant {
 			n++
 		}
