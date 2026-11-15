@@ -20,7 +20,21 @@ const (
 	RulePersonAgent lending.AffinityRule = "person-agent"
 	// RulePerson shares a binding between all of one person's tasks.
 	RulePerson lending.AffinityRule = "person"
+	// RuleWorkspace shares a binding between every task of a workspace,
+	// whoever it runs for, and keeps it: its pod stays bound to the
+	// workspace, in hold when idle, until another workspace's task evicts it
+	// beyond the workspace's guarantee (lending.RuleTenant).
+	RuleWorkspace lending.AffinityRule = "workspace"
 )
+
+// LendingRule is the lending policy's name of a rule: RuleWorkspace is the
+// policy's RuleTenant, the others keep their names.
+func LendingRule(rule lending.AffinityRule) lending.AffinityRule {
+	if rule == RuleWorkspace {
+		return lending.RuleTenant
+	}
+	return rule
+}
 
 // DefaultAffinityRule is the rule a pool uses when none is configured.
 const DefaultAffinityRule = RulePersonIssue
@@ -51,7 +65,7 @@ func AffinityRules() lending.Registry {
 }
 
 // affinityRules lists the rule names in the order errors name them.
-var affinityRules = []lending.AffinityRule{RuleTask, RulePersonIssue, RulePersonAgent, RulePerson}
+var affinityRules = []lending.AffinityRule{RuleTask, RulePersonIssue, RulePersonAgent, RulePerson, RuleWorkspace}
 
 // CheckAffinityRule refuses a rule name that names no affinity rule. Empty is
 // the default.

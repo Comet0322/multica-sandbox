@@ -8,17 +8,81 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
+	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/multica/pool"
+	"sandbox-manager/internal/multica/tasksource"
 	"sandbox-manager/internal/sandbox"
 )
 
-// Pod states as the inventory lists them. The sandbox service says whether a
-// pod is free, held, resetting or lost; a held pod is leased while it has a
-// binding.
+// Defaults the manager applies to a zero Config field, or the command line
+// does when nothing is set.
+const (
+	// DefaultSyncInterval is how often the manager looks for workspaces its
+	// account joined or left.
+	DefaultSyncInterval = tasksource.DefaultSyncInterval
+	// DefaultUpstreamBackoff is how long a workspace whose upstream failed
+	// is left alone before the manager claims from it again.
+	DefaultUpstreamBackoff = 10 * time.Second
+	// DefaultDispatchInterval is the dispatch tick when DispatchInterval is
+	// zero.
+	DefaultDispatchInterval = core.DefaultDispatchInterval
+	// DefaultReconcileInterval is the reconcile period the command line uses
+	// when none is set.
+	DefaultReconcileInterval = 30 * time.Second
+	// DefaultLeaseMax bounds a lease when no maximum lease time is set.
+	DefaultLeaseMax = core.DefaultLeaseMax
+	// DefaultDrainTimeout is how long a workspace removed may keep its leased
+	// tasks before they are ended.
+	DefaultDrainTimeout = core.DefaultDrainTimeout
+	// DefaultHoldTimeout is the hold timeout the command line applies when
+	// none is configured.
+	DefaultHoldTimeout = 15 * time.Minute
+	// DefaultCapacity is the pod capacity in slots when none is configured:
+	// the daemon's own concurrency limit.
+	DefaultCapacity = 20
+	// DefaultPlacementWait stays well under the 90 seconds after which the
+	// server hands a claimed but unstarted task to the next claimer.
+	DefaultPlacementWait = 30 * time.Second
+	// DefaultMaxLifetime and DefaultDrainGrace are a binding's maximum
+	// lifetime and drain grace when none is configured.
+	DefaultMaxLifetime = 2 * time.Hour
+	DefaultDrainGrace  = 10 * time.Minute
+)
+
+// Names the manager's packages share, kept here so callers need only this
+// package.
+type (
+	WorkspaceConfig   = tasksource.WorkspaceConfig
+	WorkspaceOverride = tasksource.WorkspaceOverride
+	ReloadResult      = tasksource.ReloadResult
+	SyncStatus        = tasksource.SyncStatus
+	UpstreamHealth    = multica.Health
+	LeaseInfo         = core.LeaseInfo
+	AuditRecord       = core.AuditRecord
+)
+
+// Audit actions and decisions (see core.AuditRecord).
+const (
+	AuditLease   = core.AuditLease
+	AuditRelease = core.AuditRelease
+	AuditReset   = core.AuditReset
+	AuditAllow   = core.AuditAllow
+	AuditDeny    = core.AuditDeny
+)
+
+// ParseWorkspaceOverrides reads an overrides file (see
+// tasksource.ParseWorkspaceOverrides).
+func ParseWorkspaceOverrides(raw []byte) (map[string]WorkspaceOverride, map[string]error, error) {
+	return tasksource.ParseWorkspaceOverrides(raw)
+}
+
+// Pod states as the inventory lists them. The pool says whether a pod is
+// free, held, resetting or lost; a held pod is leased while it has a binding
+// or a task.
 const (
 	PodIdle      = "idle"
 	PodLeased    = "leased"
@@ -39,6 +103,9 @@ type Config struct {
 	// SyncInterval is how often Run looks for workspaces joined or left. Zero
 	// means DefaultSyncInterval.
 	SyncInterval time.Duration
+	// HeartbeatInterval is how often the runtimes are heartbeated upstream.
+	// Zero means tasksource.DefaultHeartbeatInterval.
+	HeartbeatInterval time.Duration
 	// RuntimeVisibility is set on every runtime the manager registers: "public"
 	// (the default) lets every member of the workspace use it, "private" leaves
 	// it to its owner until the owner shares it.
@@ -47,8 +114,13 @@ type Config struct {
 	// workspace. Empty derives it from MulticaURL and the PAT's account,
 	// which keeps it stable across restarts.
 	DaemonID string
-	// Name is the machine name and the default runtime name members see.
+	// Name is the machine name Multica's runtime list shows as the title;
+	// each runtime is named "<agent CLI> (Name)", as the stock daemon names
+	// its runtimes after its host.
 	Name string
+	// DeviceName is shown under the title (the registration's device_name).
+	// Empty means Name.
+	DeviceName string
 	// UpstreamBackoff is how long a workspace is skipped after its upstream
 	// failed a claim. Zero means DefaultUpstreamBackoff.
 	UpstreamBackoff time.Duration
@@ -65,7 +137,10 @@ type Config struct {
 	LostRetention    time.Duration
 	// AuditLog receives the audit records as JSON Lines. Nil disables auditing.
 	AuditLog io.Writer
-	// Placement is the affinity rule that decides which tasks share a pod.
+	// Models are model list reports, by provider, that answer Multica's model
+	// picker while no pod has reported lately. Nil asks a pod.
+	Models map[string]json.RawMessage
+	// AffinityRule is the affinity rule that decides which tasks share a pod.
 	// Empty means multica.DefaultAffinityRule.
 	AffinityRule lending.AffinityRule
 	// Capacity is each pod's capacity in slots: how many tasks of one
@@ -98,10 +173,10 @@ type Config struct {
 	// DrainPoll is how often a removed workspace is checked for leftover
 	// work. Zero means one second.
 	DrainPoll time.Duration
-	// ReconcileInterval turns on lease reconciliation (see reconcileOnce):
-	// every interval each leased task is looked up in Multica, the leases of
-	// tasks that are over are ended, and failure reports that did not get
-	// through are sent again. Zero turns it off; the command line defaults to
+	// ReconcileInterval turns on lease reconciliation: every interval each
+	// leased task is looked up in Multica, the leases of tasks that are over
+	// are ended, and failure reports that did not get through are sent
+	// again. Zero turns it off; the command line defaults to
 	// DefaultReconcileInterval.
 	ReconcileInterval time.Duration
 	// LeaseMax is the longest a lease may last; a task still leased after it
@@ -133,32 +208,55 @@ func (c *Config) normalize() error {
 	if c.LeaseMax < 0 {
 		return fmt.Errorf("maximum lease time must not be negative")
 	}
-	if c.LeaseMax == 0 {
-		c.LeaseMax = DefaultLeaseMax
-	}
 	if c.DrainTimeout < 0 || c.DrainPoll < 0 {
 		return fmt.Errorf("drain timeout and poll interval must not be negative")
-	}
-	if c.DrainTimeout == 0 {
-		c.DrainTimeout = DefaultDrainTimeout
-	}
-	if c.DrainPoll == 0 {
-		c.DrainPoll = time.Second
 	}
 	if c.ExpectedSize < 0 {
 		return fmt.Errorf("expected pool size must not be negative")
 	}
-	if err := c.normalizeLending(); err != nil {
+	if err := multica.CheckAffinityRule(c.AffinityRule); err != nil {
 		return err
+	}
+	if c.AffinityRule == "" {
+		c.AffinityRule = multica.DefaultAffinityRule
+	}
+	if c.Capacity < 0 {
+		return fmt.Errorf("pod capacity must not be negative")
+	}
+	if c.Capacity == 0 {
+		c.Capacity = DefaultCapacity
+	}
+	if c.PlacementWait < 0 {
+		return fmt.Errorf("placement wait must not be negative")
+	}
+	if c.PlacementWait == 0 {
+		c.PlacementWait = DefaultPlacementWait
+	}
+	if c.HoldTimeout < 0 || c.MaxLifetime < 0 || c.DrainGrace < 0 {
+		return fmt.Errorf("hold timeout, pod maximum lifetime and drain grace must not be negative")
+	}
+	if c.MaxLifetime == 0 {
+		c.MaxLifetime = DefaultMaxLifetime
+	}
+	if c.DrainGrace == 0 {
+		c.DrainGrace = DefaultDrainGrace
 	}
 	if c.Name == "" {
 		c.Name = "Managed Sandbox"
 	}
+	if c.DeviceName == "" {
+		c.DeviceName = c.Name
+	}
+	for _, name := range []string{c.Name, c.DeviceName} {
+		if err := multica.CheckMachineName(name); err != nil {
+			return fmt.Errorf("machine and device name: %w", err)
+		}
+	}
 	if c.Quota < 0 {
 		return fmt.Errorf("quota must not be negative")
 	}
-	if c.SyncInterval < 0 {
-		return fmt.Errorf("sync interval must not be negative")
+	if c.SyncInterval < 0 || c.HeartbeatInterval < 0 {
+		return fmt.Errorf("sync and heartbeat intervals must not be negative")
 	}
 	if c.SyncInterval == 0 {
 		c.SyncInterval = DefaultSyncInterval
@@ -179,315 +277,166 @@ func (c *Config) normalize() error {
 }
 
 // Manager is the sandbox manager: to Multica it is one daemon, to each pod it
-// is the server. It reaches the pods themselves only through the sandbox
-// service, which registers them, resets them and judges their liveness; the
-// manager keeps no knowledge of how they are deployed.
+// is the server. It is assembled from three parts that know only the
+// interfaces between them:
 //
-// Manager is the only module that knows the others: the Multica client and
-// each workspace's runtimes (package multica), the daemon protocol it serves
-// to the pods (multica.DaemonAPI), the lending policy and the sandbox
-// service. It wires them together, owns the lending state (leases, claimed
-// tasks, the held pods and the workspace records' live fields) under mu, and
-// carries out the placement, lifetime and claim-selection decisions. The
-// other modules keep their own state under their own locks and never call one
-// another; the lock order is mu first, then any module's lock, and no module
-// calls back into the manager while holding its own. The sandbox service is
-// never called with mu held: its notifications take mu.
+//   - the core (package core) decides which pod runs which task and keeps the
+//     record of every task it dispatched;
+//   - the task source (package tasksource) is the daemon Multica sees;
+//   - the pool (package pool) holds the sandbox service and plays the server
+//     toward the stock daemon in each pod.
+//
+// The manager wires them together and serves the admin API from what each
+// reports.
 type Manager struct {
-	cfg   Config
-	log   *slog.Logger
-	clock *clock
-	// up is the bot account on the Multica server.
-	up *multica.Client
-	// sandbox is the sandbox service the pods are reached through.
-	sandbox podService
-	// sandboxHandler serves the service's own pod paths on the pod listener;
-	// sandboxRun runs its liveness checks. Both are nil for a service the
-	// manager did not build.
-	sandboxHandler http.Handler
-	sandboxRun     func(context.Context)
-	// ws is the set of served workspaces. The live state on its workspace
-	// records is guarded by mu.
-	ws *workspaceSet
-	// api serves the daemon protocol to the pods. It asks the manager for
-	// every decision and never holds its own locks while doing so; the
-	// manager may call it with mu held.
-	api *multica.DaemonAPI
-
-	mu sync.Mutex
-	// policy is the lending policy; every placement, claim-selection and
-	// lifetime decision comes from it.
-	policy *lending.Policy
-	// held are the pods acquired from the sandbox service and not handed
-	// back, by pod ID; heldSeq numbers their acquisitions.
-	held    map[string]*pod
-	heldSeq uint64
-	// daemonWorkspaces are, by pod ID, the workspaces each pod's daemon
-	// registered for, held or not.
-	daemonWorkspaces map[string]map[string]struct{}
-	// handBacks are the pods the policy handed back, not yet passed to the
-	// sandbox service's Delete.
-	handBacks []handBack
-	// leases holds the active leases by task ID; history keeps them, closed
-	// ones included, for the lease query.
-	leases  map[string]*lease
-	history []*lease
-	// claimed holds, by task ID, the tasks claimed upstream that no pod has
-	// picked up yet.
-	claimed map[string]*claimedTask
-	// forced holds tasks the policy decided to fail, not yet failed upstream.
-	forced []forcedTask
-	// overrides are the per-workspace overrides in effect.
-	overrides overrideState
-	// auditLog is nil when auditing is off.
-	auditLog *auditLog
-	// failRetry holds failure reports Multica did not take yet; the
-	// reconcile loop sends them again.
-	failRetry []pendingFail
-	// orphansRecovered is set once the first successful Sync asked Multica to
-	// fail what an earlier manager left running.
-	orphansRecovered bool
+	cfg    Config
+	log    *slog.Logger
+	clock  *core.Clock
+	core   *core.Core
+	source *tasksource.Source
+	pool   PodSide
+	// real is the pool side when it is the real one (package pool), nil for
+	// a simulated one.
+	real *pool.Pool
+	// podRun runs the pod side's own loops (the sandbox service's liveness
+	// checks, a simulation); nil when it has none.
+	podRun func(context.Context)
 }
 
-// tickLocked lets time pass for the lending policy (holds, lifetimes,
-// placement waits) and ends leases past the maximum lease time. Callers hold
-// p.mu, and settle once they release it.
-func (p *Manager) tickLocked() {
-	p.applyLocked(p.policy.Tick())
-	p.expireLeasesLocked()
+// PodSide is the pod side as the manager wires it: what the core asks of a
+// pool, what the task source tells the pods, the handler served to the pods,
+// and how many lost pods were pruned, for the inventory.
+type PodSide interface {
+	core.Pool
+	tasksource.Pods
+	Handler() http.Handler
+	PrunedTotal() int
 }
+
+// SimulatedPods builds a pod side that stands in for the real pool, given
+// the core it serves, the task source it registers workspaces with and the
+// bot account's client, and returns it with the loop that runs it.
+type SimulatedPods func(c *core.Core, s *tasksource.Source, client *multica.Client) (PodSide, func(context.Context))
+
+// forwardNotifier passes the sandbox service's notifications to the pool,
+// which is built after the service.
+type forwardNotifier struct{ m *Manager }
+
+func (n forwardNotifier) Interrupted(id sandbox.PodID, why string) {
+	n.m.real.Notifier().Interrupted(id, why)
+}
+func (n forwardNotifier) Lost(id sandbox.PodID, why string) { n.m.real.Notifier().Lost(id, why) }
+
+// sandboxAudit writes the sandbox service's audit records to the manager's
+// audit log, which shares their shape.
+type sandboxAudit struct{ log *core.AuditLog }
+
+func (a sandboxAudit) Record(rec sandbox.AuditRecord) { a.log.Write(core.AuditRecord(rec)) }
 
 // New builds the manager with its own sandbox service.
 func New(cfg Config, log *slog.Logger) (*Manager, error) {
-	p, err := newManager(cfg, log)
-	if err != nil {
-		return nil, err
-	}
-	svc, err := sandbox.NewGitOps(sandbox.Config{
-		HeartbeatTimeout: p.cfg.HeartbeatTimeout, ResetTimeout: p.cfg.ResetTimeout, LostRetention: p.cfg.LostRetention,
-		Notify: notifier{p}, Audit: sandboxAudit{p.auditLog}, Log: p.log, Now: p.now,
-	})
-	if err != nil {
-		return nil, err
-	}
-	p.sandbox, p.sandboxHandler, p.sandboxRun = svc, svc.Handler(), svc.Run
-	return p, nil
+	return build(cfg, log, nil, nil)
 }
 
-// newManager builds the manager without a sandbox service.
-func newManager(cfg Config, log *slog.Logger) (*Manager, error) {
+// NewSimulated builds the manager on a simulated pod side instead of the
+// sandbox service and the pods' daemons, for development against a real
+// Multica server.
+func NewSimulated(cfg Config, log *slog.Logger, sim SimulatedPods) (*Manager, error) {
+	return build(cfg, log, nil, sim)
+}
+
+// build assembles the manager on the simulated pod side sim, on svc, or on a
+// sandbox service of its own when both are nil.
+func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*Manager, error) {
 	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
 	if log == nil {
 		log = slog.Default()
 	}
-	p := &Manager{cfg: cfg, log: log, clock: newClock(), held: map[string]*pod{}, daemonWorkspaces: map[string]map[string]struct{}{},
-		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}}
-	if err := p.newPolicy(); err != nil {
-		return nil, err
-	}
-	p.up = multica.NewClient(cfg.MulticaURL, cfg.PAT, cfg.DaemonID, log)
-	sandboxPaths := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.sandboxPaths().ServeHTTP(w, r) })
-	p.api = multica.NewDaemonAPI(multica.DaemonAPIConfig{
-		Log: log, Now: p.now, Wake: cfg.DispatchInterval > 0, Backend: daemonBackend{p}, Forward: p.up.Forward,
-		PodPaths: map[string]http.Handler{sandbox.RegisterPath: sandboxPaths, sandbox.ControlPath: sandboxPaths},
-	})
-	p.auditLog = newAuditLog(cfg.AuditLog, p.clock, func(err error) { p.log.Error("write audit record", "error", err) })
-	p.ws = newWorkspaceSet(log)
-	return p, nil
-}
-
-// workspaceInfoLocked describes a workspace for the inventory. Callers hold
-// p.mu.
-func (p *Manager) workspaceInfoLocked(ws *workspace) WorkspaceInfo {
-	hold, life := p.cfg.HoldTimeout, p.cfg.MaxLifetime
-	if ws.cfg.HoldTimeout != nil {
-		hold = *ws.cfg.HoldTimeout
-	}
-	if ws.cfg.MaxLifetime != nil {
-		life = *ws.cfg.MaxLifetime
-	}
-	return WorkspaceInfo{
-		WorkspaceID: ws.cfg.WorkspaceID, Slug: ws.cfg.Slug, Name: ws.cfg.RuntimeName,
-		Leased: p.leasedLocked(ws), Quota: ws.cfg.Quota, Upstream: ws.rt.Health(),
-		AffinityRule: string(ws.cfg.AffinityRule), HoldTimeout: hold.String(), MaxLifetime: life.String(),
-	}
-}
-
-// now is the manager's current time.
-func (p *Manager) now() time.Time { return p.clock.now() }
-
-// Inventory reports pod counts by state and the pods themselves, in
-// registration order: their state comes from the sandbox service, their
-// bindings and leases from the manager.
-func (p *Manager) Inventory() Inventory {
-	// Time passes first, so a hand-back it causes shows in the pod states.
-	p.mu.Lock()
-	p.tickLocked()
-	p.mu.Unlock()
-	p.settle(context.Background())
-	pods := p.sandbox.Inventory()
-	p.mu.Lock()
-	inv := Inventory{ExpectedSize: p.cfg.ExpectedSize, PrunedTotal: pods.PrunedTotal, Pods: []PodInfo{}, Workspaces: []WorkspaceInfo{}}
-	for _, ws := range p.ws.served() {
-		inv.Workspaces = append(inv.Workspaces, p.workspaceInfoLocked(ws))
-	}
-	for _, ws := range p.ws.drainingList() {
-		inv.Draining = append(inv.Draining, p.workspaceInfoLocked(ws))
-	}
-	inv.OverrideProblems = p.overrideProblemsLocked()
-	inv.LastSync = p.ws.syncStatus()
-	now := p.now()
-	for _, l := range p.leases {
-		if age := int64(now.Sub(l.StartedAt) / time.Second); age > inv.OldestLeaseAgeSeconds {
-			inv.OldestLeaseAgeSeconds = age
+	m := &Manager{cfg: cfg, log: log, clock: core.NewClock()}
+	audit := core.NewAuditLog(cfg.AuditLog, m.clock, func(err error) { log.Error("write audit record", "error", err) })
+	var handler http.Handler
+	if svc == nil && sim == nil {
+		gitops, err := sandbox.NewGitOps(sandbox.Config{
+			HeartbeatTimeout: cfg.HeartbeatTimeout, ResetTimeout: cfg.ResetTimeout, LostRetention: cfg.LostRetention,
+			Notify: forwardNotifier{m}, Audit: sandboxAudit{audit}, Log: log, Now: m.clock.Now,
+		})
+		if err != nil {
+			return nil, err
 		}
+		svc, handler, m.podRun = gitops, gitops.Handler(), gitops.Run
 	}
-	inv.PendingFailReports = len(p.failRetry)
-	for _, sp := range pods.Pods {
-		id := string(sp.ID)
-		info := PodInfo{ID: id, Name: sp.Label, State: p.podStateLocked(sp), RegisteredAt: sp.RegisteredAt, LastSeen: sp.LastSeen}
-		switch info.State {
-		case PodIdle:
-			inv.Idle++
-		case PodLeased:
-			inv.Leased++
-		case PodResetting:
-			inv.Resetting++
-		case PodLost:
-			inv.Lost++
-		}
-		if pd := p.held[id]; pd != nil {
-			if l := firstLease(pd); l != nil {
-				info.WorkspaceID = l.WorkspaceID
-			}
-			info.Initiators = initiatorsOf(pd)
-			info.Binding = p.podBindingLocked(id, now)
-		}
-		inv.Pods = append(inv.Pods, info)
-	}
-	p.mu.Unlock()
-	return inv
-}
-
-// podStateLocked is the inventory state of a pod the sandbox service lists:
-// a free pod is idle, a held one leased while it has a binding or a task and
-// idle otherwise. Callers hold p.mu.
-func (p *Manager) podStateLocked(sp sandbox.PodInfo) string {
-	switch sp.State {
-	case sandbox.PodResetting:
-		return PodResetting
-	case sandbox.PodLost:
-		return PodLost
-	case sandbox.PodHeld:
-		if pd := p.held[string(sp.ID)]; pd != nil {
-			if _, bound := p.policy.Binding(pd.ID); bound || len(pd.leases) > 0 || len(pd.queue) > 0 {
-				return PodLeased
-			}
-		}
-	}
-	return PodIdle
-}
-
-// AdminHandler serves the read-only admin API (see newAdminHandler).
-func (p *Manager) AdminHandler() http.Handler {
-	return newAdminHandler(p)
-}
-
-// PodHandler serves the standard daemon protocol to pods (see multica.DaemonAPI), and
-// the sandbox service's own pod paths beside it.
-func (p *Manager) PodHandler() http.Handler {
-	return p.api.Handler()
-}
-
-// registerPod registers the pod's daemon for a workspace: the workspace's
-// runtimes are registered upstream on the first pod's behalf, and the pod is
-// answered with them, filtered to the agent CLIs it offers.
-func (p *Manager) registerPod(ctx context.Context, id string, req multica.Registration) (map[string]json.RawMessage, *multica.PodError) {
-	unavailable := &multica.PodError{Status: http.StatusServiceUnavailable, Msg: "runtime registration unavailable"}
-	ws := p.workspaceByID(req.WorkspaceID)
-	if order := p.workspaceList(); ws == nil && req.WorkspaceID == "" && len(order) == 1 {
-		ws = order[0]
-	}
-	if ws == nil {
-		return nil, multica.Refuse("workspace is not served by this sandbox manager")
-	}
-	registration, err := ws.rt.Register(ctx, req.Raw, req.Headers, func() bool {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		return p.workspaceBusyLocked(ws.cfg.WorkspaceID)
+	c, err := core.New(core.Config{
+		Log: log, Clock: m.clock, Audit: audit,
+		Capacity: cfg.Capacity, Rules: multica.AffinityRules(), Rule: multica.LendingRule(cfg.AffinityRule), RemovedReason: "workspace removed",
+		HoldTimeout: cfg.HoldTimeout, MaxLifetime: cfg.MaxLifetime, DrainGrace: cfg.DrainGrace,
+		Backoff: cfg.UpstreamBackoff, PlacementWait: cfg.PlacementWait,
+		DispatchInterval: cfg.DispatchInterval, ReconcileInterval: cfg.ReconcileInterval, LeaseMax: cfg.LeaseMax,
+		DrainTimeout: cfg.DrainTimeout, DrainPoll: cfg.DrainPoll,
 	})
 	if err != nil {
-		p.log.Warn("register the workspace's runtimes from a pod", "pod_id", id, "workspace_id", ws.cfg.WorkspaceID, "error", err)
-		return nil, unavailable
+		return nil, err
 	}
-	resp, ok := multica.AnswerForPod(registration, req.Offered)
-	if !ok {
-		return nil, unavailable
+	client := multica.NewClient(cfg.MulticaURL, cfg.PAT, cfg.DaemonID, log)
+	src := tasksource.New(tasksource.Config{
+		Log: log, Now: m.clock.Now, Client: client, Name: cfg.Name, DeviceName: cfg.DeviceName, Providers: cfg.Providers,
+		RuntimeVisibility: cfg.RuntimeVisibility, Quota: cfg.Quota, AffinityRule: cfg.AffinityRule,
+		SyncInterval: cfg.SyncInterval, HeartbeatInterval: cfg.HeartbeatInterval, ReadOverrides: cfg.ReadOverrides,
+		Models: cfg.Models,
+	})
+	m.core, m.source = c, src
+	if sim != nil {
+		m.pool, m.podRun = sim(c, src, client)
+	} else {
+		pl := pool.New(pool.Config{Log: log, Now: m.clock.Now, Service: svc, Handler: handler, Client: client, Wake: cfg.DispatchInterval > 0})
+		pl.Connect(c, src)
+		m.pool, m.real = pl, pl
 	}
-
-	wsID := ws.cfg.WorkspaceID
-	p.mu.Lock()
-	// The workspaces are kept whether or not the pod is held: the daemon
-	// keeps running, and registered, through resets, so a pod acquired later
-	// is lent to them.
-	if p.daemonWorkspaces[id] == nil {
-		p.daemonWorkspaces[id] = map[string]struct{}{}
-	}
-	p.daemonWorkspaces[id][wsID] = struct{}{}
-	p.applyLocked(p.policy.PodRegistered(id, wsID))
-	p.mu.Unlock()
-	p.settle(ctx)
-	p.log.Info("pod daemon registered", "pod_id", id, "workspace_id", wsID)
-	return resp, nil
+	c.Connect(src, m.pool)
+	src.Connect(c, m.pool)
+	return m, nil
 }
 
-// heartbeatPod keeps the pod's runtime online upstream. It says nothing of
-// the pod's liveness, which the sandbox service judges from the control
-// channel.
-func (p *Manager) heartbeatPod(ctx context.Context, id, runtimeID string) *multica.PodError {
-	p.mu.Lock()
-	p.tickLocked()
-	p.mu.Unlock()
-	p.settle(ctx)
-	if p.runtimeGone(runtimeID) {
-		// Multica deleted this runtime and the manager dropped the
-		// registration; this answer makes the daemon register the workspace
-		// again, which registers it upstream anew. The stock daemon does
-		// that only on a 404 whose body says "runtime not found"
-		// (daemon.isRuntimeNotFoundError).
-		return &multica.PodError{Status: http.StatusNotFound, Msg: "runtime not found: the runtime was deleted upstream; register again"}
+// Run runs the sandbox service's liveness checks, the dispatch tick, the
+// upstream heartbeats and, with ReconcileInterval set, the lease
+// reconciliation and the retry of failure reports, until ctx ends.
+func (m *Manager) Run(ctx context.Context) {
+	if m.podRun != nil {
+		go m.podRun(ctx)
 	}
-	p.relayHeartbeat(runtimeID)
-	return nil
+	go m.source.HeartbeatLoop(ctx)
+	if m.cfg.ReconcileInterval > 0 {
+		go func() {
+			t := time.NewTicker(m.cfg.ReconcileInterval)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					m.source.RetryFailures(ctx)
+				}
+			}
+		}()
+	}
+	m.core.Run(ctx)
 }
 
-// relayHeartbeat keeps the workspace's upstream runtime online while a live pod
-// heartbeats. The pods talk to the manager, not to Multica, so nothing else
-// would. The upstream answer (pending pings, updates) is not passed on: the
-// manager answers those itself. The call is made in the background so a slow
-// upstream never delays a pod.
-func (p *Manager) relayHeartbeat(runtimeID string) {
-	ws := p.workspaceByRuntime(runtimeID)
-	if ws == nil {
-		return
-	}
-	if !p.up.HeartbeatDue(runtimeID, p.now()) {
-		return
-	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), multica.ClaimTimeout)
-		defer cancel()
-		modelRequest, err := ws.rt.Heartbeat(ctx, runtimeID)
-		if modelRequest != "" {
-			p.api.NoteModelRequest(runtimeID, modelRequest)
-		}
-		if err != nil {
-			p.log.Warn("heartbeat runtime upstream", "workspace_id", ws.cfg.WorkspaceID, "runtime_id", runtimeID, "error", err)
-		}
-		if multica.IsRuntimeNotFound(err) {
-			p.dropRegistration(ws, runtimeID)
-		}
-	}()
-}
+// Sync brings the served workspaces in line with the account's memberships
+// (see tasksource.Source.Sync).
+func (m *Manager) Sync(ctx context.Context) (ReloadResult, error) { return m.source.Sync(ctx) }
+
+// SyncLoop runs Sync every SyncInterval, and whenever now fires, until ctx
+// ends.
+func (m *Manager) SyncLoop(ctx context.Context, now <-chan struct{}) { m.source.SyncLoop(ctx, now) }
+
+// PodHandler serves the standard daemon protocol to pods, and the sandbox
+// service's own pod paths beside it.
+func (m *Manager) PodHandler() http.Handler { return m.pool.Handler() }
+
+// AdminHandler serves the read-only admin API (see newAdminHandler).
+func (m *Manager) AdminHandler() http.Handler { return newAdminHandler(m) }
+
+// Leases lists active and recently closed leases, oldest first.
+func (m *Manager) Leases() []LeaseInfo { return m.core.Leases() }

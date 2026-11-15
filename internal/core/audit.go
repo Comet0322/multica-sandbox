@@ -1,9 +1,8 @@
-package manager
+package core
 
 import (
 	"encoding/json"
 	"io"
-	"sandbox-manager/internal/multica"
 	"sync"
 	"time"
 )
@@ -33,23 +32,26 @@ type AuditRecord struct {
 	PodName     string    `json:"pod_name,omitempty"`
 }
 
-// auditLog writes JSON Lines. Writes are serialized, and a failing sink is
-// reported through the pool's logger instead of blocking task handling.
-type auditLog struct {
+// AuditLog writes JSON Lines. Writes are serialized, and a failing sink is
+// reported through onError instead of blocking task handling. A nil
+// *AuditLog writes nothing.
+type AuditLog struct {
 	mu    sync.Mutex
 	w     io.Writer
 	err   func(error)
-	clock *clock
+	clock *Clock
 }
 
-func newAuditLog(w io.Writer, clk *clock, onError func(error)) *auditLog {
+// NewAuditLog returns the audit log writing to w, nil when w is nil.
+func NewAuditLog(w io.Writer, clk *Clock, onError func(error)) *AuditLog {
 	if w == nil {
 		return nil
 	}
-	return &auditLog{w: w, err: onError, clock: clk}
+	return &AuditLog{w: w, err: onError, clock: clk}
 }
 
-func (a *auditLog) write(rec AuditRecord) {
+// Write writes a record as it is.
+func (a *AuditLog) Write(rec AuditRecord) {
 	if a == nil {
 		return
 	}
@@ -64,36 +66,31 @@ func (a *auditLog) write(rec AuditRecord) {
 	}
 }
 
-// record stamps the record with the time and writes it.
-func (a *auditLog) record(rec AuditRecord) {
+// Record stamps the record with the time and writes it.
+func (a *AuditLog) Record(rec AuditRecord) {
 	if a == nil {
 		return
 	}
-	rec.Time = a.clock.now().UTC()
-	a.write(rec)
+	rec.Time = a.clock.Now().UTC()
+	a.Write(rec)
 }
 
-// audit records one decision about a task.
-func (p *Manager) audit(rec AuditRecord) {
-	p.auditLog.record(rec)
-}
-
-// auditLease records an event on an existing lease. Callers hold p.mu or own
+// auditLease records an event on an existing lease. Callers hold c.mu or own
 // the lease exclusively.
-func (p *Manager) auditLease(action string, l *lease, reason string) {
+func (c *Core) auditLease(action string, l *lease, reason string) {
 	if l == nil {
 		return
 	}
-	p.audit(AuditRecord{
+	c.cfg.Audit.Record(AuditRecord{
 		Action: action, Decision: AuditAllow, Reason: reason,
-		TaskID: l.TaskID, WorkspaceID: l.WorkspaceID, Initiator: l.Initiator, PodID: l.PodID, PodName: l.PodName,
+		TaskID: l.TaskID, WorkspaceID: l.Tenant, Initiator: l.Initiator, PodID: l.PodID, PodName: l.PodName,
 	})
 }
 
 // auditDenied records a task the manager refused to lend a pod to.
-func (p *Manager) auditDenied(ws *workspace, task multica.ClaimedTask, reason string) {
-	p.audit(AuditRecord{
+func (c *Core) auditDenied(tenant string, t *Task, reason string) {
+	c.cfg.Audit.Record(AuditRecord{
 		Action: AuditLease, Decision: AuditDeny, Reason: reason,
-		TaskID: task.ID, WorkspaceID: ws.cfg.WorkspaceID, Initiator: task.Email(),
+		TaskID: t.ID, WorkspaceID: tenant, Initiator: t.Email,
 	})
 }

@@ -88,7 +88,7 @@ func TestOrphanRecoveryIsSkippedForAWorkspaceWithAnActiveLease(t *testing.T) {
 		return false
 	})
 	registered := h.upstream.registrationCount()
-	pod.heartbeat()
+	h.pool.HeartbeatOnce(context.Background())
 	eventually(t, "the registration to be dropped", func() bool { return pod.heartbeat() == http.StatusNotFound })
 	gone.Store(false)
 	pod.register()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 )
 
 // RuntimeMode is the mode the manager's runtimes are registered in: the
@@ -14,7 +15,14 @@ const RuntimeMode = "local"
 // Identity is the machine identity the manager presents upstream in place of
 // a pod daemon's own.
 type Identity struct {
-	WorkspaceID, DaemonID, Name string
+	WorkspaceID, DaemonID string
+	// Name is the machine name Multica's runtime list shows as the title. It
+	// is put in each runtime's name the way the stock daemon puts its host
+	// name: "Claude (Name)".
+	Name string
+	// DeviceName is sent as device_name, which the runtime list shows under
+	// the title. Empty sends Name.
+	DeviceName string
 	// Providers limits which of the daemon's agent CLIs become runtimes; empty
 	// keeps every provider.
 	Providers []string
@@ -49,10 +57,7 @@ func RewriteRegistration(captured json.RawMessage, id Identity) (map[string]any,
 			continue
 		}
 		rt["runtime_mode"] = cmp.Or(id.Mode, "cloud")
-		rt["name"] = id.Name
-		if len(id.Providers) != 1 {
-			rt["name"] = id.Name + " (" + typ + ")"
-		}
+		rt["name"] = RuntimeLabel(rt, typ) + " (" + id.Name + ")"
 		kept = append(kept, rt)
 	}
 	if len(kept) == 0 {
@@ -61,7 +66,7 @@ func RewriteRegistration(captured json.RawMessage, id Identity) (map[string]any,
 	body := map[string]any{
 		"workspace_id": id.WorkspaceID,
 		"daemon_id":    id.DaemonID,
-		"device_name":  id.Name,
+		"device_name":  cmp.Or(id.DeviceName, id.Name),
 		"cli_version":  req["cli_version"],
 		"runtimes":     kept,
 	}
@@ -141,4 +146,31 @@ func AnswerForPod(registration json.RawMessage, offered map[string]bool) (map[st
 	}
 	resp["runtimes"], _ = json.Marshal(kept)
 	return resp, true
+}
+
+// RuntimeLabel is the agent CLI's part of a runtime name: what the pod's
+// daemon put before its host name ("Claude" of "Claude (pod-7)"), else the
+// provider capitalized.
+func RuntimeLabel(rt map[string]any, typ string) string {
+	name, _ := rt["name"].(string)
+	if base, _, ok := strings.Cut(name, " ("); ok && strings.HasSuffix(name, ")") {
+		name = base
+	}
+	if name = strings.TrimSpace(name); name != "" && name != typ {
+		return name
+	}
+	if typ == "" {
+		return "Agent"
+	}
+	return strings.ToUpper(typ[:1]) + typ[1:]
+}
+
+// CheckMachineName refuses a name the runtime list would misread: its machine
+// title is taken from the parentheses ending a runtime name, and device info
+// is split at " · ".
+func CheckMachineName(name string) error {
+	if strings.ContainsAny(name, "()") || strings.Contains(name, " · ") {
+		return fmt.Errorf("%q must not contain parentheses or \" · \"", name)
+	}
+	return nil
 }

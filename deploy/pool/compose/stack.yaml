@@ -28,6 +28,8 @@ services:
       SANDBOX_POOL_TOKEN_FILE: ${SECRETS_MOUNT:-/run/secrets}/pool-token
       SANDBOX_AUDIT_FILE: "-"
       SANDBOX_PROVIDERS: ${PROVIDERS:-claude,opencode}
+      # Models the agent picker offers until a pod reports its own; see POOL.md.
+      SANDBOX_MODELS: ${SANDBOX_MODELS:-}
       # Per-workspace overrides, keyed by workspace slug, read again on every
       # sync and on `docker compose kill -s HUP manager`. Edit the file in
       # place; no restart needed. See overrides.yaml.example.

@@ -1,4 +1,4 @@
-package manager
+package tasksource
 
 import (
 	"bytes"
@@ -29,6 +29,12 @@ type WorkspaceOverride struct {
 	MaxLifetime *time.Duration `yaml:"max_lifetime"`
 	// Quota overrides SANDBOX_POOL_QUOTA; 0 means no cap.
 	Quota *int `yaml:"quota"`
+	// Guarantee is the number of pods kept for the workspace even while it
+	// has nothing to run; 0 (the default) keeps none.
+	Guarantee *int `yaml:"guarantee"`
+	// Weight shares out the pods beyond the guarantees between workspaces
+	// with work; 1 by default.
+	Weight *int `yaml:"weight"`
 }
 
 func (o WorkspaceOverride) check() error {
@@ -43,6 +49,12 @@ func (o WorkspaceOverride) check() error {
 	}
 	if o.Quota != nil && *o.Quota < 0 {
 		return errors.New("quota must not be negative")
+	}
+	if o.Guarantee != nil && *o.Guarantee < 0 {
+		return errors.New("guarantee must not be negative")
+	}
+	if o.Weight != nil && *o.Weight < 1 {
+		return errors.New("weight must be at least 1")
 	}
 	return nil
 }
@@ -123,8 +135,8 @@ func oneLine(err error) error {
 	return errors.New(strings.Join(parts, "; "))
 }
 
-// overrideState is what the manager keeps of the overrides file between
-// reads. Guarded by Manager.mu.
+// overrideState is what the source keeps of the overrides file between
+// reads. Guarded by Source.mu.
 type overrideState struct {
 	// bySlug are the overrides in effect: each slug's last valid entry.
 	bySlug map[string]WorkspaceOverride
@@ -138,22 +150,23 @@ type overrideState struct {
 // cannot be read keeps the overrides in effect; an entry with a bad value keeps
 // that slug's previous override, or the defaults. Problems are reported, and
 // never stop a workspace from being served.
-func (p *Manager) resolveWorkspaceSettings(ctx context.Context, list []WorkspaceConfig) {
+func (s *Source) resolveWorkspaceSettings(ctx context.Context, list []WorkspaceConfig) {
 	var problems []string
-	p.mu.Lock()
-	overrides := p.overrides.bySlug
-	p.mu.Unlock()
-	if p.cfg.ReadOverrides != nil {
-		overrides, problems = p.readOverrides(overrides)
+	s.mu.Lock()
+	overrides := s.overrides.bySlug
+	s.mu.Unlock()
+	if s.cfg.ReadOverrides != nil {
+		overrides, problems = s.readOverrides(overrides)
 	}
 	if len(overrides) > 0 {
-		problems = append(problems, p.fillSlugs(ctx, list)...)
+		problems = append(problems, s.fillSlugs(ctx, list)...)
 	}
 	known := map[string]bool{}
 	for i := range list {
 		wc := &list[i]
 		known[wc.Slug] = true
-		wc.AffinityRule, wc.Quota, wc.HoldTimeout, wc.MaxLifetime = p.cfg.AffinityRule, p.cfg.Quota, nil, nil
+		wc.AffinityRule, wc.Quota, wc.HoldTimeout, wc.MaxLifetime = s.cfg.AffinityRule, s.cfg.Quota, nil, nil
+		wc.Guarantee, wc.Weight = 0, 0
 		o, ok := overrides[wc.Slug]
 		if !ok || wc.Slug == "" {
 			continue
@@ -164,6 +177,12 @@ func (p *Manager) resolveWorkspaceSettings(ctx context.Context, list []Workspace
 		if o.Quota != nil {
 			wc.Quota = *o.Quota
 		}
+		if o.Guarantee != nil {
+			wc.Guarantee = *o.Guarantee
+		}
+		if o.Weight != nil {
+			wc.Weight = *o.Weight
+		}
 		wc.HoldTimeout, wc.MaxLifetime = o.HoldTimeout, o.MaxLifetime
 	}
 	for slug := range overrides {
@@ -173,26 +192,26 @@ func (p *Manager) resolveWorkspaceSettings(ctx context.Context, list []Workspace
 	}
 	sort.Strings(problems)
 
-	p.mu.Lock()
-	changed := !slices.Equal(p.overrides.problems, problems)
-	p.overrides = overrideState{bySlug: overrides, problems: problems}
-	p.mu.Unlock()
+	s.mu.Lock()
+	changed := !slices.Equal(s.overrides.problems, problems)
+	s.overrides = overrideState{bySlug: overrides, problems: problems}
+	s.mu.Unlock()
 	if !changed {
 		return
 	}
 	for _, msg := range problems {
-		p.log.Warn("workspace override not applied", "problem", msg)
+		s.log.Warn("workspace override not applied", "problem", msg)
 	}
 	if len(problems) == 0 {
-		p.log.Info("workspace overrides applied without problems", "overrides", len(overrides))
+		s.log.Info("workspace overrides applied without problems", "overrides", len(overrides))
 	}
 }
 
 // readOverrides reads the overrides file and returns the overrides to apply:
 // current where the file cannot be read, each valid entry, and the current
 // override of a slug whose entry is bad.
-func (p *Manager) readOverrides(current map[string]WorkspaceOverride) (map[string]WorkspaceOverride, []string) {
-	raw, err := p.cfg.ReadOverrides()
+func (s *Source) readOverrides(current map[string]WorkspaceOverride) (map[string]WorkspaceOverride, []string) {
+	raw, err := s.cfg.ReadOverrides()
 	if err != nil {
 		return current, []string{fmt.Sprintf("overrides file: cannot read it (%v); the overrides in effect stay", err)}
 	}
@@ -215,12 +234,12 @@ func (p *Manager) readOverrides(current map[string]WorkspaceOverride) (map[strin
 // fillSlugs sets the slug of each listed workspace. The daemon listing has
 // none on older servers, so the member listing is read for them; when that
 // fails, a served workspace keeps the slug it had.
-func (p *Manager) fillSlugs(ctx context.Context, list []WorkspaceConfig) []string {
+func (s *Source) fillSlugs(ctx context.Context, list []WorkspaceConfig) []string {
 	missing := slices.ContainsFunc(list, func(wc WorkspaceConfig) bool { return wc.Slug == "" })
 	if !missing {
 		return nil
 	}
-	slugs, err := p.up.WorkspaceSlugs(ctx)
+	slugs, err := s.up.WorkspaceSlugs(ctx)
 	var problems []string
 	if err != nil {
 		problems = append(problems, fmt.Sprintf("workspace slugs: cannot list them (%v); workspaces keep the slugs they had", err))
@@ -230,17 +249,18 @@ func (p *Manager) fillSlugs(ctx context.Context, list []WorkspaceConfig) []strin
 		if wc.Slug != "" {
 			continue
 		}
-		if s, ok := slugs[strings.ToLower(wc.WorkspaceID)]; ok {
-			wc.Slug = s
-		} else if ws := p.ws.get(wc.WorkspaceID); ws != nil {
+		if slug, ok := slugs[strings.ToLower(wc.WorkspaceID)]; ok {
+			wc.Slug = slug
+		} else if ws := s.ws.get(wc.WorkspaceID); ws != nil {
 			wc.Slug = ws.cfg.Slug
 		}
 	}
 	return problems
 }
 
-// overrideProblems lists the latest problems with the overrides. Callers hold
-// p.mu.
-func (p *Manager) overrideProblemsLocked() []string {
-	return slices.Clone(p.overrides.problems)
+// OverrideProblems lists the latest problems with the overrides.
+func (s *Source) OverrideProblems() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.overrides.problems)
 }

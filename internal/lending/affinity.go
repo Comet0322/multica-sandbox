@@ -31,17 +31,35 @@ type UnitFunc func(Task) string
 // one entry.
 type Registry map[AffinityRule]UnitFunc
 
-// RuleTask gives every task a binding of its own. It is the only rule the
-// policy knows by itself; every Registry has it.
+// RuleTask gives every task a binding of its own. Every Registry has it.
 const RuleTask AffinityRule = "task"
+
+// RuleTenant lets every task of a tenant share its bindings, whoever the
+// task runs for, and keeps a binding of it once it opened: its pod stays in
+// hold however long no task comes, and it has no maximum lifetime. Only an
+// eviction for another tenant's task, the tenant's removal or the pod's loss
+// ends it. It is the loosest rule; every Registry has it.
+const RuleTenant AffinityRule = "tenant"
 
 func ownBinding(Task) string { return "" }
 
+// tenantUnit stands in the Registry for RuleTenant, whose key affinityKey
+// builds itself.
+func tenantUnit(Task) string { return "" }
+
+// tenantKeyPrefix starts the keys of RuleTenant.
+const tenantKeyPrefix = "tenant/in:"
+
+// keptKey reports whether a binding of the key is kept: never reset for
+// running nothing, nor for its age (RuleTenant).
+func keptKey(key string) bool { return strings.HasPrefix(key, tenantKeyPrefix) }
+
 // affinityKey is the key tasks must share to share a binding:
-// "<rule>:<unit>/by:<initiator>/in:<tenant>". It always names the
-// initiator, so tasks of different people never share one, and the tenant,
-// so one person's tasks in two tenants do not either. A task without a unit
-// or without a known initiator gets a key of its own, "task:<id>".
+// "<rule>:<unit>/by:<initiator>/in:<tenant>". It names the initiator, so
+// tasks of different people never share one, and the tenant, so one person's
+// tasks in two tenants do not either. A task without a unit or without a
+// known initiator gets a key of its own, "task:<id>". RuleTenant is the one
+// exception: its key, "tenant/in:<tenant>", names the tenant only.
 const uniqueKeyPrefix = "task:"
 
 // uniqueKey reports whether no other task can have the key, so a binding of
@@ -49,6 +67,9 @@ const uniqueKeyPrefix = "task:"
 func uniqueKey(key string) bool { return strings.HasPrefix(key, uniqueKeyPrefix) }
 
 func affinityKey(name AffinityRule, unit UnitFunc, t Task) string {
+	if name == RuleTenant {
+		return tenantKeyPrefix + t.Tenant
+	}
 	u := unit(t)
 	if u == "" || t.Initiator == "" {
 		return uniqueKeyPrefix + t.ID
@@ -69,9 +90,12 @@ type BindingInfo struct {
 	// Used is the capacity its tasks occupy; Tasks is how many it holds.
 	Used  Resources
 	Tasks int
-	// Hold is set while no task runs; the pod is reset at HoldUntil.
+	// Hold is set while no task runs; the pod is reset at HoldUntil, unless
+	// the binding is Kept (RuleTenant): then HoldUntil is zero and the hold
+	// lasts until an eviction.
 	Hold      bool
 	HoldUntil time.Time
+	Kept      bool
 }
 
 // Binding describes the binding of a pod, false when the pod has none.
@@ -81,18 +105,23 @@ func (p *Policy) Binding(pod string) (BindingInfo, bool) {
 		return BindingInfo{}, false
 	}
 	b := pd.binding
-	info := BindingInfo{ID: b.id, Key: b.key, Tenant: b.tenant, Used: b.used, Tasks: len(b.tasks)}
+	info := BindingInfo{ID: b.id, Key: b.key, Tenant: b.tenant, Used: b.used, Tasks: len(b.tasks), Kept: keptKey(b.key)}
 	if b.state == bindingHold {
 		info.Hold, info.HoldUntil = true, b.holdUntil
 	}
 	return info, true
 }
 
-func (p *Policy) newTask(t Task) *taskState {
-	name := p.cfg.Rule
-	if s, ok := p.tenants[t.Tenant]; ok && s.Rule != "" {
-		name = s.Rule
+// ruleOf is the affinity rule of a tenant: its own, or the pool's.
+func (p *Policy) ruleOf(tenant string) AffinityRule {
+	if s, ok := p.tenants[tenant]; ok && s.Rule != "" {
+		return s.Rule
 	}
+	return p.cfg.Rule
+}
+
+func (p *Policy) newTask(t Task) *taskState {
+	name := p.ruleOf(t.Tenant)
 	return &taskState{Task: t, key: affinityKey(name, p.cfg.Rules[name], t)}
 }
 
@@ -132,6 +161,9 @@ func (p *Policy) open(pd *podState, ts *taskState) Decision {
 	p.nextBinding++
 	now := p.cfg.Now()
 	b := &binding{id: p.nextBinding, key: ts.key, tenant: ts.Tenant, pod: pd, tasks: map[string]*taskState{}, openedAt: now, lifetime: p.maxLifetime(ts.Tenant)}
+	if keptKey(b.key) {
+		b.lifetime = 0
+	}
 	pd.binding = b
 	d := p.join(b, ts).(Place)
 	d.NewBinding = true

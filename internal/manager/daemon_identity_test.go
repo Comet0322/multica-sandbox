@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"sandbox-manager/internal/manager"
 )
@@ -158,10 +157,7 @@ func TestPodsAreInvisibleUpstream(t *testing.T) {
 	if n := len(up.requestsTo("/api/daemon/tasks/claim")); n != 2 {
 		t.Fatalf("claims upstream: %d, want one per workspace", n)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for len(up.requestsTo("/api/daemon/heartbeat")) < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	h.pool.HeartbeatOnce(context.Background())
 	if n := len(up.requestsTo("/api/daemon/heartbeat")); n < 2 {
 		t.Fatalf("heartbeats upstream: %d, want one per workspace", n)
 	}
@@ -170,7 +166,7 @@ func TestPodsAreInvisibleUpstream(t *testing.T) {
 	manager := singleValue(t, "registration and claim", append(registered, claimed...))
 	for _, r := range up.requestsTo("/api/daemon/register") {
 		if name, _ := r.Body["device_name"].(string); name != "Pool" {
-			t.Fatalf("device_name %q, want the configured name", name)
+			t.Fatalf("device_name %q, want the configured device name", name)
 		}
 	}
 	for _, r := range up.allRequests() {
@@ -192,23 +188,44 @@ func TestPodsAreInvisibleUpstream(t *testing.T) {
 	}
 }
 
+// Multica's runtime list titles a machine with the host name in parentheses
+// ending its runtimes' names, and shows the device_name under it. The
+// manager names its runtimes as the stock daemon does, after the configured
+// machine name, so both lines are the operator's.
 func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
 	serveTwoWorkspaces(t, up, func(c *manager.Config) {
 		c.Name = "Company Sandbox"
+		c.DeviceName = "GPU pool, us-east"
 		c.Providers = []string{"claude"}
 	})
 	for _, r := range up.requestsTo("/api/daemon/register") {
+		if name, _ := r.Body["device_name"].(string); name != "GPU pool, us-east" {
+			t.Fatalf("device_name %q, want the configured device name", name)
+		}
 		runtimes, _ := r.Body["runtimes"].([]any)
 		if len(runtimes) == 0 {
 			t.Fatal("registration without runtimes")
 		}
 		for _, item := range runtimes {
 			rt, _ := item.(map[string]any)
-			if name, _ := rt["name"].(string); name != "Company Sandbox" {
+			if name, _ := rt["name"].(string); name != "Claude (Company Sandbox)" {
 				t.Fatalf("runtime name %q, want the configured name", name)
 			}
+		}
+	}
+}
+
+func TestAMachineNameTheRuntimeListWouldMisreadIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []manager.Config{
+		{Name: "Sandbox (prod)"},
+		{DeviceName: "linux · amd64"},
+	} {
+		cfg.MulticaURL, cfg.PAT = "http://127.0.0.1:1", "mul_pat"
+		if _, err := manager.New(cfg, nil); err == nil || !strings.Contains(err.Error(), "parentheses") {
+			t.Errorf("%+v was accepted: %v", cfg, err)
 		}
 	}
 }

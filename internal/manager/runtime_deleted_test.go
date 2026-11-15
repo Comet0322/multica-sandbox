@@ -1,6 +1,7 @@
 package manager_test
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -21,7 +22,7 @@ func TestRuntimeDeletedUpstreamMakesThePodRegisterAgain(t *testing.T) {
 	heartbeatAnswer(h.upstream, &gone, http.StatusNotFound, runtimeGoneBody)
 	registered := h.upstream.registrationCount()
 
-	pod.heartbeat() // the manager relays it upstream and learns the runtime is gone
+	h.pool.HeartbeatOnce(context.Background()) // the manager learns the runtime is gone
 	eventually(t, "the pod's heartbeat to be refused", func() bool { return pod.heartbeat() == http.StatusNotFound })
 	status, body := pod.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"})
 	if status != http.StatusNotFound || !strings.Contains(string(body), "runtime not found") {
@@ -62,7 +63,7 @@ func TestRuntimeDeletedUpstreamComesBackWithANewID(t *testing.T) {
 		}
 		return false
 	})
-	pod.heartbeat()
+	h.pool.HeartbeatOnce(context.Background())
 	eventually(t, "the runtime to be dropped", func() bool { return pod.heartbeat() == http.StatusNotFound })
 
 	gone.Store(false)
@@ -87,8 +88,7 @@ func TestAnotherNotFoundDoesNotDropTheRegistration(t *testing.T) {
 	heartbeatAnswer(h.upstream, &on, http.StatusNotFound, `{"error":"not found"}`)
 	registered := h.upstream.registrationCount()
 
-	pod.heartbeat()
-	time.Sleep(300 * time.Millisecond)
+	h.pool.HeartbeatOnce(context.Background())
 	if status := pod.heartbeat(); status != http.StatusOK {
 		t.Fatalf("a 404 that does not say the runtime is gone must not drop it: status %d", status)
 	}
@@ -112,7 +112,7 @@ func TestDroppedRegistrationTellsPodsToLookAgainOnceInAWhile(t *testing.T) {
 	gone.Store(true)
 	heartbeatAnswer(h.upstream, &gone, http.StatusNotFound, runtimeGoneBody)
 
-	pod.heartbeat()
+	h.pool.HeartbeatOnce(context.Background())
 	if got := sock.next(5 * time.Second); got != workspacesChangedEvent {
 		t.Fatalf("want %s, got %q", workspacesChangedEvent, got)
 	}
@@ -122,8 +122,7 @@ func TestDroppedRegistrationTellsPodsToLookAgainOnceInAWhile(t *testing.T) {
 	pod.register()
 	clock.advance(11 * time.Second)
 	gone.Store(true)
-	pod.heartbeat()
-	time.Sleep(300 * time.Millisecond)
+	h.pool.HeartbeatOnce(context.Background())
 	if got := sock.next(300 * time.Millisecond); got != "" {
 		t.Fatalf("a second hint within 30s: %q", got)
 	}
@@ -132,7 +131,7 @@ func TestDroppedRegistrationTellsPodsToLookAgainOnceInAWhile(t *testing.T) {
 	pod.register()
 	clock.advance(31 * time.Second)
 	gone.Store(true)
-	pod.heartbeat()
+	h.pool.HeartbeatOnce(context.Background())
 	if got := sock.next(5 * time.Second); got != workspacesChangedEvent {
 		t.Fatalf("want a hint after 30s, got %q", got)
 	}

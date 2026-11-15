@@ -1,6 +1,7 @@
 package multica
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -74,6 +75,8 @@ type Backend interface {
 	ReposRoute(podID, workspaceID string) (*Route, bool)
 	// RuntimeServed reports whether a served workspace owns the runtime.
 	RuntimeServed(runtimeID string) bool
+	// ModelsReported takes a pod's model list report once Multica took it.
+	ModelsReported(runtimeID string, report []byte)
 	// TaskRoute is the route for a pod's report on a task, when the task is
 	// the pod's.
 	TaskRoute(podID, taskID, action, path string) (*Route, bool)
@@ -347,9 +350,18 @@ func (a *DaemonAPI) serveRuntimeScoped(w http.ResponseWriter, r *http.Request, p
 			a.refuse(w, r, podID, "model list request is not assigned to this pod")
 			return
 		}
+		report, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(report))
 		a.cfg.Forward(w, r, &Route{AccountAuth: true, After: func(status int) {
 			if status < http.StatusInternalServerError {
 				a.finishModelRequest(parts[1], rest[1])
+			}
+			if status >= 200 && status <= 299 {
+				a.cfg.Backend.ModelsReported(parts[1], report)
 			}
 		}})
 	case len(rest) == 1 && rest[0] == "recover-orphans":

@@ -1,12 +1,12 @@
 package manager_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // The Multica UI asks the runtime which models its agent CLI can run; the
@@ -38,12 +38,7 @@ func TestModelListRequestIsHandedToOnePodAndItsReportRelayed(t *testing.T) {
 		return false
 	})
 
-	podA.heartbeat() // makes the manager heartbeat upstream, which brings the request
-	deadline := time.Now().Add(2 * time.Second)
-	for h.upstream.callsTo("POST /api/daemon/heartbeat") == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(100 * time.Millisecond)
+	h.pool.HeartbeatOnce(context.Background()) // the manager's own heartbeat brings the request
 
 	status, raw := podA.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"})
 	if status != 200 || !strings.Contains(string(raw), `"pending_model_list":{"id":"ml-1"}`) {
@@ -129,5 +124,65 @@ func TestPodOfferingANewAgentCLIGetsItsRuntimeWithoutAManagerRestart(t *testing.
 	}
 	if n := h.upstream.registrationCount(); n != 2 {
 		t.Fatalf("a pod with a known set caused an upstream registration: %d", n)
+	}
+}
+
+// The pods run one image, so one pod's model list is every runtime's. Once a
+// pod reported it, the manager answers the next request itself, at once and
+// with no pod: a picker opened while every pod is busy, or before any pod of
+// the workspace registered, still lists the models.
+func TestALaterModelListRequestIsAnsweredFromTheLastReport(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 1)
+	pod := h.newPod("pool-0")
+	pod.start()
+
+	var mu sync.Mutex
+	request := "ml-1"
+	reports := map[string]string{}
+	h.upstream.intercept(func(w http.ResponseWriter, r *http.Request) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/api/daemon/heartbeat":
+			writeJSON(w, map[string]any{"runtime_id": "runtime-a", "status": "ok", "pending_model_list": map[string]string{"id": request}})
+			return true
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			var body struct {
+				Models []struct {
+					ID string `json:"id"`
+				} `json:"models"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if len(body.Models) > 0 {
+				reports[r.URL.Path] = body.Models[0].ID
+			}
+			writeJSON(w, map[string]string{"status": "ok"})
+			return true
+		}
+		return false
+	})
+
+	h.pool.HeartbeatOnce(context.Background())
+	if _, raw := pod.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"}); !strings.Contains(string(raw), "ml-1") {
+		t.Fatalf("with no report yet the request should go to the pod: %s", raw)
+	}
+	body := map[string]any{"status": "completed", "models": []map[string]string{{"id": "claude-haiku-5-5", "label": "Haiku"}}}
+	if status, raw := pod.call(http.MethodPost, "/api/daemon/runtimes/runtime-a/models/ml-1/result", body); status != 200 {
+		t.Fatalf("the report was refused: %d %s", status, raw)
+	}
+
+	mu.Lock()
+	request = "ml-2"
+	mu.Unlock()
+	h.pool.HeartbeatOnce(context.Background())
+	mu.Lock()
+	got := reports["/api/daemon/runtimes/runtime-a/models/ml-2/result"]
+	mu.Unlock()
+	if got != "claude-haiku-5-5" {
+		t.Fatalf("the second request was not answered from the last report: reports %v", reports)
+	}
+	if _, raw := pod.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"}); strings.Contains(string(raw), "pending_model_list") {
+		t.Fatalf("an answered request was still handed to a pod: %s", raw)
 	}
 }

@@ -1,4 +1,4 @@
-package manager
+package tasksource
 
 import (
 	"log/slog"
@@ -9,11 +9,9 @@ import (
 )
 
 // workspaceSet is the set of served workspaces: which workspaces the
-// manager serves, which removed ones still drain, how listings are debounced
-// and how the latest listing went. Its index is guarded by its own lock. The
-// live state on each workspace record (registration, quota and claims, drain
-// generation) belongs to the manager and is guarded by the manager's
-// lock, which also serializes every change to the set (apply, finishDrain).
+// source serves, which removed ones still drain, how listings are debounced
+// and how the latest listing went. It is guarded by its own lock; the
+// source's reload lock serializes every change to the set.
 type workspaceSet struct {
 	log *slog.Logger
 
@@ -63,10 +61,8 @@ func (s *workspaceSet) drainingList() []*workspace {
 // workspace that is new is made with connect, unless it is back before its
 // drain ended: it is then served again as the same object, so its
 // registration and running leases carry on and nothing treats them as
-// orphans. It returns what changed and the workspaces dropped, which the
-// caller drains. Callers hold the manager's lock, which guards the
-// workspace records apply updates.
-func (s *workspaceSet) apply(next []WorkspaceConfig, connect func(WorkspaceConfig) *workspace) (ReloadResult, []*workspace) {
+// orphans. It returns what changed.
+func (s *workspaceSet) apply(next []WorkspaceConfig, connect func(WorkspaceConfig) *workspace) ReloadResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var res ReloadResult
@@ -76,11 +72,9 @@ func (s *workspaceSet) apply(next []WorkspaceConfig, connect func(WorkspaceConfi
 		ws := s.byID[wc.WorkspaceID]
 		if ws == nil {
 			if i := slices.IndexFunc(s.draining, func(d *workspace) bool { return d.cfg.WorkspaceID == wc.WorkspaceID }); i >= 0 {
-				// Its drain stops.
 				ws = s.draining[i]
 				s.draining = slices.Delete(s.draining, i, i+1)
 				ws.removed = false
-				ws.drainGen++
 				ws.cfg.setSettings(wc)
 			} else {
 				ws = connect(wc)
@@ -97,25 +91,53 @@ func (s *workspaceSet) apply(next []WorkspaceConfig, connect func(WorkspaceConfi
 		order = append(order, ws)
 		byID[wc.WorkspaceID] = ws
 	}
-	var dropped []*workspace
 	for _, ws := range s.order {
 		if byID[ws.cfg.WorkspaceID] == nil {
 			ws.removed = true
-			ws.drainGen++
-			dropped = append(dropped, ws)
+			s.draining = append(s.draining, ws)
 			res.Removed = append(res.Removed, ws.cfg.WorkspaceID)
 		}
 	}
 	s.byID, s.order = byID, order
-	s.draining = append(s.draining, dropped...)
-	return res, dropped
+	return res
 }
 
-// finishDrain forgets a removed workspace whose drain ended.
-func (s *workspaceSet) finishDrain(ws *workspace) {
+// finishDrain forgets a removed workspace whose drain ended and returns it,
+// nil when it is not draining (it came back, or was closed already).
+func (s *workspaceSet) finishDrain(id string) *workspace {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.draining = slices.DeleteFunc(s.draining, func(w *workspace) bool { return w == ws })
+	i := slices.IndexFunc(s.draining, func(w *workspace) bool { return w.cfg.WorkspaceID == id })
+	if i < 0 {
+		return nil
+	}
+	ws := s.draining[i]
+	s.draining = slices.Delete(s.draining, i, i+1)
+	return ws
+}
+
+// byRuntime finds the served or draining workspace owning an upstream
+// runtime ID.
+func (s *workspaceSet) byRuntime(id string) *workspace {
+	for _, ws := range append(s.served(), s.drainingList()...) {
+		if ws.rt.Owns(id) {
+			return ws
+		}
+	}
+	return nil
+}
+
+// find returns the served or draining workspace with the ID.
+func (s *workspaceSet) find(id string) *workspace {
+	if ws := s.get(id); ws != nil {
+		return ws
+	}
+	for _, ws := range s.drainingList() {
+		if ws.cfg.WorkspaceID == strings.ToLower(id) {
+			return ws
+		}
+	}
+	return nil
 }
 
 // debounce adds back to a listing the served workspaces it left out for fewer
@@ -188,4 +210,14 @@ func (s *workspaceSet) notReady(now time.Time, interval time.Duration) string {
 		return "the last successful workspace listing is older than three sync intervals"
 	}
 	return ""
+}
+
+// boundText flattens whitespace and cuts s to at most n bytes, for text that
+// came from outside and goes into logs and the inventory.
+func boundText(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > n {
+		s = s[:n] + "..."
+	}
+	return s
 }

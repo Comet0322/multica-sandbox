@@ -56,43 +56,28 @@ type queueEntry struct {
 	tenant string
 }
 
-// claimOrder lists the tenants to try for a claim, best first. The global
-// queue comes first: the queued tasks of every tenant in the request,
-// ordered by priority descending and then creation time ascending, as the
-// server orders them; tasks that claims in flight will take are left out.
-// Then come, in turn after the tenant claimed from last, the tenants
-// still worth one claim without a queued task: those whose pending list is
-// unknown, and those not yet probed since their last list.
+// claimOrder lists the tenants to try for a claim, best first. The tenants
+// with a queued task come first, in fair order (see fairOrder); tasks that
+// claims in flight will take are left out. Then come, in turn after the
+// tenant claimed from last, the tenants still worth one claim without a
+// queued task: those whose pending list is unknown, and those not yet probed
+// since their last list.
 func (p *Policy) claimOrder(req ClaimRequest) []string {
 	inFlight := map[string]int{}
 	for _, r := range p.reservations {
 		inFlight[r.tenant]++
 	}
-	var queue []queueEntry
+	heads := map[string]Pending{}
 	for _, ws := range req.Tenants {
 		l := p.pending[ws]
 		if l == nil {
 			continue
 		}
-		for _, t := range l.queued[min(inFlight[ws], len(l.queued)):] {
-			queue = append(queue, queueEntry{Pending: t, tenant: ws})
+		if rest := l.queued[min(inFlight[ws], len(l.queued)):]; len(rest) > 0 {
+			heads[ws] = head(rest)
 		}
 	}
-	slices.SortStableFunc(queue, func(a, b queueEntry) int {
-		if c := cmp.Compare(b.Priority, a.Priority); c != 0 {
-			return c
-		}
-		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.ID, b.ID)
-	})
-	var order []string
-	for _, e := range queue {
-		if !slices.Contains(order, e.tenant) {
-			order = append(order, e.tenant)
-		}
-	}
+	order := p.fairOrder(heads)
 	n := len(req.Tenants)
 	start := 0
 	if i := slices.Index(req.Tenants, p.lastTenant); i >= 0 {
@@ -105,6 +90,20 @@ func (p *Policy) claimOrder(req ClaimRequest) []string {
 		}
 	}
 	return order
+}
+
+// head is the task the server hands out first from a pending list: the
+// highest priority, then the oldest.
+func head(tasks []Pending) Pending {
+	return slices.MinFunc(tasks, func(a, b Pending) int {
+		if c := cmp.Compare(b.Priority, a.Priority); c != 0 {
+			return c
+		}
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
 }
 
 // claimable reports whether a claim may be sent to a tenant now: it is
@@ -164,6 +163,9 @@ type ClaimRequest struct {
 	// round. Only then is a pod in hold reserved or its hold ended for a
 	// waiting task, so a hold never takes the place of a free pod.
 	NoCapacity bool
+	// LivePods is the number of pods in the pool that can be lent: free,
+	// held or resetting, not lost. The guarantees are scaled to it.
+	LivePods int
 }
 
 // RequestClaim reserves a place that can certainly take a task and picks the
@@ -174,6 +176,7 @@ type ClaimRequest struct {
 // when no held pod can take a task: the task then stays queued upstream, and,
 // unless the request says there is no capacity, an Acquire asks for a pod.
 func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
+	p.livePods = req.LivePods
 	ds := p.placeWaiting(req.NoCapacity)
 	if len(p.waiting) > 0 {
 		if !req.NoCapacity {
@@ -185,7 +188,13 @@ func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
 		if !p.claimable(ws, req) {
 			continue
 		}
-		pd, wantPod := p.reservePod(ws, req.Pods, req.NoCapacity)
+		// A tenant the guarantees keep from the unoccupied pods has none free
+		// to take either, so it may end a hold as when the pool has none.
+		pd, wantPod := p.keptRoom(ws, req.Pods), false
+		if pd == nil {
+			take := p.mayTakePod(ws)
+			pd, wantPod = p.reservePod(ws, req.Pods, req.NoCapacity || !take, take)
+		}
 		if pd == nil {
 			if wantPod && !req.NoCapacity {
 				return append(ds, Acquire{})
@@ -203,25 +212,50 @@ func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
 	return ds
 }
 
-// reservePod is the pod among pods to reserve for a claim from a tenant:
-// the first idle one; else, when no held pod serving the tenant is idle
-// and evict is set, the one whose binding has been in hold longest, provided
-// it is among pods. A binding with a running task is never reserved. wantPod
-// reports that no held pod serving the tenant is idle, so one acquired
-// could take the claim.
-func (p *Policy) reservePod(ws string, pods []string, evict bool) (pd *podState, wantPod bool) {
+// keptRoom is, for a tenant under RuleTenant, the pod among pods whose
+// binding of the tenant has room for one more task and no claim in flight;
+// nil when there is none or the tenant is under another rule. Every task of
+// such a tenant shares one key, so a claim made against the binding is sure
+// to fit there, and the tenant's own pods are used before any other.
+func (p *Policy) keptRoom(ws string, pods []string) *podState {
+	if p.ruleOf(ws) != RuleTenant {
+		return nil
+	}
+	key := tenantKeyPrefix + ws
 	for _, id := range pods {
-		if pd := p.pods[id]; pd != nil && pd.tenants[ws] && p.reservable(pd) {
-			return pd, false
+		pd := p.pods[id]
+		if pd == nil || pd.reservation != nil || pd.binding == nil || pd.binding.key != key {
+			continue
+		}
+		if p.cfg.Capacity.sub(pd.binding.used).fits(TaskDemand) {
+			return pd
 		}
 	}
-	if p.freePod(ws) != nil {
-		return nil, false
+	return nil
+}
+
+// reservePod is the pod among pods to reserve for a claim from a tenant.
+// With take set (the tenant may take a pod nobody occupies, see mayTakePod),
+// it is the first idle one. Else, when evict is set and no idle held pod
+// serving the tenant could be taken, it is the hold the tenant may end (see
+// evictable), provided it is among pods. A binding with a running task is
+// never reserved. wantPod reports that the tenant may take a pod and no held
+// pod serving it is idle, so one acquired could take the claim.
+func (p *Policy) reservePod(ws string, pods []string, evict, take bool) (pd *podState, wantPod bool) {
+	if take {
+		for _, id := range pods {
+			if pd := p.pods[id]; pd != nil && pd.tenants[ws] && p.reservable(pd) {
+				return pd, false
+			}
+		}
+		if p.freePod(ws) != nil {
+			return nil, false
+		}
 	}
 	if pd := p.evictable(ws); evict && pd != nil && slices.Contains(pods, pd.id) {
 		return pd, false
 	}
-	return nil, true
+	return nil, take
 }
 
 // reservable reports whether the pod can certainly take a new binding.

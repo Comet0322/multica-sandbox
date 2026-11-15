@@ -5,10 +5,14 @@ Lends a pool of long-lived sandbox pods to Multica tasks. The pods run Multica's
 | Path | What |
 | --- | --- |
 | `cmd/sandbox-manager`, `cmd/pod-supervisor` | The two binaries |
-| `internal/manager` | Wires the parts together: claims, placement, leases, reconciliation, the admin API |
-| `internal/multica` | Everything we know of Multica: its API, the daemon protocol served to the pods, runtime registration, affinity rules |
+| `internal/manager` | Wires the parts together and serves the admin API |
+| `internal/core` | The core: dispatch, the record of every task dispatched, leases, drains, reconciliation; knows tenants, opaque tasks and pod IDs only |
+| `internal/multica` | What we know of Multica: its API, the daemon protocol served to the pods, runtime registration, affinity rules |
+| `internal/multica/tasksource` | The task source: the one daemon Multica sees; workspaces, runtimes, heartbeats, claims, overrides |
+| `internal/multica/pool` | The pod side: the sandbox service plus the daemon protocol, wake sockets and pod registrations |
+| `internal/multica/devpool`, `cmd/sandbox-devpool` | Development only: a simulated pod side, to run the core and the task source against a real Multica without pods (`deploy/devpool/run.sh`) |
 | `internal/multica/daemonwire` | The daemon protocol types we exchange with Multica, pinned to v0.6.4 |
-| `internal/lending` | The lending policy: queue, quota, bindings, holds, lifetime; knows no Multica |
+| `internal/lending` | The lending policy: fair sharing, quota, bindings, holds, lifetime; knows no Multica |
 | `internal/sandbox` | The sandbox service: registers, resets and loses pods |
 | `internal/podsupervisor` | PID 1 in a pod: runs the daemon, resets the pod's home |
 | `deploy/` | Dockerfiles, compose and k8s manifests, operator docs (`POOL.md`, `SANDBOX.md`, `GITOPS.md`) |

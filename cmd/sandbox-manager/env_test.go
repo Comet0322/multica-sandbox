@@ -103,6 +103,7 @@ func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 		"SANDBOX_POD_DRAIN_GRACE":         "2m",
 		"SANDBOX_POOL_RECONCILE_INTERVAL": "1m",
 		"SANDBOX_POOL_LEASE_MAX":          "3h",
+		"SANDBOX_MODELS":                  "claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2",
 	}
 	s, err := loadSettings(envLookup(env))
 	if err != nil {
@@ -127,6 +128,7 @@ func TestLoadSettingsRefusesBadSettings(t *testing.T) {
 		"bad capacity":      {map[string]string{"SANDBOX_POD_CAPACITY": "-2"}, "SANDBOX_POD_CAPACITY"},
 		"bad placement":     {map[string]string{"SANDBOX_PLACEMENT": "pod"}, "SANDBOX_PLACEMENT"},
 		"old issue rule":    {map[string]string{"SANDBOX_PLACEMENT": "issue"}, "SANDBOX_PLACEMENT"},
+		"bad models":        {map[string]string{"SANDBOX_MODELS": "claude"}, "SANDBOX_MODELS"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -94,7 +94,7 @@ func (p *Policy) expireHolds(now time.Time) []Decision {
 		switch {
 		case p.pastLifetime(b, now):
 			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: reasonLifetime}))
-		case !now.Before(b.holdUntil):
+		case !keptKey(b.key) && !now.Before(b.holdUntil):
 			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: "hold expired"}))
 		}
 	}
@@ -117,17 +117,30 @@ func (p *Policy) expireLifetimes(now time.Time) []Decision {
 	return ds
 }
 
-// evictable is the held pod serving a tenant whose binding has been in
-// hold longest and is not reserved; nil when there is none.
+// evictable is the held pod serving a tenant whose hold a task of the tenant
+// may end (see mayEvict), not reserved; nil when there is none. The hold of
+// the tenant furthest over its share goes first, then the one in hold
+// longest.
 func (p *Policy) evictable(ws string) *podState {
+	g := p.guarantees()
 	var best *podState
 	for _, pd := range p.pods {
 		b := pd.binding
-		if !pd.tenants[ws] || pd.reservation != nil || b == nil || b.state != bindingHold {
+		if !pd.tenants[ws] || pd.reservation != nil || b == nil || b.state != bindingHold || !p.mayEvict(b.tenant, ws) {
 			continue
 		}
-		if best == nil || b.heldSince.Before(best.binding.heldSince) ||
-			(b.heldSince.Equal(best.binding.heldSince) && pd.id < best.id) {
+		if best == nil {
+			best = pd
+			continue
+		}
+		bb := best.binding
+		if c := compareShares(p.shareOf(b.tenant, g, 0), p.shareOf(bb.tenant, g, 0)); c != 0 {
+			if c > 0 {
+				best = pd
+			}
+			continue
+		}
+		if b.heldSince.Before(bb.heldSince) || (b.heldSince.Equal(bb.heldSince) && pd.id < best.id) {
 			best = pd
 		}
 	}

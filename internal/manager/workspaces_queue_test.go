@@ -26,7 +26,7 @@ func TestDispatchTickReadsOnePendingListPerWorkspaceRuntime(t *testing.T) {
 	}
 }
 
-func TestClaimGoesToTheWorkspaceWithTheHighestPriorityPendingTask(t *testing.T) {
+func TestPriorityDoesNotCrossWorkspaces(t *testing.T) {
 	t.Parallel()
 	a, b := &fakeWorkspace{id: wsA}, &fakeWorkspace{id: wsB}
 	up := newMultiMultica(t, a, b)
@@ -34,16 +34,17 @@ func TestClaimGoesToTheWorkspaceWithTheHighestPriorityPendingTask(t *testing.T) 
 	pod := h.newPod("pool-0")
 	ids := pod.startAll()
 	created := time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
-	// A comes first in turn and holds the older task; B's is more urgent.
-	up.enqueueRanked(a, "a-old-low", 1, created)
+	// B's task is more urgent within B, but A's has waited longer and both
+	// workspaces occupy nothing: priority does not let B jump ahead.
 	up.enqueueRanked(b, "b-new-high", 3, created.Add(time.Minute))
+	up.enqueueRanked(a, "a-old-low", 1, created)
 
 	h.dispatch()
 
-	if got := pod.claimFrom(ids); !slices.Equal(got, []string{"b-new-high"}) {
-		t.Fatalf("want the higher-priority task of B, got %v", got)
+	if got := pod.claimFrom(ids); !slices.Equal(got, []string{"a-old-low"}) {
+		t.Fatalf("want the longer-waiting task of A, got %v", got)
 	}
-	if n := up.claimCount(a); n != 0 {
-		t.Fatalf("no claim may reach A before B's more urgent task, got %d", n)
+	if n := up.claimCount(b); n != 0 {
+		t.Fatalf("no claim may reach B before A's longer-waiting task, got %d", n)
 	}
 }

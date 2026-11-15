@@ -136,8 +136,8 @@ last_comment "$issue" | grep -q 'with skill hidden-runtime-skill sandbox-environ
 	fail "the agent did not see the image skills: $(last_comment "$issue")"
 pass "reset: task files, workspaces and .claude/projects deleted; .multica/config.json (same token) and .claude/skills kept"
 
-# --- 4 global queue order ----------------------------------------------------
-step "4 global queue: priority, then age, across workspaces"
+# --- 4 fair share and priority ----------------------------------------------
+step "4 fair share across workspaces, priority within one"
 ws=$wsa
 b1=$(new_issue "blocker 1" "$slowa")
 wait_tasks "$b1" 1 running 60 >/dev/null
@@ -151,16 +151,19 @@ sleep 1
 ws=$wsb burgent=$(new_issue "b urgent" "$fastb" urgent)
 sleep 1
 ws=$wsb bhigh=$(new_issue "b high" "$fastb" high)
-order=()
+declare -A at
 for spec in "$wsb:$burgent" "$wsa:$ahigh" "$wsb:$bhigh" "$wsa:$alow"; do
 	ws=${spec%%:*}
 	t=$(wait_tasks "${spec#*:}" 1 completed 180)
-	order+=("$(lease_time "$t") ${spec#*:}")
+	at[${spec#*:}]=$(lease_time "$t")
 done
-want="$burgent $ahigh $bhigh $alow"
-got=$(printf '%s\n' "${order[@]}" | sort -n | awk '{print $2}' | xargs)
-[ "$got" = "$want" ] || fail "lease order $got, want b-urgent a-high b-high a-low ($want)"
-pass "queue: queued while both pods were busy, leased b-urgent, a-high, b-high, a-low (created a-low, a-high, b-urgent, b-high)"
+# pool-a holds both pods, so the first pod freed goes to pool-b, which
+# occupies none, though pool-a's tasks are older.
+first=$(for i in "$burgent" "$ahigh" "$bhigh" "$alow"; do echo "${at[$i]} $i"; done | sort -n | head -1 | awk '{print $2}')
+[ "$first" = "$burgent" ] || fail "first lease $first, want pool-b's b-urgent ($burgent)"
+[ "${at[$ahigh]}" -lt "${at[$alow]}" ] || fail "pool-a's a-low was leased before its a-high"
+[ "${at[$burgent]}" -lt "${at[$bhigh]}" ] || fail "pool-b's b-high was leased before its b-urgent"
+pass "fair share: pool-b leased first while pool-a held both pods; within each workspace, priority first"
 wait_for "both pods idle" 120 all_idle
 
 # --- 5 quota -----------------------------------------------------------------

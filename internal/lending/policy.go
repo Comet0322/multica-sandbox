@@ -73,6 +73,11 @@ type TenantSettings struct {
 	// tasks open from now on; a binding keeps the lifetime it opened with.
 	// Nil means the pool default, and zero means none.
 	MaxLifetime *time.Duration
+	// Guarantee is the number of pods kept for the tenant: while it
+	// occupies fewer, other tenants may not take the rest (see share.go).
+	Guarantee int
+	// Weight shares out the pods beyond the guarantees. Zero means one.
+	Weight int
 }
 
 // podState is a pod the manager holds: one it acquired from the sandbox
@@ -142,7 +147,10 @@ type Policy struct {
 	reservations map[ReservationID]*reservation
 	// lastTenant is the tenant claimed from last; tenants claimed
 	// from without a queued task take turns after it.
-	lastTenant  string
+	lastTenant string
+	// livePods is the number of pods in the pool that can be lent, free or
+	// not, as the latest claim request said; the guarantees are scaled to it.
+	livePods    int
 	nextRes     ReservationID
 	nextBinding BindingID
 }
@@ -152,9 +160,9 @@ func New(cfg Config) (*Policy, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	rules := Registry{RuleTask: ownBinding}
+	rules := Registry{RuleTask: ownBinding, RuleTenant: tenantUnit}
 	for name, unit := range cfg.Rules {
-		if name != RuleTask {
+		if name != RuleTask && name != RuleTenant {
 			rules[name] = unit
 		}
 	}
@@ -191,6 +199,9 @@ func New(cfg Config) (*Policy, error) {
 func (p *Policy) SetTenant(id string, s TenantSettings) error {
 	if s.Quota < 0 {
 		return fmt.Errorf("tenant %s: quota must not be negative", id)
+	}
+	if s.Guarantee < 0 || s.Weight < 0 {
+		return fmt.Errorf("tenant %s: guarantee and weight must not be negative", id)
 	}
 	if s.Rule != "" && p.cfg.Rules[s.Rule] == nil {
 		return fmt.Errorf("tenant %s: unknown affinity rule %q", id, s.Rule)
@@ -297,6 +308,10 @@ func (p *Policy) TaskEnded(id, reason string) []Decision {
 			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: p.cfg.RemovedReason, Task: id}))
 		case p.pastLifetime(b, now):
 			ds = append(ds, p.resetBinding(b, Reset{Pod: b.pod.id, Reason: reasonLifetime, Task: id}))
+		case keptKey(b.key):
+			b.state = bindingHold
+			b.heldSince = now
+			b.holdUntil = time.Time{}
 		case hold > 0 && !uniqueKey(b.key):
 			b.state = bindingHold
 			b.heldSince = now

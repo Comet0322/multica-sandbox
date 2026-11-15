@@ -5,14 +5,14 @@ import (
 	"time"
 )
 
-// The Audit / inventory module: the audit log (audit.go) and the read-only
-// admin API. The admin API reads the manager through adminSource and knows no
-// other module.
+// The read-only admin API. It reads the manager through adminSource and knows
+// no other module.
 
 // adminSource is what the admin API reports.
 type adminSource interface {
 	Inventory() Inventory
 	Leases() []LeaseInfo
+	Dispatch() DispatchView
 }
 
 // newAdminHandler serves the read-only query interface for administrators. It
@@ -25,6 +25,10 @@ func newAdminHandler(src adminSource) http.Handler {
 	mux.HandleFunc("GET /v1/leases", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, src.Leases())
 	})
+	mux.HandleFunc("GET /v1/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, src.Dispatch())
+	})
+	mux.HandleFunc("GET /dispatch", serveDispatchPage)
 	return mux
 }
 
@@ -55,9 +59,12 @@ type PodBinding struct {
 	CapacitySlots int `json:"capacity_slots"`
 	// Hold is set while no task runs; the pod is reset at HoldUntil unless a
 	// task of its key comes first.
-	Hold                 bool       `json:"hold"`
-	HoldUntil            *time.Time `json:"hold_until,omitempty"`
-	HoldRemainingSeconds int64      `json:"hold_remaining_seconds,omitempty"`
+	Hold      bool       `json:"hold"`
+	HoldUntil *time.Time `json:"hold_until,omitempty"`
+	// Kept is set for a binding of the workspace rule: its hold has no end,
+	// only an eviction ends it.
+	Kept                 bool  `json:"kept,omitempty"`
+	HoldRemainingSeconds int64 `json:"hold_remaining_seconds,omitempty"`
 }
 
 // Inventory is the manager's view of the pool. Name is display-only.
@@ -87,4 +94,7 @@ type Inventory struct {
 	// OverrideProblems lists the per-workspace overrides that are not
 	// applied, and why: a bad value, an unknown slug, an unreadable file.
 	OverrideProblems []string `json:"override_problems,omitempty"`
+	// LivePods is the number of pods that can be lent (not lost) the fair
+	// shares were last computed for.
+	LivePods int `json:"live_pods"`
 }

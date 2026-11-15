@@ -125,7 +125,7 @@ func TestInventoryReportsLeaseAgeAndUpstreamHealth(t *testing.T) {
 		t.Fatalf("oldest lease age %d, want about 90", age)
 	}
 
-	pod.heartbeat()
+	h.pool.HeartbeatOnce(context.Background())
 	eventually(t, "the upstream heartbeat to be recorded", func() bool {
 		ws := h.inventory().Workspaces
 		return len(ws) == 1 && ws[0].Upstream != nil && ws[0].Upstream.OK && ws[0].Upstream.Op == "heartbeat"

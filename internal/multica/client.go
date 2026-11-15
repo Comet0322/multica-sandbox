@@ -20,10 +20,9 @@ import (
 // knows nothing of pods, leases or the lending policy; the manager decides
 // what to call and acts on the answers.
 //
-// It keeps three pieces of state under its own lock: the daemon identity the
-// manager registers under, the daemon identity headers taken from the first
-// pod (pods are homogeneous) and replayed on every call, and when each
-// runtime was last heartbeated.
+// It keeps two pieces of state under its own lock: the daemon identity the
+// manager registers under, and the daemon identity headers taken from the
+// first pod (pods are homogeneous) and replayed on every call.
 type Client struct {
 	base string
 	// pat is the bot account's PAT, the same in every workspace.
@@ -33,7 +32,6 @@ type Client struct {
 
 	mu      sync.Mutex
 	headers map[string]string
-	beatAt  map[string]time.Time
 	// daemonID is the manager's one daemon identity in every workspace: the
 	// configured one, or derived on first use and kept for the process.
 	daemonID string
@@ -166,21 +164,6 @@ func (c *Client) WorkspaceSlugs(ctx context.Context) (map[string]string, error) 
 // many pods heartbeat the manager. Multica marks a runtime offline after a few
 // minutes of silence and stops handing out its tasks.
 const HeartbeatEvery = 10 * time.Second
-
-// HeartbeatDue reports whether the runtime is due an upstream heartbeat at
-// now, and if so counts it as sent.
-func (c *Client) HeartbeatDue(runtimeID string, now time.Time) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.beatAt == nil {
-		c.beatAt = map[string]time.Time{}
-	}
-	if now.Sub(c.beatAt[runtimeID]) < HeartbeatEvery {
-		return false
-	}
-	c.beatAt[runtimeID] = now
-	return true
-}
 
 type routeContextKey struct{}
 

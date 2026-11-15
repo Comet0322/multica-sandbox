@@ -127,6 +127,7 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 			SyncInterval:      duration("SANDBOX_POOL_SYNC_INTERVAL"),
 			RuntimeVisibility: getenv("SANDBOX_POOL_RUNTIME_VISIBILITY"),
 			Name:              getenv("SANDBOX_MANAGER_NAME"),
+			DeviceName:        getenv("SANDBOX_MANAGER_DEVICE_NAME"),
 			DaemonID:          strings.TrimSpace(getenv("SANDBOX_MANAGER_DAEMON_ID")),
 			ExpectedSize:      whole("SANDBOX_POOL_SIZE"),
 			Providers:         list("SANDBOX_PROVIDERS"),
@@ -153,6 +154,11 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	if s.config.PAT == "" {
 		fail("SANDBOX_POOL_TOKEN or SANDBOX_POOL_TOKEN_FILE is required")
 	}
+	models, err := multica.ParseModels(getenv("SANDBOX_MODELS"))
+	if err != nil {
+		fail("SANDBOX_MODELS: %v", err)
+	}
+	s.config.Models = models
 	if err := multica.CheckAffinityRule(s.config.AffinityRule); err != nil {
 		fail("SANDBOX_PLACEMENT: %v", err)
 	}

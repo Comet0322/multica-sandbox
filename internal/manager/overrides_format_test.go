@@ -15,6 +15,8 @@ func TestOverridesFileFormat(t *testing.T) {
 		`json: {"quota": 2, "hold_timeout": "90s"}`,
 		`empty:`,
 		`unitless: {hold_timeout: 5}`,
+		`shared: {guarantee: 2, weight: 3}`,
+		`weightless: {weight: 0}`,
 	}, "\n")
 	got, problems, err := manager.ParseWorkspaceOverrides([]byte(raw))
 	if err != nil {
@@ -28,6 +30,12 @@ func TestOverridesFileFormat(t *testing.T) {
 	}
 	if o, ok := got["empty"]; !ok || o != (manager.WorkspaceOverride{}) {
 		t.Errorf("an empty entry overrides nothing: %+v %v", o, ok)
+	}
+	if o := got["shared"]; o.Guarantee == nil || *o.Guarantee != 2 || o.Weight == nil || *o.Weight != 3 {
+		t.Errorf("guarantee and weight: %+v", o)
+	}
+	if err := problems["weightless"]; err == nil || !strings.Contains(err.Error(), "weight") {
+		t.Errorf("want a weight problem, got %v", err)
 	}
 	if err := problems["unitless"]; err == nil || !strings.Contains(err.Error(), "missing unit") || strings.Contains(err.Error(), "\n") {
 		t.Errorf("want a one-line missing-unit problem, got %v", err)

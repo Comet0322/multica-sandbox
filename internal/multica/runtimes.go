@@ -41,8 +41,10 @@ type Runtimes struct {
 // RuntimesConfig configures one workspace's Runtimes.
 type RuntimesConfig struct {
 	WorkspaceID string
-	// Name is the runtime name members see in the workspace.
+	// Name is the machine name members see in the workspace's runtime list.
 	Name string
+	// DeviceName is shown under it; empty shows Name.
+	DeviceName string
 	// Providers limits which agent CLIs a pod reports become runtimes. Empty
 	// registers every reported provider.
 	Providers []string
@@ -82,6 +84,19 @@ func (r *Runtimes) IDs() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return RuntimeIDs(r.registration)
+}
+
+// Provider returns the agent CLI the runtime was registered for, "" when it
+// is not one of the registered ones.
+func (r *Runtimes) Provider(runtimeID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rt := range RuntimesOf(r.registration) {
+		if rt.ID == runtimeID {
+			return rt.Provider
+		}
+	}
+	return ""
 }
 
 // Registered reports whether the workspace has a registration.
@@ -215,7 +230,7 @@ func (r *Runtimes) store(raw json.RawMessage, runtimes []RuntimeRef) {
 // identity, local mode, no custom profiles.
 func (r *Runtimes) body(captured json.RawMessage) (map[string]any, error) {
 	id := Identity{
-		WorkspaceID: r.cfg.WorkspaceID, DaemonID: r.client.KnownIdentity(), Name: r.cfg.Name,
+		WorkspaceID: r.cfg.WorkspaceID, DaemonID: r.client.KnownIdentity(), Name: r.cfg.Name, DeviceName: r.cfg.DeviceName,
 		Providers: r.cfg.Providers, Source: "the pod", Mode: RuntimeMode,
 	}
 	if old := r.client.LegacyDaemonID(r.cfg.WorkspaceID); old != id.DaemonID {

@@ -51,10 +51,12 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `MULTICA_SERVER_URL` | none | Multica server base URL. |
 | `SANDBOX_MANAGER_LISTEN` | `:8790` | Pod API listener. Also serves `/healthz` (liveness: always 200) and `/readyz` (200 only if a workspace listing succeeded within three sync intervals, else 503). |
 | `SANDBOX_POOL_ADMIN_LISTEN` | `127.0.0.1:8791` | Admin listener (inventory, leases). |
-| `SANDBOX_MANAGER_NAME` | `Managed Sandbox` | Machine and default runtime name. |
+| `SANDBOX_MANAGER_NAME` | `Managed Sandbox` | Machine name: the title of the manager's entry in Multica's runtime list. Each runtime is named `<agent CLI> (<name>)`, as the stock daemon names its runtimes after its host, which is where the list reads the title from. No parentheses or ` · `. A rename in the UI wins over it. |
+| `SANDBOX_MANAGER_DEVICE_NAME` | `SANDBOX_MANAGER_NAME` | The line under the title (the registration's `device_name`). No parentheses or ` · `. Both names reach Multica when a workspace registers, so after a manager restart. |
 | `SANDBOX_MANAGER_DAEMON_ID` | derived | Daemon ID the manager uses in every workspace. Unset, it is derived from `MULTICA_SERVER_URL` and the bot account, the same on every restart. Changing it registers new runtimes. |
 | `SANDBOX_POOL_SIZE` | 0 | Declared pod count, shown next to live counts. |
 | `SANDBOX_PROVIDERS` | all | Comma list of agent CLIs exposed as runtimes. Set it to the image's CLIs: a pod can otherwise add runtimes of any type. |
+| `SANDBOX_MODELS` | none | Models the agent settings picker offers, per agent CLI: `claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2`, the first of each list the default. The pods run one image, so the manager answers the picker for every workspace from a pod's latest report, for ten minutes, and asks a pod again after that; these lists answer it until a pod has reported, or when no pod reports. Unset, the picker waits for a pod. |
 | `SANDBOX_POOL_DRAIN_TIMEOUT` | `10m` | How long a removed workspace keeps its leases. |
 | `SANDBOX_POOL_HEARTBEAT_TIMEOUT` | `45s` | Sandbox service. Silence after which a pod is listed lost. |
 | `SANDBOX_POOL_RESET_TIMEOUT` | `2m` | Sandbox service. Longest a pod may stay resetting; past it the pod is lost. |
@@ -161,10 +163,17 @@ in every workspace (orphan recovery), so the tasks that ran at the restart are
 failed upstream without waiting for a pod. A pod's first registration in a
 workspace recovers that workspace's runtimes again, which covers a workspace
 joined later or a runtime registered anew. The `404 runtime not found` answer
-goes to a pod heartbeating a runtime that Multica reported gone (its upstream
-heartbeat got `404 runtime not found`: deleted in the UI, or collected after a
-long time offline): the manager drops that workspace's registration, and the
+goes to a pod heartbeating a runtime that Multica reported gone (the manager's
+own upstream heartbeat got `404 runtime not found`: deleted in the UI, or
+collected after a long time offline): the manager drops that workspace's
+registration, tells the pods to read their workspace list again, and the
 pod's registration that follows registers the workspace upstream again.
+
+The manager heartbeats its registered runtimes upstream itself, every 15
+seconds, for as long as it runs. The pods' heartbeats are answered by the
+manager and never relayed. So a runtime shows online whenever the manager
+runs, pods or not; with no pod free, nothing is claimed and tasks stay
+queued in Multica.
 Orphan recovery (`recover-orphans`) runs only for a workspace that holds no lease or claimed task
 in the manager.
 
@@ -219,7 +228,20 @@ passed. `/v1/inventory` shows the queue length as `pending_fail_reports`.
 workspace listing), `oldest_lease_age_seconds` (a value near the maximum lease
 time points at a task nobody reports on), `pending_fail_reports`, and for each
 workspace `upstream` (`ok`, `op`, `at`, `error` of its latest claim or
-heartbeat to Multica). The workspace-reloaded log line is INFO only when a
+heartbeat to Multica) and its fair share: `guarantee`, `guarantee_in_effect`
+(scaled to the live pods), `weight`, `occupied_pods`, `holding_pods`, `queued`
+and `target_pods`, the pods it would hold if the live pods (`live_pods`) were
+split by the rules below for the work there is now.
+
+`/v1/dispatch` puts those shares side by side: the pod counts of the pool,
+what every pod is doing (its workspace, tasks and hold), and for each
+workspace its guarantee, weight, quota, target pods and the pods it occupies
+(running and holding), with totals. `/dispatch` on the admin listener is a
+page that shows it and reads it again every 10 seconds: a grid of the pods
+colored by workspace, and each workspace's pods against its target, the
+furthest short first. It tells a workspace waiting for a pod (short, with
+tasks queued) from one whose guarantee is only kept free (short, nothing
+queued). The workspace-reloaded log line is INFO only when a
 listing changed something.
 
 `/readyz` turns 503 when no listing succeeded for three sync intervals: a
@@ -245,7 +267,7 @@ in hold, `hold_until` and `hold_remaining_seconds`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDBOX_PLACEMENT` | `person-issue` | The affinity rule: which tasks share a pod. `task`, `person-issue` (one person's tasks on one issue, or in one chat session for a task without an issue), `person-agent` or `person`. Tasks of different people, and tasks without a known initiator, never share. |
+| `SANDBOX_PLACEMENT` | `person-issue` | The affinity rule: which tasks share a pod. `task`, `person-issue` (one person's tasks on one issue, or in one chat session for a task without an issue), `person-agent`, `person`, or `workspace`. Under every rule but `workspace`, tasks of different people, and tasks without a known initiator, never share. `workspace` lets every task of a workspace share its pods, whoever it runs for, and keeps them: a pod stays bound to the workspace, in hold when idle, with no hold timeout and no maximum lifetime, until another workspace's task evicts it beyond the workspace's guarantee. |
 | `SANDBOX_POD_CAPACITY` | 20 | Pod capacity in slots; each task takes one. |
 | `SANDBOX_PLACEMENT_WAIT` | `30s` | How long a claimed task that has no pod waits for one before it is failed upstream: one whose pod was lost before it started, one orphaned by a lost reservation, or one whose hold another key evicted. |
 | `SANDBOX_POOL_WAKE_INTERVAL` | `1s` | Dispatch tick. `0` does not turn dispatch off: the tick then runs every second and only the wake socket hints are disabled. |
@@ -272,6 +294,17 @@ the pod again, and the countdown starts afresh when that task ends. A hold
 that runs out resets the pod (`hold expired`). A binding whose key is its
 task's own resets as soon as the task ends, since nothing could renew it.
 
+The `workspace` rule is the loosest. Its key is `tenant/in:<workspace>`: every
+task of the workspace, whoever it runs for (or nobody), shares its bindings,
+so different people's tasks see each other's files. Its bindings are
+**kept**: a pod in hold stays bound to the workspace with no hold timeout and
+no maximum lifetime (`kept` in the inventory), and the workspace's next task
+goes to one of its kept pods with a free slot before any other pod is taken.
+Only an eviction ends a kept binding, for another workspace's task when the
+workspace occupies more than its `guarantee` (see fair sharing below), or the
+workspace's removal, or the pod's loss. Give the workspace a guarantee to keep
+that many pods for good.
+
 A pod in hold never shrinks usable capacity. When no pod serving a workspace
 is idle, the manager reserves the pod whose hold has been idle longest and
 claims against it. A task of that hold's key renews it. A task matching
@@ -295,7 +328,7 @@ removed`), including the tasks the drain timeout ends.
 ## Per-workspace overrides
 
 The affinity rule, hold timeout, maximum lifetime and quota above are pool
-defaults. `SANDBOX_WORKSPACE_OVERRIDES_FILE` names a file (an absolute path)
+defaults, and every workspace has a guarantee of 0 and a weight of 1. `SANDBOX_WORKSPACE_OVERRIDES_FILE` names a file (an absolute path)
 that overrides them for single workspaces, keyed by workspace slug. Pod
 capacity (`SANDBOX_POD_CAPACITY`) and the drain grace stay pool-wide.
 
@@ -306,6 +339,8 @@ acme:
   hold_timeout: 1h         # SANDBOX_HOLD_TIMEOUT; 0 resets at once
   max_lifetime: 4h         # SANDBOX_POD_MAX_LIFETIME; 0 means none
   quota: 6                 # SANDBOX_POOL_QUOTA; 0 is no cap
+  guarantee: 2             # pods kept for it; 0 (the default) keeps none
+  weight: 2                # its share of the pods beyond the guarantees; 1 by default
 sandbox-lab:
   hold_timeout: 0
 ```
@@ -359,21 +394,38 @@ manager acquired but never ran a task on, because a claim came back empty,
 is kept for the next claim, not handed back. Neither Multica nor the pod image
 changes.
 
-### Global queue and quota
+### Fair sharing, guarantees and quota
 
-The manager picks the next task across all served workspaces the way Multica
-orders one workspace's queue:
+The manager shares the pods between workspaces, not tasks: a pod serves one
+workspace at a time, so a workspace **occupies** the pods its bindings hold,
+running or in hold, and the pods reserved for its claims.
 
 1. Every dispatch tick it reads the pending list of each of its runtimes in
    each served workspace (`GET /api/daemon/runtimes/{id}/tasks/pending`;
    Multica v0.6.4 has no workspace-wide list, so a workspace costs one read
-   per agent CLI per tick). It keeps the `queued` tasks and orders them by
-   priority, highest first, then by creation time, oldest first.
-2. It walks that queue and skips every workspace at its quota
-   (`SANDBOX_POOL_QUOTA` or the workspace's `quota`). Quota counts
-   the slots of the workspace's running tasks and its claims in flight; a
-   binding in hold counts nothing.
-3. For the first workspace left, it **reserves** a place before it claims: a
+   per agent CLI per tick) and keeps the `queued` tasks.
+2. Among the workspaces with a queued task and room under their quota
+   (`SANDBOX_POOL_QUOTA` or the workspace's `quota`, which counts the slots of
+   its running tasks and claims in flight; a binding in hold counts nothing),
+   it picks the one with the fewest pods occupied beyond its `guarantee`, per
+   unit of `weight`; between equals, the one whose next task has waited
+   longest. Priority orders tasks within one workspace only: one workspace's
+   urgent tasks never jump another's.
+3. A workspace's **guarantee** (pods, `0` by default) is kept for it: while it
+   occupies fewer pods than its guarantee, other workspaces may not take the
+   rest, even when it has nothing to run. Its own running and holding pods
+   count toward it. The pods beyond the guarantees go by **weight** (`1` by
+   default): with two busy workspaces of weights 2 and 1, they settle at two
+   pods to one. A lone busy workspace may use every pod not kept by a
+   guarantee. When the guarantees add up to more than the live pods (free,
+   held or resetting; not lost), each is scaled down in proportion.
+4. Running tasks are never stopped to rebalance. A workspace over its share
+   gives pods back as its bindings end. When no pod is free for a workspace
+   with a task queued (the pool has none, or the guarantees keep the rest for
+   others), a hold is evicted for it: its own, or one of the workspace furthest
+   over its share. A hold within its workspace's guarantee is never evicted. Rebalancing therefore takes at most
+   the maximum lifetime plus the drain grace (2h10m by default).
+5. For the workspace picked, it **reserves** a place before it claims: a
    free slot on a pod it holds or, when it holds none for that workspace, a pod
    acquired from the sandbox service (a pod whose daemon did not register for
    the workspace is never lent to it) or, when the service has none (no

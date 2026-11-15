@@ -85,6 +85,13 @@ func RetryableFail(err error) bool {
 	return code == 0 || code == http.StatusTooManyRequests || code >= 500
 }
 
+// Post sends a JSON body to a path of the daemon API as the account, and
+// decodes the answer into out when it is not nil. It is for callers that
+// stand in for a pod's daemon, such as the simulated pool.
+func (c *Conn) Post(ctx context.Context, path string, in, out any) error {
+	return c.call(ctx, http.MethodPost, path, in, out)
+}
+
 func (c *Conn) call(ctx context.Context, method, path string, in, out any) error {
 	return c.callWith(ctx, nil, method, path, in, out)
 }

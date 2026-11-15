@@ -24,6 +24,18 @@ _Avoid_: Pod IP, boot nonce, pool placeholder
 The program that acts as a daemon toward the Multica server and as the server toward the pods' daemons, and decides which pod runs which task. It reaches pods only through the sandbox service.
 _Avoid_: Broker, controller, pool manager
 
+**Core**:
+The part of the manager that decides which pod runs which task and keeps the record of every task it dispatched. It knows tenants, opaque tasks and pod IDs only.
+_Avoid_: Broker, dispatcher, scheduler
+
+**Task source**:
+The part of the manager that is the one daemon Multica sees: it follows the bot account's workspaces, registers and heartbeats their runtimes, and claims and fails tasks when the core says so.
+_Avoid_: Upstream adapter, Multica client
+
+**Pool side**:
+The part of the manager that lends the core pods: the sandbox service, and the Multica server it plays toward the daemon in each pod.
+_Avoid_: Worker gateway, executor
+
 **Sandbox service**:
 The module that owns the pods themselves: their registration and pod tokens, the control channel, resets, liveness and the set of free pods. Callers use it through Create, Delete, PutFiles, GetFiles and Exec.
 _Avoid_: Pod manager, provider, runtime
@@ -45,7 +57,7 @@ Returning a pod to its clean initial state so it can be lent to anyone.
 _Avoid_: Cleanup, wipe, recycle
 
 **Affinity key**:
-The value that decides which tasks may share one pod; tasks of different people never share a key.
+The value that decides which tasks may share one pod; tasks of different people never share a key, except under the workspace rule, which a workspace opts into.
 _Avoid_: Sharing key, placement unit, binding key
 
 **Binding**:
@@ -63,6 +75,18 @@ _Avoid_: Concurrency, size
 **Tenant**:
 What the lending policy scopes quota and affinity keys to. For Multica it is a workspace; the policy knows nothing else of it.
 _Avoid_: Workspace (inside the lending policy), customer
+
+**Occupancy**:
+The pods a workspace takes up: those its bindings hold, running or in hold, and those reserved for its claims. Fair sharing counts it in whole pods.
+_Avoid_: Usage, load
+
+**Guarantee**:
+The number of pods kept for one workspace: while it occupies fewer, no other workspace may take the rest, even when it has nothing to run.
+_Avoid_: Reservation (that is a claim's), minimum, floor
+
+**Weight**:
+A workspace's share of the pods beyond the guarantees: the next claim goes to the workspace with the least occupancy beyond its guarantee per unit of weight.
+_Avoid_: Priority (that orders tasks within one workspace)
 
 **Quota**:
 The most capacity one workspace's running tasks may occupy at once; pods in hold do not count against it.

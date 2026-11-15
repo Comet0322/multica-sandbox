@@ -31,11 +31,11 @@ func pendingUnknown(ws string) func(*lending.Policy) []lending.Decision {
 func TestGlobalQueue(t *testing.T) {
 	run(t, []scenario{
 		{
-			name: "a higher-priority task in one tenant is claimed before an older lower-priority task in another",
+			name: "priority does not cross tenants: between equal shares the tenant whose next task waited longest goes first",
 			setup: setup(tenant("A", unlimited), tenant("B", unlimited), cleanPod("p1", "A", "B"),
 				pendingSetup("A", queued("a1", 1, 0)), pendingSetup("B", queued("b1", 3, time.Minute))),
 			steps: []step{
-				{do: request(pods("p1"), "A", "B"), want: []string{"claim B res=1 pod=p1"}},
+				{do: request(pods("p1"), "A", "B"), want: []string{"claim A res=1 pod=p1"}},
 			},
 		},
 		{
