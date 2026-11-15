@@ -1,0 +1,43 @@
+# The manager's own identity in the namespace (ADR 0009), for when the
+# operator stops running it with a personal kubeconfig. It may create,
+# delete, get, list and watch pods, which is all the manager does, and
+# nothing else: no Secrets, Deployments, exec or logs. Apply it in the
+# manager's namespace and run the manager's Deployment with
+# serviceAccountName: sandbox-manager and automountServiceAccountToken: true,
+# without KUBECONFIG, so it uses the in-cluster service account:
+#   kubectl apply -f deploy/k8s/rbac.yaml -n <namespace>
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-manager
+  labels:
+    app.kubernetes.io/name: sandbox-manager
+# Pods that do not need the API (Multica, the sandbox pods) keep
+# automountServiceAccountToken: false; this account's token is mounted only
+# into the manager.
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-manager-pods
+  labels:
+    app.kubernetes.io/name: sandbox-manager
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sandbox-manager-pods
+  labels:
+    app.kubernetes.io/name: sandbox-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-manager-pods
+subjects:
+  - kind: ServiceAccount
+    name: sandbox-manager

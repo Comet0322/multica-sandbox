@@ -8,6 +8,9 @@ metadata:
   labels:
     app.kubernetes.io/name: sandbox-pod
 spec:
+  # Without it the hostname is the pod's name, which agents print into what
+  # reaches Multica. The manager sets this same value when a template has none.
+  hostname: sandbox
   automountServiceAccountToken: false
   enableServiceLinks: false
   securityContext:
