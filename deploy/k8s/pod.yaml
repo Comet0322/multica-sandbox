@@ -1,0 +1,86 @@
+# Example pod template for the company's namespace (SANDBOX_POD_TEMPLATE,
+# ADR 0009). The manager creates every pod from it and fills in only the
+# pod's name, labels, annotations, restart policy and pod token
+# (SANDBOX_POD_TOKEN, the only secret in the pod's environment). Everything
+# else is the operator's. Every PLACEHOLDER is set before use.
+#
+# The container runs tini and the stock daemon, and nothing else of ours
+# (deploy/pool/entrypoint-kube.sh). What the pod supervisor used to apply is
+# here or in the entrypoint:
+#   - the private umask: the entrypoint (umask 077);
+#   - the read-only root: securityContext.readOnlyRootFilesystem;
+#   - the daemon's home: the emptyDir at /home/pod, the only writable path,
+#     which the entrypoint fills from the image's template. A pod is deleted
+#     after its task (or its hold), never reset, so the volume goes with it.
+#
+# Admission: it passes Pod Security "restricted" (non-root, read-only root,
+# no capabilities, no privilege escalation, RuntimeDefault seccomp, no
+# service account token). Checked with `kubectl apply --dry-run=server` in
+# the kind namespace (deploy/k8s/dev). Not checked: Kyverno or Gatekeeper
+# policies and Istio injection at the company. If Istio injects a sidecar,
+# keep the daemon's container named "daemon" (the pod token goes to it) and
+# allow its egress to the manager; or disable injection for these pods with
+# the label sidecar.istio.io/inject: "false" if the company permits it.
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app.kubernetes.io/name: sandbox-pod
+    app.kubernetes.io/part-of: multica-sandbox
+spec:
+  # A fixed, neutral hostname: by default it would be the pod's name, which
+  # agents print into comments that reach Multica. The manager sets this
+  # value itself when a template has none.
+  hostname: sandbox
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  # The pod's lifetime is its task's; a slow shutdown only delays the
+  # deletion the manager asked for.
+  terminationGracePeriodSeconds: 10
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 2000
+    fsGroup: 2000
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: daemon
+      image: registry.example.com/multica-sandbox-pool:0.8.0 # PLACEHOLDER: the agents target of deploy/Dockerfile.pool
+      imagePullPolicy: IfNotPresent
+      command: ["tini", "--", "multica-pod-entrypoint-kube"]
+      env:
+        # The manager's pod listener, as pods reach it in the namespace.
+        # It replaces the address baked into the image.
+        - name: SANDBOX_MANAGER_URL
+          value: "http://sandbox-manager:8080" # PLACEHOLDER if the Service is named otherwise
+      # One task per pod, so the limit is the task's. Measured with no model
+      # reachable (deploy/k8s/README.md): an idle pod uses about 10 MiB; a
+      # pod starting a Claude Code task peaks near 145 MiB; opencode starting
+      # a task about 1.2 GiB.
+      # A task's own peak depends on what it builds or runs; size the limit
+      # for the heaviest work the departments run. A task over the limit
+      # fails with "the pod ran out of memory (limit 4Gi)", and only it.
+      resources:
+        requests: {cpu: 500m, memory: 1Gi}
+        limits: {memory: 4Gi, ephemeral-storage: 12Gi}
+      # The daemon's health endpoint listens on loopback only, so the probe
+      # runs inside the container. A pod whose daemon stops answering is
+      # killed by the kubelet, not restarted (the manager sets restartPolicy
+      # Never): its task fails as "the daemon not answering" and the pod is
+      # deleted.
+      livenessProbe:
+        exec:
+          command: ["curl", "-fsS", "-o", "/dev/null", "--max-time", "4", "http://127.0.0.1:19514/health"]
+        initialDelaySeconds: 30
+        periodSeconds: 15
+        timeoutSeconds: 5
+        failureThreshold: 4
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: ["ALL"]}
+      volumeMounts:
+        - {name: home, mountPath: /home/pod}
+  volumes:
+    - name: home
+      emptyDir: {sizeLimit: 10Gi}

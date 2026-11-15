@@ -28,6 +28,10 @@ const (
 	// PodTokenEnv is the environment variable the pod's entrypoint reads its
 	// pod token from.
 	PodTokenEnv = "SANDBOX_POD_TOKEN"
+	// PodHostname is the hostname of a pod whose template sets none. Without
+	// it the hostname would be the pod's name, which agents print into what
+	// reaches Multica.
+	PodHostname = "sandbox"
 	// DaemonContainer is the name of the container the daemon runs in, when
 	// the template has more than one.
 	DaemonContainer = "daemon"
@@ -378,6 +382,9 @@ func (k *KubeService) podObject(pd *kubePod) *corev1.Pod {
 	}
 	obj.Labels[ManagedByLabel] = ManagedByValue
 	obj.Spec.RestartPolicy = corev1.RestartPolicyNever
+	if obj.Spec.Hostname == "" {
+		obj.Spec.Hostname = PodHostname
+	}
 	i, _ := daemonContainer(obj)
 	c := &obj.Spec.Containers[i]
 	env := c.Env[:0:0]
