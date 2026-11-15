@@ -12,12 +12,14 @@
 	--muted: #6b6b66;
 	--line: #e3e2dd;
 	--track: #ecebe6;
-	--target: #1d1d1b;
+	--hover: #f1f0ec;
 	--over: #a8541a;
 	--short: #b42318;
+	--short-bg: #fdecea;
 	--danger-bg: #fbe9e7;
 	--warn-bg: #fdf1e8;
 	--warn: #8a3a12;
+	--neutral: #8a8984;
 }
 @media (prefers-color-scheme: dark) {
 	:root {
@@ -27,57 +29,95 @@
 		--muted: #9a9993;
 		--line: #2f2f2c;
 		--track: #2a2a27;
-		--target: #ecebe6;
+		--hover: #262624;
 		--over: #f0a36b;
 		--short: #f28b82;
+		--short-bg: #3a1d1a;
 		--danger-bg: #3d1f1c;
 		--warn-bg: #3a2416;
 		--warn: #f3b48e;
+		--neutral: #77766f;
 	}
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+main { max-width: 1180px; margin: 0 auto; padding: 24px 16px 48px; }
 header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
 h1 { font-size: 20px; margin: 0; font-weight: 600; }
 h2 { font-size: 15px; font-weight: 600; margin: 28px 0 4px; }
 .lead { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
 .status { color: var(--muted); font-size: 13px; }
 .status.stale { color: var(--warn); }
-.summary { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; color: var(--muted); font-size: 13px; }
+.summary { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 12px; color: var(--muted); font-size: 13px; }
 .summary b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 6px; }
-.pod { position: relative; height: 52px; border-radius: 6px; padding: 5px 6px; font-size: 11px; line-height: 1.25; overflow: hidden; border: 2px solid transparent; }
-.pod .ws { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; border: 2px solid transparent; }
+.empty { padding: 18px; text-align: center; color: var(--muted); }
+.note { color: var(--muted); font-size: 12px; margin-top: 16px; max-width: 80ch; }
+.error { margin-top: 14px; padding: 10px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); display: none; }
+.short { color: var(--short); }
+.over { color: var(--over); }
+.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--warn-bg); color: var(--warn); margin-left: 6px; font-weight: 500; }
+
+/* Pods */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 6px; }
+.pod { height: 54px; border-radius: 6px; padding: 5px 7px; font-size: 11px; line-height: 1.3; overflow: hidden; border: 2px solid transparent; transition: opacity .15s; }
+.pod .ws { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pod .sub { opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pod.hold { background: var(--panel) !important; border-style: dashed; }
 .pod.idle { background: var(--track); color: var(--muted); }
 .pod.resetting { background: repeating-linear-gradient(135deg, var(--track) 0 6px, var(--panel) 6px 12px); color: var(--muted); border-color: var(--line); }
 .pod.lost { background: var(--danger-bg); color: var(--short); }
-.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 12px; color: var(--muted); font-size: 12px; }
-.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; border: 2px solid transparent; }
-.rows { display: grid; gap: 2px; }
-.row { display: grid; grid-template-columns: minmax(110px, 180px) minmax(0, 1fr) minmax(150px, 220px); gap: 14px; align-items: center; padding: 8px 4px; border-bottom: 1px solid var(--line); }
-.row:last-child { border-bottom: 0; }
-.wsname { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wsname i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; }
-.wssub { color: var(--muted); font-size: 12px; }
-.track { position: relative; height: 16px; background: var(--track); border-radius: 3px; }
-.track .seg { position: absolute; top: 0; bottom: 0; }
-.track .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--target); }
-.track .gmark { position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 2px dotted var(--muted); }
-.verdict { font-size: 13px; font-variant-numeric: tabular-nums; }
-.verdict .what { font-weight: 600; }
-.verdict .why { color: var(--muted); font-size: 12px; }
-.short { color: var(--short); }
-.over { color: var(--over); }
-.tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; background: var(--warn-bg); color: var(--warn); margin-left: 6px; font-weight: 500; }
-.empty { padding: 18px; text-align: center; color: var(--muted); }
-.note { color: var(--muted); font-size: 12px; margin-top: 12px; max-width: 75ch; }
-.error { margin-top: 14px; padding: 10px 12px; border-radius: 6px; background: var(--warn-bg); color: var(--warn); display: none; }
-@media (max-width: 640px) {
-	.row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.grid.focus .pod:not(.lit) { opacity: .25; }
+
+/* Workspaces */
+.toolbar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.toolbar label { color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; }
+.tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th.num, td.num { text-align: right; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 13px; }
+tr.ws { cursor: pointer; }
+tr.ws:hover, tr.ws.lit { background: var(--hover); }
+tr.ws.needs td:first-child { box-shadow: inset 3px 0 0 var(--short); }
+tr.detail > td { background: var(--bg); padding: 12px 14px 14px 36px; }
+tr:last-child > td { border-bottom: 0; }
+.caret { display: inline-block; width: 12px; color: var(--muted); transition: transform .15s; }
+tr.open .caret { transform: rotate(90deg); }
+.wsname { font-weight: 600; white-space: nowrap; }
+.wsname i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+.wssub { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.zero { color: var(--muted); opacity: .6; }
+.slots { display: flex; flex-wrap: wrap; gap: 3px; max-width: 220px; }
+.slot { width: 14px; height: 14px; border-radius: 3px; border: 2px solid transparent; }
+.slot.free { border: 2px dashed var(--line); background: transparent; }
+.slot.extra { outline: 2px solid var(--over); outline-offset: 1px; }
+.state { white-space: nowrap; font-weight: 500; }
+.podcell { display: flex; align-items: center; gap: 8px; }
+.ratio { white-space: nowrap; color: var(--muted); font-size: 12px; }
+.hidden-note { padding: 10px; text-align: center; color: var(--muted); font-size: 13px; }
+.hidden-note button { font: inherit; color: inherit; text-decoration: underline; background: none; border: 0; cursor: pointer; padding: 0; }
+
+/* Task lists */
+.cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.col h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 6px; }
+.col h3 b { color: var(--text); }
+.tasks { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tasks li { padding: 5px 8px; border-radius: 5px; background: var(--panel); font-size: 12px; line-height: 1.35; }
+.tasks .tid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+.tasks .det { color: var(--muted); }
+.tasks li.starting { border-left: 3px solid var(--muted); }
+.tasks li.failed .det { color: var(--short); }
+.tasks .none, .tasks .more { color: var(--muted); background: transparent; padding-left: 0; }
+.settings { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+@media (max-width: 760px) {
+	.cols { grid-template-columns: minmax(0, 1fr); }
+	tr.detail > td { padding-left: 14px; }
+	.slots { display: none; }
+	.wssub { display: none; }
+	td, th { padding-left: 6px; padding-right: 6px; }
 }
 </style>
 </head>
@@ -91,49 +131,87 @@ h2 { font-size: 15px; font-weight: 600; margin: 28px 0 4px; }
 	<div class="summary" id="summary"></div>
 
 	<h2>Pods</h2>
-	<p class="lead">What every pod is doing now. Hover a pod for its tasks and hold.</p>
+	<p class="lead">What every pod is doing now. Hover a pod for its tasks; hover a workspace below to find its pods.</p>
 	<div class="panel">
 		<div class="grid" id="grid"></div>
-		<div class="legend" id="legend"></div>
-	</div>
-
-	<h2>Share of the live pods</h2>
-	<p class="lead">Each workspace's pods against the lending policy's target, the furthest short first.</p>
-	<div class="panel">
-		<div class="rows" id="rows"></div>
 		<div class="legend">
-			<span><i style="background:var(--muted)"></i>running</span>
-			<span><i style="background:var(--panel);border:2px dashed var(--muted)"></i>holding</span>
-			<span><i style="width:2px;background:var(--target);border:0"></i>target</span>
-			<span><i style="width:0;border:0;border-left:2px dotted var(--muted);border-radius:0"></i>guarantee</span>
+			<span><i style="background:var(--neutral)"></i>running tasks</span>
+			<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>in hold</span>
+			<span><i style="background:var(--track)"></i>free</span>
+			<span><i style="background:repeating-linear-gradient(135deg, var(--track) 0 3px, var(--panel) 3px 6px);border-color:var(--line)"></i>resetting</span>
+			<span><i style="background:var(--danger-bg)"></i>lost</span>
 		</div>
 	</div>
+
+	<h2>Workspaces</h2>
+	<div class="toolbar">
+		<p class="lead" style="margin:0">Those waiting for a pod first, then the busy ones. Click a workspace for its tasks.</p>
+		<label><input type="checkbox" id="showIdle"> show idle workspaces</label>
+	</div>
+	<div class="tablewrap">
+		<table>
+			<thead>
+				<tr>
+					<th>Workspace</th>
+					<th>Status</th>
+					<th title="pods it occupies / its fair share">Pods / share</th>
+					<th class="num">Waiting</th>
+					<th class="num">Running</th>
+					<th class="num" title="ended in the last 15 minutes">Ended 15m</th>
+				</tr>
+			</thead>
+			<tbody id="rows"></tbody>
+		</table>
+	</div>
+	<div class="legend">
+		<span><i style="background:var(--track);border-color:var(--neutral)"></i>pod running its tasks</span>
+		<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>pod in hold (kept for the next task of the same issue)</span>
+		<span><i style="background:transparent;border:2px dashed var(--line)"></i>share not in use</span>
+		<span><i style="background:var(--track);border-color:var(--neutral);outline:2px solid var(--over);outline-offset:1px"></i>beyond its share</span>
+	</div>
+
 	<p class="note">
-		The target splits the live pods for the work there is now: each workspace's guarantee first, the rest by weight, never more than its pods in use plus its queued tasks.
-		A workspace under its target with tasks queued is waiting for a pod; one under its target with nothing queued only has its guarantee kept.
-		Running tasks are never stopped to rebalance, so pods follow the target as bindings end.
+		<b>Fair share</b> is how many pods a workspace should have for the work there is now: its guarantee first, then the remaining pods split by weight, never more than its running pods plus its waiting tasks.
+		A guarantee is kept by count: other workspaces may not take the pods it keeps free, whichever pods those are.
+		A workspace below its share with tasks waiting gets the next free pod. Running tasks are never stopped to rebalance; pods move as tasks end, and holds are given up first.
 		The page reads <code>/v1/dispatch</code> every 10 seconds.
 	</p>
 </main>
 <script>
 "use strict";
 const REFRESH_MS = 10000;
+const SHOW_MAX = 8;
+// Colors go only to the workspaces that occupy pods, so a pool of many
+// workspaces rarely repeats one.
 const palette = [
 	["#cfe0fb", "#1d4f9c"], ["#f8d6bd", "#7a3a10"], ["#cdebd9", "#1d5e3a"], ["#e6d4f5", "#5b2c83"],
 	["#f6cfd6", "#7d2134"], ["#cfeaee", "#1d5a63"], ["#ece6bf", "#5e5414"], ["#dcd8f7", "#3e3592"],
+	["#fbe0a8", "#6b4a00"], ["#d9e7c4", "#3d5a1a"], ["#f3d0ea", "#7a2266"], ["#d5dde6", "#33475b"],
 ];
 const darkPalette = [
 	["#22406f", "#cfe0fb"], ["#5a3218", "#f8d6bd"], ["#1f4a32", "#cdebd9"], ["#43285c", "#e6d4f5"],
 	["#5b2230", "#f6cfd6"], ["#1f4a50", "#cfeaee"], ["#4a4416", "#ece6bf"], ["#302a6b", "#dcd8f7"],
+	["#5a4410", "#fbe0a8"], ["#33461d", "#d9e7c4"], ["#5a2050", "#f3d0ea"], ["#2c3a48", "#d5dde6"],
 ];
 const dark = window.matchMedia("(prefers-color-scheme: dark)");
-let lastOK = 0, lastView = null;
+let lastOK = 0, lastView = null, focused = null;
+
+// Per-viewer conveniences, kept in the browser when it allows.
+function load(key, fallback) {
+	try { const v = localStorage.getItem(key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; }
+}
+function save(key, value) {
+	try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* not kept */ }
+}
+const open = new Set(load("dispatch.open", []));
+let showIdle = load("dispatch.showIdle", false);
 
 function el(tag, attrs, ...kids) {
 	const n = document.createElement(tag);
 	for (const [k, v] of Object.entries(attrs || {})) {
 		if (k === "class") n.className = v;
 		else if (k === "style") n.setAttribute("style", v);
+		else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
 		else n.setAttribute(k, v);
 	}
 	for (const kid of kids) n.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
@@ -141,47 +219,94 @@ function el(tag, attrs, ...kids) {
 }
 
 function label(w) { return w.slug || w.name || w.workspace_id.slice(0, 8); }
-
 function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+// shortID is the end of an ID: task IDs are time-ordered, so they share
+// their start.
+function shortID(id) { return id.length > 8 ? "…" + id.slice(-6) : id; }
+function num(n) { return n ? String(n) : el("span", { class: "zero" }, "0"); }
 
-// colors gives each workspace a color by its position in the served order,
-// which is stable between readings.
+function ago(at, now) {
+	const s = Math.max(0, Math.round((now - new Date(at)) / 1000));
+	if (s < 60) return s + "s";
+	if (s < 3600) return Math.floor(s / 60) + "m";
+	return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+}
+
+function byState(w) {
+	const out = { queued: [], starting: [], running: [], ended: [] };
+	for (const t of w.tasks || []) (out[t.state] || (out[t.state] = [])).push(t);
+	return out;
+}
+
+// colors gives a color to each workspace occupying a pod, in pod order, and
+// none to the others.
 function colors(v) {
 	const pal = dark.matches ? darkPalette : palette;
 	const out = {};
-	v.workspaces.forEach((w, i) => { out[w.workspace_id] = pal[i % pal.length]; });
+	let i = 0;
+	for (const p of v.pods) {
+		if (p.state === "leased" && p.workspace_id && !out[p.workspace_id]) out[p.workspace_id] = pal[i++ % pal.length];
+	}
 	return out;
+}
+function colorOf(col, id) { return col[id] || ["var(--track)", "var(--neutral)"]; }
+
+// standing ranks a workspace for the table and says how it stands against
+// its share, in a few words.
+function standing(w, ts) {
+	const gap = w.target_pods - w.occupied_pods;
+	const active = ts.starting.length + ts.running.length;
+	if (w.queued > 0 && gap > 0) return { rank: 0, cls: "short", text: "waiting for " + plural(gap, "pod") };
+	if (w.queued > 0 && gap < 0) return { rank: 1, cls: "over", text: "over share by " + -gap + ", tasks wait" };
+	if (w.queued > 0) return { rank: 1, cls: "", text: "at share, tasks wait" };
+	if (gap < 0) return { rank: 2, cls: "over", text: "over share by " + -gap };
+	if (active > 0 || w.occupied_pods > 0) return { rank: 2, cls: "", text: w.holding_pods === w.occupied_pods && active === 0 ? "in hold" : "running" };
+	if (gap > 0) return { rank: 3, cls: "", text: plural(gap, "pod") + " kept free", idle: true };
+	return { rank: 3, cls: "", text: ts.ended.length ? "idle, ended recently" : "idle", idle: true };
 }
 
 function renderSummary(v) {
 	const p = v.pool, t = v.totals;
-	const item = (k, val) => el("span", {}, k + " ", el("b", {}, val));
-	const live = el("span", {}, "live ", el("b", {}, p.live));
-	if (p.expected) live.append(" of " + p.expected + " expected");
-	document.getElementById("summary").replaceChildren(
-		live,
-		item("in use", t.occupied_pods),
-		item("unused", t.unoccupied_pods),
-		item("resetting", p.resetting),
-		item("lost", p.lost),
-		item("tasks running", t.leased),
-		item("tasks queued", t.queued),
-	);
+	let running = 0, holding = 0, starting = 0, short = 0;
+	for (const w of v.workspaces) {
+		running += w.running_pods; holding += w.holding_pods;
+		const ts = byState(w);
+		starting += ts.starting.length;
+		if (standing(w, ts).rank === 0) short++;
+	}
+	const item = (k, val) => el("span", {}, el("b", {}, val), " " + k);
+	const group = (title, items) => el("span", {}, el("b", {}, title + ": "), ...items.flatMap((x, i) => i ? [", ", x] : [x]));
+	const pods = [item("running tasks", running), item("in hold", holding), item("free", t.unoccupied_pods)];
+	if (p.resetting) pods.push(item("resetting", p.resetting));
+	if (p.lost) pods.push(item("lost", p.lost));
+	const tasks = [item("waiting", t.queued)];
+	if (starting) tasks.push(item("starting", starting));
+	tasks.push(item("running", t.leased));
+	const podTitle = "Pods " + p.live + (p.expected && p.expected !== p.live ? " of " + p.expected : "");
+	const wsItems = [item("served", v.workspaces.length)];
+	const waitingWs = el("span", { class: short ? "short" : "" }, el("b", { class: short ? "short" : "" }, short), " waiting for a pod");
+	wsItems.push(waitingWs);
+	document.getElementById("summary").replaceChildren(group(podTitle, pods), group("Tasks", tasks), group("Workspaces", wsItems));
 }
 
 function renderGrid(v, col) {
-	const names = {};
-	for (const w of v.workspaces) names[w.workspace_id] = label(w);
+	const names = {}, onPod = {};
+	for (const w of v.workspaces) {
+		names[w.workspace_id] = label(w);
+		for (const t of w.tasks || []) {
+			if ((t.state === "running" || t.state === "starting") && t.pod_id) (onPod[t.pod_id] = onPod[t.pod_id] || []).push(t);
+		}
+	}
 	const grid = document.getElementById("grid");
 	grid.replaceChildren();
 	if (v.pods.length === 0) {
 		grid.append(el("div", { class: "empty", style: "grid-column:1/-1" }, "No pod has registered yet."));
 	}
 	for (const p of v.pods) {
-		const c = col[p.workspace_id];
 		let cls = "pod " + p.state, style = "", ws = "", sub = "";
 		const tip = [p.name || p.id, p.state];
-		if (p.state === "leased" && c) {
+		if (p.state === "leased" && p.workspace_id) {
+			const c = colorOf(col, p.workspace_id);
 			ws = names[p.workspace_id] || p.workspace_id.slice(0, 8);
 			if (p.hold) {
 				cls += " hold";
@@ -190,81 +315,148 @@ function renderGrid(v, col) {
 				tip.push(p.kept ? "kept for the workspace until evicted" : "hold, reset in " + p.hold_remaining_seconds + "s");
 			} else {
 				style = "background:" + c[0] + ";color:" + c[1];
-				sub = plural(p.tasks, "task") + (p.capacity_slots > 1 ? " of " + p.capacity_slots : "");
+				sub = plural(p.tasks, "task");
 				tip.push(p.used_slots + " of " + p.capacity_slots + " slots");
 			}
 			tip.push(ws);
+			const tasks = onPod[p.id] || [];
+			if (tasks.length) tip.push("tasks " + tasks.map(t => shortID(t.id)).join(", "));
 			if (p.initiators) tip.push(p.initiators.join(", "));
 		} else {
 			ws = p.state === "idle" ? "free" : p.state;
-			sub = p.name || "";
 		}
-		grid.append(el("div", { class: cls, style, title: tip.join(" · ") },
-			el("div", { class: "ws" }, ws), el("div", { class: "sub" }, sub)));
+		const node = el("div", { class: cls, style, title: tip.join(" · "), "data-ws": p.workspace_id || "" },
+			el("div", { class: "ws" }, ws), el("div", { class: "sub" }, sub), el("div", { class: "sub" }, p.name || ""));
+		if (p.workspace_id) {
+			node.addEventListener("mouseenter", () => focus(p.workspace_id));
+			node.addEventListener("mouseleave", () => focus(null));
+		}
+		grid.append(node);
 	}
-	const legend = document.getElementById("legend");
-	legend.replaceChildren();
-	for (const w of v.workspaces) {
-		const c = col[w.workspace_id];
-		legend.append(el("span", {}, el("i", { style: "background:" + c[0] }), label(w)));
-	}
-	legend.append(
-		el("span", {}, el("i", { style: "background:var(--panel);border:2px dashed var(--muted)" }), "holding"),
-		el("span", {}, el("i", { style: "background:var(--track)" }), "free"),
-		el("span", {}, el("i", { style: "background:var(--track);border-color:var(--line)" }), "resetting"),
-		el("span", {}, el("i", { style: "background:var(--danger-bg)" }), "lost"),
-	);
 }
 
-// verdict says how a workspace stands against its target, and why.
-function verdict(w) {
-	const gap = w.target_pods - w.occupied_pods;
-	if (gap > 0 && w.queued > 0) {
-		return { cls: "short", what: "short " + gap, why: plural(w.queued, "task") + " waiting for a pod" };
+// focus lights one workspace's pods and row, or clears it.
+function focus(id) {
+	focused = id;
+	const grid = document.getElementById("grid");
+	grid.classList.toggle("focus", !!id);
+	for (const n of grid.children) n.classList.toggle("lit", !!id && n.dataset.ws === id);
+	for (const r of document.querySelectorAll("tr.ws")) r.classList.toggle("lit", !!id && r.dataset.ws === id);
+}
+
+function slots(w, c) {
+	const box = el("div", { class: "slots" });
+	const n = Math.max(w.target_pods, w.occupied_pods);
+	for (let i = 0; i < n; i++) {
+		let cls = "slot", style = "";
+		if (i < w.running_pods) style = "background:" + c[0] + ";border-color:" + c[1];
+		else if (i < w.occupied_pods) style = "background:var(--panel);border:2px dashed " + c[1];
+		else cls += " free";
+		if (i >= w.target_pods) cls += " extra";
+		box.append(el("div", { class: cls, style }));
 	}
-	if (gap > 0) {
-		return { cls: "", what: "kept " + gap, why: "guarantee kept free; nothing queued" };
-	}
-	if (gap < 0) {
-		return { cls: "over", what: "over " + (-gap), why: w.holding_pods > 0 ? plural(w.holding_pods, "hold") + " go first if needed" : "gives pods back as its tasks end" };
-	}
-	return { cls: "", what: "at target", why: w.queued > 0 ? plural(w.queued, "task") + " queued" : "" };
+	if (n === 0) box.append(el("span", { class: "zero" }, "—"));
+	return box;
+}
+
+function taskList(items, render, empty) {
+	const ul = el("ul", { class: "tasks" });
+	if (items.length === 0) ul.append(el("li", { class: "none" }, empty));
+	for (const t of items.slice(0, SHOW_MAX)) ul.append(render(t));
+	if (items.length > SHOW_MAX) ul.append(el("li", { class: "more" }, "and " + (items.length - SHOW_MAX) + " more"));
+	return ul;
+}
+
+function taskItem(t, cls, detail) {
+	return el("li", { class: cls, title: t.id }, el("span", { class: "tid" }, shortID(t.id)), " ", el("span", { class: "det" }, detail));
+}
+
+function podName(t) { return t.pod_name || (t.pod_id ? shortID(t.pod_id) : ""); }
+
+function settingsText(w) {
+	const g = w.guarantee === w.guarantee_in_effect ? w.guarantee : w.guarantee_in_effect + " (of " + w.guarantee + " configured)";
+	return "guarantee " + g + " · weight " + w.weight + (w.quota ? " · quota " + w.quota + " tasks" : " · no quota");
+}
+
+function detail(w, ts, now) {
+	const active = [...ts.starting, ...ts.running];
+	return el("div", {},
+		el("div", { class: "settings" }, "Fair share " + plural(w.target_pods, "pod") + " · " + settingsText(w)),
+		el("div", { class: "cols" },
+			el("div", { class: "col" }, el("h3", {}, "Waiting in Multica ", el("b", {}, ts.queued.length)),
+				taskList(ts.queued, t => taskItem(t, "", "waiting " + ago(t.since, now) + (t.priority ? " · priority " + t.priority : "")), "nothing waiting")),
+			el("div", { class: "col" }, el("h3", {}, "Running ", el("b", {}, active.length)),
+				taskList(active, t => t.state === "starting"
+					? taskItem(t, "starting", "claimed " + ago(t.since, now) + " ago, " + (podName(t) ? "starting on " + podName(t) : "waiting for a pod"))
+					: taskItem(t, "", "on " + podName(t) + " for " + ago(t.since, now) + (t.initiator ? " · " + t.initiator : "")), "nothing running")),
+			el("div", { class: "col" }, el("h3", {}, "Ended, last 15 min ", el("b", {}, ts.ended.length)),
+				taskList(ts.ended, t => {
+					const reason = t.end_reason || "ended";
+					const ok = /complete/.test(reason) && !/fail/.test(reason);
+					const ran = t.started_at ? " · ran " + ago(t.started_at, new Date(t.since)) : "";
+					return taskItem(t, ok ? "" : "failed", reason.replace(/^pod reported /, "") + " " + ago(t.since, now) + " ago" + ran + (podName(t) ? " on " + podName(t) : ""));
+				}, "none")),
+		));
 }
 
 function renderRows(v, col) {
-	const rows = document.getElementById("rows");
-	rows.replaceChildren();
+	const tbody = document.getElementById("rows");
+	tbody.replaceChildren();
 	if (v.workspaces.length === 0) {
-		rows.append(el("div", { class: "empty" }, "No workspace is served yet."));
+		tbody.append(el("tr", {}, el("td", { colspan: 6, class: "empty" }, "No workspace is served yet.")));
 		return;
 	}
-	const sorted = [...v.workspaces].sort((a, b) => {
-		const ga = (a.target_pods - a.occupied_pods) * (a.queued > 0 ? 2 : 1);
-		const gb = (b.target_pods - b.occupied_pods) * (b.queued > 0 ? 2 : 1);
-		return gb - ga || label(a).localeCompare(label(b));
+	const now = new Date(v.at);
+	const rows = v.workspaces.map(w => {
+		const ts = byState(w);
+		return { w, ts, st: standing(w, ts) };
 	});
-	const scale = Math.max(...v.workspaces.map(w => Math.max(w.target_pods, w.occupied_pods, w.guarantee_in_effect)), 1);
-	const pct = n => (100 * n / scale) + "%";
-	for (const w of sorted) {
-		const c = col[w.workspace_id];
-		const name = el("div", { class: "wsname" }, el("i", { style: "background:" + c[0] }), label(w));
+	rows.sort((a, b) => a.st.rank - b.st.rank || b.w.queued - a.w.queued || b.w.occupied_pods - a.w.occupied_pods || label(a.w).localeCompare(label(b.w)));
+	let hidden = 0;
+	for (const { w, ts, st } of rows) {
+		if (st.idle && !showIdle && !open.has(w.workspace_id)) {
+			hidden++;
+			continue;
+		}
+		const c = colorOf(col, w.workspace_id);
+		const isOpen = open.has(w.workspace_id);
+		const name = el("div", { class: "wsname" }, el("span", { class: "caret" }, "▸"), el("i", { style: "background:" + c[0] + ";box-shadow:inset 0 0 0 1px " + c[1] }), label(w));
 		if (w.draining) name.append(el("span", { class: "tag" }, "draining"));
-		const g = w.guarantee === w.guarantee_in_effect ? w.guarantee : w.guarantee_in_effect + " of " + w.guarantee;
-		const settings = el("div", { class: "wssub" }, "guarantee " + g + " · weight " + w.weight + (w.quota ? " · quota " + w.quota + " tasks" : ""));
-		const track = el("div", { class: "track", title: w.occupied_pods + " in use, target " + w.target_pods });
-		if (w.running_pods > 0) track.append(el("div", { class: "seg", style: "left:0;width:" + pct(w.running_pods) + ";background:" + c[1] + ";border-radius:3px 0 0 3px" }));
-		if (w.holding_pods > 0) track.append(el("div", { class: "seg", style: "left:" + pct(w.running_pods) + ";width:" + pct(w.holding_pods) + ";background:var(--panel);border:2px dashed " + c[1] }));
-		if (w.guarantee_in_effect > 0) track.append(el("div", { class: "gmark", style: "left:" + pct(w.guarantee_in_effect) }));
-		track.append(el("div", { class: "mark", style: "left:calc(" + pct(w.target_pods) + " - 1px)" }));
-		const vd = verdict(w);
-		rows.append(el("div", { class: "row" },
-			el("div", {}, name, settings),
-			track,
-			el("div", { class: "verdict" },
-				el("div", {}, el("span", { class: "what " + vd.cls }, vd.what), " · " + w.occupied_pods + " of " + w.target_pods + " pods"),
-				el("div", { class: "why" }, vd.why)),
-		));
+		const tr = el("tr", { class: "ws" + (isOpen ? " open" : "") + (st.rank === 0 ? " needs" : ""), "data-ws": w.workspace_id },
+			el("td", {}, name, el("div", { class: "wssub" }, settingsText(w))),
+			el("td", { class: "state " + st.cls }, st.text),
+			el("td", {}, el("div", { class: "podcell" }, slots(w, c), el("span", { class: "ratio" }, w.occupied_pods + " / " + w.target_pods))),
+			el("td", { class: "num" + (st.rank === 0 ? " short" : "") }, num(ts.queued.length)),
+			el("td", { class: "num" }, num(ts.starting.length + ts.running.length)),
+			el("td", { class: "num" }, num(ts.ended.length)),
+		);
+		tr.addEventListener("click", () => {
+			if (open.has(w.workspace_id)) open.delete(w.workspace_id); else open.add(w.workspace_id);
+			save("dispatch.open", [...open]);
+			if (lastView) render(lastView);
+		});
+		tr.addEventListener("mouseenter", () => focus(w.workspace_id));
+		tr.addEventListener("mouseleave", () => focus(null));
+		tbody.append(tr);
+		if (isOpen) {
+			const dr = el("tr", { class: "detail" }, el("td", { colspan: 6 }, detail(w, ts, now)));
+			dr.addEventListener("mouseenter", () => focus(w.workspace_id));
+			dr.addEventListener("mouseleave", () => focus(null));
+			tbody.append(dr);
+		}
 	}
+	if (hidden) {
+		tbody.append(el("tr", {}, el("td", { colspan: 6, class: "hidden-note" },
+			plural(hidden, "idle workspace") + " hidden · ",
+			el("button", { onclick: () => setShowIdle(true) }, "show"))));
+	}
+}
+
+function setShowIdle(on) {
+	showIdle = on;
+	document.getElementById("showIdle").checked = on;
+	save("dispatch.showIdle", on);
+	if (lastView) render(lastView);
 }
 
 function render(v) {
@@ -272,6 +464,7 @@ function render(v) {
 	renderSummary(v);
 	renderGrid(v, col);
 	renderRows(v, col);
+	focus(focused);
 }
 
 async function refresh() {
@@ -295,6 +488,8 @@ async function refresh() {
 	}
 }
 
+document.getElementById("showIdle").checked = showIdle;
+document.getElementById("showIdle").addEventListener("change", e => setShowIdle(e.target.checked));
 dark.addEventListener("change", () => { if (lastView) render(lastView); });
 refresh();
 setInterval(refresh, REFRESH_MS);

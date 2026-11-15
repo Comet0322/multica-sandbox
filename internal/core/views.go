@@ -1,6 +1,8 @@
 package core
 
 import (
+	"cmp"
+	"slices"
 	"time"
 
 	"sandbox-manager/internal/lending"
@@ -42,6 +44,21 @@ type View struct {
 	LivePods int
 	// OldestLease is when the oldest active lease started, zero with none.
 	OldestLease time.Time
+	// Queued are each tenant's tasks waiting upstream, in claim order; a
+	// tenant whose pending list is unknown has none.
+	Queued map[string][]lending.Pending
+	// Claimed are the tasks claimed upstream that no pod has picked up yet,
+	// oldest first.
+	Claimed []ClaimedView
+}
+
+// ClaimedView is a task claimed upstream that no pod has picked up yet.
+type ClaimedView struct {
+	ID, Tenant string
+	// PodID is the pod it was placed on, empty until the policy placed it.
+	PodID     string
+	Email     string
+	ClaimedAt time.Time
 }
 
 // View lets time pass first, so a hand-back it causes shows, and reports the
@@ -51,7 +68,8 @@ func (c *Core) View() View {
 	live := c.livePods()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v := View{Pods: map[string]PodView{}, Shares: c.policy.Shares(), LivePods: live}
+	v := View{Pods: map[string]PodView{}, Shares: c.policy.Shares(), LivePods: live, Queued: map[string][]lending.Pending{}}
+	placed := map[string]string{}
 	for id, pd := range c.held {
 		pv := PodView{Held: true, Initiators: initiatorsOf(pd)}
 		if l := firstLease(pd); l != nil {
@@ -62,9 +80,24 @@ func (c *Core) View() View {
 		}
 		pv.Busy = pv.Binding != nil || len(pd.leases) > 0 || len(pd.queue) > 0
 		v.Pods[id] = pv
+		for _, t := range pd.queue {
+			placed[t.task.ID] = id
+			v.Claimed = append(v.Claimed, ClaimedView{ID: t.task.ID, Tenant: t.task.Tenant, PodID: id, Email: t.task.Email, ClaimedAt: t.claimedAt})
+		}
 	}
+	for id, t := range c.claimed {
+		if _, ok := placed[id]; !ok {
+			v.Claimed = append(v.Claimed, ClaimedView{ID: id, Tenant: t.task.Tenant, Email: t.task.Email, ClaimedAt: t.claimedAt})
+		}
+	}
+	slices.SortFunc(v.Claimed, func(a, b ClaimedView) int {
+		return cmp.Or(a.ClaimedAt.Compare(b.ClaimedAt), cmp.Compare(a.ID, b.ID))
+	})
 	for id, rec := range c.tenants {
 		v.Tenants = append(v.Tenants, TenantView{ID: id, Leased: c.leasedLocked(id), Busy: c.tenantBusyLocked(id), Draining: rec.removed})
+		if q := c.policy.Queued(id); len(q) > 0 {
+			v.Queued[id] = q
+		}
 	}
 	for _, l := range c.leases {
 		if v.OldestLease.IsZero() || l.StartedAt.Before(v.OldestLease) {

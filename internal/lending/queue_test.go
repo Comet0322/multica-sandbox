@@ -1,6 +1,7 @@
 package lending_test
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -164,4 +165,27 @@ func TestGlobalQueue(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestQueuedListsATenantsWaitingTasksInClaimOrder(t *testing.T) {
+	p, err := lending.New(lending.Config{Capacity: lending.Resources{Slots: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.Queued("ws"); got != nil {
+		t.Fatalf("an unknown list: %v", got)
+	}
+	p.PendingChanged("ws", []lending.Pending{
+		queued("old-low", 1, 0),
+		queued("new-high", 2, time.Minute),
+		{ID: "taken", Priority: 3, CreatedAt: t0, Status: "dispatched"},
+		queued("new-low", 1, time.Minute),
+	})
+	var ids []string
+	for _, q := range p.Queued("ws") {
+		ids = append(ids, q.ID)
+	}
+	if want := []string{"new-high", "old-low", "new-low"}; !slices.Equal(ids, want) {
+		t.Fatalf("queued %v, want %v", ids, want)
+	}
 }

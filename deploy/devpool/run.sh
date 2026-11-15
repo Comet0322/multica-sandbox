@@ -15,6 +15,8 @@
 #   DEVPOOL_CAPACITY   slots per pod: tasks of one key running at once (3)
 #   DEVPOOL_ARGS       extra sandbox-devpool flags, e.g. "-task-max 3m"
 #   DEVPOOL_OVERRIDES  the overrides file's content (see below)
+#   DEVPOOL_WORKSPACES workspaces (3): beyond acme, beta and gamma come ws-04,
+#                      ws-05, ... with default settings and random bursts
 #   KEEP=1             leave the backend running; tear it down later with
 #                      "deploy/devpool/run.sh down"
 set -euo pipefail
@@ -37,9 +39,14 @@ overrides=${DEVPOOL_OVERRIDES:-"acme: {weight: 2, placement: person}
 beta: {guarantee: 1, placement: workspace}
 gamma: {guarantee: 2}"}
 
+slugs=(acme beta gamma)
+for n in $(seq 4 "${DEVPOOL_WORKSPACES:-3}"); do
+	slugs+=("$(printf 'ws-%02d' "$n")")
+done
+
 start_backend
-step "bot account in three workspaces"
-bot_account acme beta gamma
+step "bot account in ${#slugs[@]} workspaces"
+bot_account "${slugs[@]}"
 printf '%s\n' "$overrides" >"$state/overrides/overrides.yaml"
 echo "overrides:"
 sed 's/^/  /' "$state/overrides/overrides.yaml"
@@ -64,7 +71,7 @@ echo "dispatch page: http://127.0.0.1:8791/dispatch"
 
 step "one agent per workspace"
 declare -A agent
-for i in 0 1 2; do
+for i in "${!slugs[@]}"; do
 	ws=${workspaces[$i]}
 	rt=$(claude_runtime)
 	agent[$i]=$(make_agent "devpool-agent" "$rt")
@@ -92,11 +99,18 @@ follow_up() {
 
 step "load (Ctrl-C to stop)"
 echo "acme: a burst of 8 every 3 minutes, sharing pods; beta: a new issue, then a follow-up on it, every 20 seconds each; gamma: 2 every 4 minutes"
+[ "${#slugs[@]}" -gt 3 ] && echo "ws-04 and on: each tick, one in eight opens 1 to 4 issues"
 tick=0
 while :; do
 	[ $((tick % 9)) -eq 0 ] && open 8 0 && echo "$(date +%T) acme +8"
 	if [ $((tick % 2)) -eq 0 ]; then open 1 1; else follow_up 1; fi
 	[ $((tick % 12)) -eq 6 ] && open 2 2 && echo "$(date +%T) gamma +2"
+	for i in $(seq 3 $((${#slugs[@]} - 1))); do
+		if [ $((RANDOM % 8)) -eq 0 ]; then
+			k=$((RANDOM % 4 + 1))
+			open "$k" "$i" && echo "$(date +%T) ${slugs[$i]} +$k"
+		fi
+	done
 	tick=$((tick + 1))
 	# Sleep in the background so a signal ends the script (and its cleanup)
 	# at once, not after the sleep.

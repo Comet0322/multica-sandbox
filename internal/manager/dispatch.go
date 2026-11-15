@@ -82,6 +82,48 @@ type DispatchWorkspace struct {
 	// Leased counts its running tasks; Queued its tasks waiting upstream.
 	Leased int `json:"leased"`
 	Queued int `json:"queued"`
+	// Tasks are its tasks: those waiting upstream in the order they will be
+	// claimed, those claimed and not yet picked up by their pod, those
+	// running, and the last few ended (see DispatchRecent).
+	Tasks []DispatchTask `json:"tasks"`
+}
+
+// Task states in the dispatch view.
+const (
+	// TaskQueued waits upstream for a pod.
+	TaskQueued = "queued"
+	// TaskStarting is claimed and waits for its pod's daemon to pick it up.
+	TaskStarting = "starting"
+	// TaskRunning runs on a pod.
+	TaskRunning = "running"
+	// TaskEnded ended within DispatchRecent.
+	TaskEnded = "ended"
+)
+
+// DispatchRecent is how long an ended task stays in the dispatch view, and
+// DispatchRecentMax how many ended tasks a workspace shows at most.
+const (
+	DispatchRecent    = 15 * time.Minute
+	DispatchRecentMax = 8
+)
+
+// DispatchTask is one task of a workspace.
+type DispatchTask struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+	// Priority is the server's priority, for a queued task.
+	Priority int `json:"priority,omitempty"`
+	// Since is when it entered its state: created upstream, claimed,
+	// started, or ended.
+	Since time.Time `json:"since"`
+	// StartedAt is when an ended task started.
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	// PodID and PodName are its pod, once it has one.
+	PodID     string `json:"pod_id,omitempty"`
+	PodName   string `json:"pod_name,omitempty"`
+	Initiator string `json:"initiator,omitempty"`
+	// EndReason is why an ended task ended.
+	EndReason string `json:"end_reason,omitempty"`
 }
 
 // DispatchTotals add up the workspaces' shares.
@@ -97,11 +139,44 @@ type DispatchTotals struct {
 
 // Dispatch reports the pool's sharing now.
 func (m *Manager) Dispatch() DispatchView {
-	return dispatchView(m.Inventory(), m.clock.Now())
+	view := m.core.View()
+	now := m.clock.Now()
+	tasks := map[string][]DispatchTask{}
+	for tenant, queued := range view.Queued {
+		for _, q := range queued {
+			tasks[tenant] = append(tasks[tenant], DispatchTask{ID: q.ID, State: TaskQueued, Priority: q.Priority, Since: q.CreatedAt.UTC()})
+		}
+	}
+	for _, c := range view.Claimed {
+		tasks[c.Tenant] = append(tasks[c.Tenant], DispatchTask{ID: c.ID, State: TaskStarting, Since: c.ClaimedAt.UTC(), PodID: c.PodID, Initiator: c.Email})
+	}
+	leases := m.core.Leases()
+	ended := map[string][]DispatchTask{}
+	for _, l := range leases {
+		if l.EndedAt == nil {
+			tasks[l.WorkspaceID] = append(tasks[l.WorkspaceID], DispatchTask{ID: l.TaskID, State: TaskRunning, Since: l.StartedAt.UTC(), PodID: l.PodID, Initiator: l.Initiator})
+		}
+	}
+	for i := len(leases) - 1; i >= 0; i-- {
+		l := leases[i]
+		if l.EndedAt == nil || now.Sub(*l.EndedAt) > DispatchRecent || len(ended[l.WorkspaceID]) >= DispatchRecentMax {
+			continue
+		}
+		started := l.StartedAt.UTC()
+		ended[l.WorkspaceID] = append(ended[l.WorkspaceID], DispatchTask{ID: l.TaskID, State: TaskEnded, Since: l.EndedAt.UTC(), StartedAt: &started, PodID: l.PodID, Initiator: l.Initiator, EndReason: l.EndReason})
+	}
+	for ws, e := range ended {
+		tasks[ws] = append(tasks[ws], e...)
+	}
+	return dispatchView(m.Inventory(), tasks, now)
 }
 
 // dispatchView reads the sharing out of an inventory.
-func dispatchView(inv Inventory, now time.Time) DispatchView {
+func dispatchView(inv Inventory, tasks map[string][]DispatchTask, now time.Time) DispatchView {
+	names := map[string]string{}
+	for _, pd := range inv.Pods {
+		names[pd.ID] = pd.Name
+	}
 	v := DispatchView{
 		At: now.UTC(),
 		Pool: DispatchPool{
@@ -126,6 +201,13 @@ func dispatchView(inv Inventory, now time.Time) DispatchView {
 			Guarantee: ws.Guarantee, GuaranteeInEffect: ws.GuaranteeInEffect, Weight: ws.Weight, Quota: ws.Quota,
 			TargetPods: ws.TargetPods, OccupiedPods: ws.OccupiedPods, HoldingPods: ws.HoldingPods,
 			RunningPods: max(ws.OccupiedPods-ws.HoldingPods, 0), Leased: ws.Leased, Queued: ws.Queued,
+			Tasks: []DispatchTask{},
+		}
+		for _, t := range tasks[ws.WorkspaceID] {
+			if t.PodID != "" {
+				t.PodName = names[t.PodID]
+			}
+			w.Tasks = append(w.Tasks, t)
 		}
 		v.Workspaces = append(v.Workspaces, w)
 		v.Totals.GuaranteeInEffect += w.GuaranteeInEffect

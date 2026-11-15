@@ -79,3 +79,31 @@ func TestDispatchPageReadsTheViewItself(t *testing.T) {
 		t.Fatal("the page must read /v1/dispatch every 10 seconds")
 	}
 }
+
+func TestDispatchViewListsEachWorkspacesTasks(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 2)
+	first := h.newPod("pool-0")
+	leaseOne(t, h, first, "t1")
+	if code := first.report("t1", "complete"); code != http.StatusOK {
+		t.Fatalf("complete: %d", code)
+	}
+	leaseOne(t, h, h.newPod("pool-1"), "t2")
+	h.upstream.enqueue("t3")
+	h.dispatch()
+
+	v := h.dispatchView()
+	states := map[string]manager.DispatchTask{}
+	for _, task := range v.Workspaces[0].Tasks {
+		states[task.ID] = task
+	}
+	if s := states["t1"]; s.State != manager.TaskEnded || s.EndReason == "" || s.StartedAt == nil || s.PodName != "pool-0" {
+		t.Fatalf("t1 %+v, want ended on pool-0 with its reason", s)
+	}
+	if s := states["t2"]; s.State != manager.TaskRunning || s.PodName != "pool-1" {
+		t.Fatalf("t2 %+v, want running on pool-1", s)
+	}
+	if s := states["t3"]; s.State == "" || s.State == manager.TaskEnded {
+		t.Fatalf("t3 %+v, want it waiting or under way", s)
+	}
+}

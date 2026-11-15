@@ -320,3 +320,24 @@ func (p *Policy) ClaimReturned(id ReservationID, t *Task, failed bool) []Decisio
 	}
 	return []Decision{p.open(r.pod, ts)}
 }
+
+// Queued lists a tenant's queued tasks not claimed yet, in the order the
+// server would hand them out: priority, then age. Nil when its pending list is
+// unknown.
+func (p *Policy) Queued(tenant string) []Pending {
+	l := p.pending[tenant]
+	if l == nil {
+		return nil
+	}
+	out := slices.Clone(l.queued)
+	slices.SortFunc(out, func(a, b Pending) int {
+		if c := cmp.Compare(b.Priority, a.Priority); c != 0 {
+			return c
+		}
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return out
+}
