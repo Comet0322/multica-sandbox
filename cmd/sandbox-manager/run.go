@@ -235,6 +235,11 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	}
 	defer adminLn.Close()
 
+	// The pods a previous run left are taken over before anything is
+	// claimed or orphans are recovered.
+	if err := m.Restore(ctx); err != nil {
+		return fmt.Errorf("take over the pods a previous run left: %w", err)
+	}
 	// The first listing must work: a wrong token or server address stops the
 	// manager now instead of leaving it serving nothing.
 	if _, err := m.Sync(ctx); err != nil {

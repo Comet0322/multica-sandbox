@@ -1,8 +1,9 @@
 # Stands in for the operator's own credentials at the company, with only the
-# rights known for certain there: creating, deleting and watching pods in the
-# namespace, which is also all the manager needs. Whether the operator may
-# create service accounts, roles or anything else is not known, so this
-# account may not. up.sh writes a kubeconfig for it, which the manager uses.
+# rights the manager needs on pods in the namespace: creating, deleting and
+# watching them, and patching them to record what each serves, which a
+# restarted manager rebuilds from. Whether the operator may create service
+# accounts, roles or anything else is not known, so this account may not.
+# up.sh writes a kubeconfig for it, which the manager uses.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -23,7 +24,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "delete", "get", "list", "watch"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

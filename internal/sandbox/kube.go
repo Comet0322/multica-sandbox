@@ -192,6 +192,12 @@ type KubeService struct {
 	// run is the context of Run, used for the API calls it starts; nil
 	// before Run.
 	run context.Context
+	// restored is set once Restore took over the pods a previous run left.
+	restored bool
+	// dirty are the held pods whose record changed and is not written yet;
+	// kick wakes the loop that writes them.
+	dirty map[PodID]bool
+	kick  chan struct{}
 }
 
 type kubePod struct {
@@ -200,11 +206,16 @@ type kubePod struct {
 	seq       uint64
 	state     PodState
 	createdAt time.Time
-	readyAt   time.Time
-	lastSeen  time.Time
-	lostAt    time.Time
+	// startBy is when the start timeout began: the creation, or the
+	// restore of a pod a previous run left.
+	startBy  time.Time
+	readyAt  time.Time
+	lastSeen time.Time
+	lostAt   time.Time
 	// waiting is why the pod is not running yet, from its status.
 	waiting string
+	// record is what the pod serves, as last recorded (see Record).
+	record PodRecord
 }
 
 // NewKube returns a sandbox service with no pods. Run starts it.
@@ -212,7 +223,8 @@ func NewKube(cfg KubeConfig) (*KubeService, error) {
 	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
-	return &KubeService{cfg: cfg, log: cfg.Log, pods: map[PodID]*kubePod{}, tokens: map[string]PodID{}}, nil
+	return &KubeService{cfg: cfg, log: cfg.Log, pods: map[PodID]*kubePod{}, tokens: map[string]PodID{},
+		dirty: map[PodID]bool{}, kick: make(chan struct{}, 1)}, nil
 }
 
 func (k *KubeService) now() time.Time { return k.cfg.Now() }
@@ -231,14 +243,23 @@ func (k *KubeService) unlock() {
 
 func (k *KubeService) selector() string { return ManagedByLabel + "=" + ManagedByValue }
 
-// Run deletes the pods a previous run left, then watches the pods, times out
-// the ones that do not start, and keeps the warm pods, until ctx ends.
+// Run watches the pods, times out the ones that do not start, keeps the warm
+// pods and writes the pods' records, until ctx ends. Without a Restore
+// before it, it restores the pods a previous run left itself and deletes
+// those that served anyone, which no caller holds.
 func (k *KubeService) Run(ctx context.Context) {
 	k.mu.Lock()
 	k.run = ctx
+	restored := k.restored
 	k.mu.Unlock()
-	k.deleteLeftovers(ctx)
+	if !restored {
+		served, _ := k.Restore(ctx)
+		for _, r := range served {
+			_ = k.Delete(ctx, r.ID, AuditLabel{Reason: "left by a previous run"})
+		}
+	}
 	go k.watchLoop(ctx)
+	go k.recordLoop(ctx)
 	t := time.NewTicker(k.cfg.TickInterval)
 	defer t.Stop()
 	resync := time.NewTicker(resyncInterval)
@@ -256,22 +277,6 @@ func (k *KubeService) Run(ctx context.Context) {
 	}
 }
 
-// deleteLeftovers deletes every pod of ours a previous run created: what ran
-// on them is not known.
-func (k *KubeService) deleteLeftovers(ctx context.Context) {
-	c, cancel := context.WithTimeout(ctx, apiTimeout)
-	defer cancel()
-	list, err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).List(c, metav1.ListOptions{LabelSelector: k.selector()})
-	if err != nil {
-		k.failed("list the pods", err)
-		return
-	}
-	for _, pd := range list.Items {
-		k.log.Info("deleting a pod a previous run left", "pod", pd.Name)
-		k.deleteAPI(ctx, pd.Name)
-	}
-}
-
 func (k *KubeService) tick() {
 	k.mu.Lock()
 	defer k.unlock()
@@ -285,7 +290,7 @@ func (k *KubeService) sweepLocked() {
 	now := k.now()
 	for _, pd := range k.pods {
 		switch {
-		case pd.state == PodStarting && now.Sub(pd.createdAt) > k.cfg.StartTimeout:
+		case pd.state == PodStarting && now.Sub(pd.startBy) > k.cfg.StartTimeout:
 			why := fmt.Sprintf("pod %s did not start within %s", pd.id, k.cfg.StartTimeout)
 			if pd.waiting != "" {
 				why += ": " + pd.waiting
@@ -333,7 +338,7 @@ func (k *KubeService) topUpLocked() {
 // createLocked adds a starting pod and creates it in Kubernetes.
 func (k *KubeService) createLocked() {
 	now := k.now()
-	pd := &kubePod{token: podTokenPrefix + randomHex(32), state: PodStarting, createdAt: now}
+	pd := &kubePod{token: podTokenPrefix + randomHex(32), state: PodStarting, createdAt: now, startBy: now}
 	for {
 		pd.id = PodID("sandbox-" + randomHex(5))
 		if k.pods[pd.id] == nil {
@@ -397,8 +402,9 @@ func (k *KubeService) podObject(pd *kubePod) *corev1.Pod {
 	return obj
 }
 
-// failed logs a failed API call and keeps its reason for the inventory.
-func (k *KubeService) failed(what string, err error) {
+// failed logs a failed API call and keeps its reason for the inventory, and
+// returns it.
+func (k *KubeService) failed(what string, err error) string {
 	why := what + ": " + err.Error()
 	if apierrors.IsUnauthorized(err) || apierrors.IsForbidden(err) {
 		why = "Kubernetes refused the manager's credentials: " + why
@@ -407,7 +413,10 @@ func (k *KubeService) failed(what string, err error) {
 	k.mu.Lock()
 	k.setProblemLocked(why)
 	k.unlock()
+	return why
 }
+
+func isNotFound(err error) bool { return apierrors.IsNotFound(err) }
 
 func (k *KubeService) setProblemLocked(why string) { k.problem = why }
 
@@ -447,7 +456,7 @@ func (k *KubeService) deleteAPI(ctx context.Context, name string) {
 	c, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).Delete(c, name, metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil && !isNotFound(err) {
 		k.failed("delete pod "+name, err)
 	}
 }

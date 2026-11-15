@@ -209,6 +209,9 @@ func (p *Pool) Wake(id string) {
 // Preferred: every simulated pod picks its task up at once.
 func (p *Pool) Preferred(string) bool { return true }
 
+// Record: simulated pods keep nothing across a restart.
+func (p *Pool) Record(string, core.PodRecord) {}
+
 // What the source tells (tasksource.Pods).
 
 // NotifyWorkspacesChanged makes the pods register for the workspaces now.

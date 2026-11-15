@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"k8s.io/client-go/kubernetes/fake"
+
 	"sandbox-manager/internal/manager"
 )
 
@@ -266,6 +268,10 @@ type harness struct {
 	logs *syncBuffer
 	// audit captures the manager's audit log.
 	audit *syncBuffer
+	// kube is the Kubernetes API the manager creates its pods in, and stop
+	// ends the manager.
+	kube *fake.Clientset
+	stop context.CancelFunc
 }
 
 // syncBuffer is a log sink safe for the manager's concurrent handlers.

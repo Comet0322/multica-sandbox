@@ -44,6 +44,14 @@ func (m *Manager) Reload(ctx context.Context, workspaces []WorkspaceConfig) (Rel
 	return m.source.Reload(ctx, workspaces)
 }
 
+// RunPods runs only the pod side's own loops (the sandbox service's), as Run
+// does, until ctx ends.
+func (m *Manager) RunPods(ctx context.Context) {
+	if m.podRun != nil {
+		m.podRun(ctx)
+	}
+}
+
 // Touch lets time pass for the policy and the leases, as every
 // request does.
 func (m *Manager) Touch() { m.core.Touch() }

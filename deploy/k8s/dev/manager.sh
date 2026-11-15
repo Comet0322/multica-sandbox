@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run the manager on the host against the dev namespace (up.sh first): it
 # creates its pods in the namespace with the dev-user kubeconfig, which may
-# only create, delete and watch pods, and serves Multica at 127.0.0.1:18080.
+# only create, delete, watch and patch pods, and serves Multica at 127.0.0.1:18080.
 #
 #   deploy/k8s/dev/manager.sh       sign in the bot, create a workspace, run
 #

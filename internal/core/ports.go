@@ -104,6 +104,9 @@ type Pool interface {
 	// Preferred reports whether a pod is preferred for new work: it can be
 	// woken at once.
 	Preferred(pod string) bool
+	// Record keeps what a held pod serves where a restarted core finds it
+	// (see Restore). It must not block: the core calls it under its lock.
+	Record(pod string, rec PodRecord)
 }
 
 // Verdict is the core's answer to whether a pod may act for a tenant.

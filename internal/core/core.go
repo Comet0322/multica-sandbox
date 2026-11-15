@@ -84,6 +84,8 @@ type Core struct {
 	forced []forcedTask
 	// tenants are the tenants served or draining, by ID.
 	tenants map[string]*tenant
+	// recorded is what the Pool was last told each held pod serves.
+	recorded map[string]PodRecord
 }
 
 // New builds the core. Connect gives it its sides before it serves anything.
@@ -113,7 +115,8 @@ func New(cfg Config) (*Core, error) {
 		cfg.DrainPoll = time.Second
 	}
 	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, held: map[string]*pod{},
-		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}, tenants: map[string]*tenant{}}
+		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}, tenants: map[string]*tenant{},
+		recorded: map[string]PodRecord{}}
 	pol, err := policy.New(policy.Config{
 		Now:           c.now,
 		RemovedReason: cfg.RemovedReason,

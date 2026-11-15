@@ -118,6 +118,7 @@ type fakePool struct {
 	woken   []string
 	backs   []string // "pod reason"
 	preferd map[string]bool
+	records map[string]core.PodRecord
 }
 
 type fakePod struct {
@@ -126,7 +127,28 @@ type fakePod struct {
 	tenants []string
 }
 
-func newFakePool() *fakePool { return &fakePool{preferd: map[string]bool{}} }
+func newFakePool() *fakePool {
+	return &fakePool{preferd: map[string]bool{}, records: map[string]core.PodRecord{}}
+}
+
+// restore adds a pod a previous run left, held by the core.
+func (p *fakePool) restore(id string, tenants ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pods = append(p.pods, &fakePod{id: id, state: core.PodHeld, tenants: tenants})
+}
+
+func (p *fakePool) Record(id string, rec core.PodRecord) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.records[id] = rec
+}
+
+func (p *fakePool) record(id string) core.PodRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.records[id]
+}
 
 // add registers a free pod serving tenants.
 func (p *fakePool) add(id string, tenants ...string) {

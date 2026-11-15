@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create (or reuse) a kind cluster with one namespace holding Multica v0.6.4,
-# and a kubeconfig that may only create, delete and watch pods there, the
-# rights known for certain at the company.
+# and a kubeconfig that may only create, delete, watch and patch pods there,
+# what the manager needs.
 #
 #   deploy/k8s/dev/up.sh          create or update
 #   deploy/k8s/dev/down.sh        delete the cluster
@@ -92,5 +92,5 @@ cat <<MSG
 Namespace $ns is ready in kind cluster $cluster.
   backend     http://127.0.0.1:18080   (curl http://127.0.0.1:18080/health)
   web         http://127.0.0.1:13001   (sign in with any email, code $code)
-  kubeconfig  $kc   (pods only: create, delete, get, list, watch)
+  kubeconfig  $kc   (pods only: create, delete, get, list, watch, patch)
 MSG

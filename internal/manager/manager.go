@@ -450,6 +450,16 @@ func (m *Manager) Run(ctx context.Context) {
 	m.core.Run(ctx)
 }
 
+// Restore takes over the pods a previous run left (see pool.Pool.Restore):
+// running tasks run on, holds resume and warm and idle pods are kept. Call it
+// once, before Sync and Run.
+func (m *Manager) Restore(ctx context.Context) error {
+	if m.real == nil {
+		return nil
+	}
+	return m.real.Restore(ctx)
+}
+
 // Sync brings the served workspaces in line with the account's memberships
 // (see tasksource.Source.Sync).
 func (m *Manager) Sync(ctx context.Context) (ReloadResult, error) { return m.source.Sync(ctx) }

@@ -259,6 +259,26 @@ func (p *Policy) PodAcquired(pod string, tenants ...string) []Decision {
 	return p.placeWaiting()
 }
 
+// PodRestored records a pod a previous run of the caller left, in the phase
+// it was in: a running pod's task is started and runs on, a hold ends at its
+// own end and an idle pod ages from when it became idle. The pod serves its
+// own tenant only. A warm one is PodAcquired with no tenant yet.
+func (p *Policy) PodRestored(pod string, info PodInfo) []Decision {
+	if info.Phase == PhaseWarm || info.Phase == "" {
+		return p.PodAcquired(pod)
+	}
+	p.seq++
+	pd := &podState{id: pod, seq: p.seq, tenants: map[string]bool{info.Tenant: true}, phase: info.Phase,
+		tenant: info.Tenant, kind: info.Kind, key: info.Key, since: info.Since, until: info.Until}
+	p.pods[pod] = pd
+	if info.Phase == PhaseRunning {
+		ts := &taskState{Task: Task{ID: info.Task, Tenant: info.Tenant, Kind: info.Kind, Key: info.Key}, started: true, pod: pd}
+		pd.task = ts
+		p.tasks[ts.ID] = ts
+	}
+	return p.placeWaiting()
+}
+
 // PodRegistered records that the daemon of a held pod registered for a
 // tenant. A pod the policy does not hold is ignored.
 func (p *Policy) PodRegistered(pod, tenant string) []Decision {

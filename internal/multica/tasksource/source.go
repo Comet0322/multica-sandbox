@@ -101,6 +101,9 @@ func DaemonIDSuffix(kind policy.Kind) string {
 type Core interface {
 	SetTenants(ctx context.Context, list []core.Tenant) core.TenantChanges
 	TenantBusy(id string) bool
+	// Knows reports whether the core holds a task: leased, or claimed and
+	// not picked up yet.
+	Knows(taskID string) bool
 }
 
 // Pods is what the source tells the pod side directly: nothing of it touches
@@ -362,13 +365,35 @@ func (s *Source) recoverOrphansOnce(ctx context.Context) {
 	s.orphansRecovered = true
 	s.mu.Unlock()
 	for _, ws := range s.ws.served() {
-		if !s.core.TenantBusy(ws.cfg.WorkspaceID) {
+		id := ws.cfg.WorkspaceID
+		if !s.core.TenantBusy(id) {
 			for _, set := range ws.sets {
 				set.rt.RecoverOrphans(ctx)
+			}
+			continue
+		}
+		// The workspace has work the core took over from the pods; only the
+		// tasks dispatched here that no pod has are orphans. A task running
+		// on a pod that is gone was failed when the pod was found lost.
+		for _, set := range ws.sets {
+			ids, err := set.rt.Dispatched(ctx)
+			if err != nil {
+				s.log.Warn("list the tasks dispatched to the manager", "workspace_id", id, "error", err)
+				continue
+			}
+			for _, task := range ids {
+				if !s.core.Knows(task) {
+					s.log.Warn("failing a task dispatched to the manager before it restarted", "workspace_id", id, "task_id", task)
+					s.Fail(ctx, id, task, reasonLostInRestart)
+				}
 			}
 		}
 	}
 }
+
+// reasonLostInRestart fails a task the manager claimed before it restarted
+// and no pod took up.
+const reasonLostInRestart = "the sandbox manager restarted before the task reached a pod"
 
 // unregisteredWithPods reports whether some served workspace has no upstream
 // registration while live pods are in the pool to register it.
@@ -705,6 +730,17 @@ func (s *Source) RuntimeServed(runtimeID string) bool {
 		}
 	}
 	return false
+}
+
+// RuntimeWorkspace is the served workspace one of the manager's runtimes
+// belongs to.
+func (s *Source) RuntimeWorkspace(runtimeID string) (string, bool) {
+	for _, ws := range s.ws.served() {
+		if ws.owning(runtimeID) != nil {
+			return ws.cfg.WorkspaceID, true
+		}
+	}
+	return "", false
 }
 
 // RuntimeGone reports whether Multica said the runtime no longer exists.

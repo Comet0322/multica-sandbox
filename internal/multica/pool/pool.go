@@ -20,6 +20,7 @@ import (
 
 	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -42,6 +43,7 @@ type Core interface {
 	TaskEnded(pod, task, reason string)
 	MayServe(pod, tenant string) core.Verdict
 	PodServes(pod, tenant string)
+	Restore(pods []core.RestoredPod)
 	PodLost(pod, why string)
 	PodInterrupted(pod, why string)
 	Touch()
@@ -55,6 +57,7 @@ type Source interface {
 	Served(id string) (string, bool)
 	Register(ctx context.Context, pod string, req multica.Registration) (map[string]json.RawMessage, string, *multica.PodError)
 	RuntimeServed(runtimeID string) bool
+	RuntimeWorkspace(runtimeID string) (string, bool)
 	RuntimeGone(runtimeID string) bool
 	ModelsReported(runtimeID string, report []byte)
 }
@@ -193,6 +196,55 @@ func (p *Pool) Tenants(pod string) []string {
 	return out
 }
 
+// recorder and restorer are the sandbox service when it keeps what a pod
+// serves on the pod (KubeService).
+type recorder interface {
+	Record(id sandbox.PodID, r sandbox.PodRecord)
+}
+
+type restorer interface {
+	Restore(ctx context.Context) ([]sandbox.RestoredPod, error)
+}
+
+// Record keeps what a held pod serves on the pod, when the sandbox service
+// can.
+func (p *Pool) Record(pod string, rec core.PodRecord) {
+	if r, ok := p.svc.(recorder); ok {
+		r.Record(sandbox.PodID(pod), sandbox.PodRecord{
+			Phase: string(rec.Phase), Tenant: rec.Tenant, Kind: string(rec.Kind), Key: rec.Key,
+			Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
+		})
+	}
+}
+
+// Restore takes over the pods a previous run left, when the sandbox service
+// keeps what they serve: the core holds those that serve anyone, each
+// registered for its own workspace until its daemon registers again (see
+// HeartbeatPod). Call it before the pool serves anything.
+func (p *Pool) Restore(ctx context.Context) error {
+	r, ok := p.svc.(restorer)
+	if !ok {
+		return nil
+	}
+	found, err := r.Restore(ctx)
+	if err != nil {
+		return err
+	}
+	pods := make([]core.RestoredPod, 0, len(found))
+	p.mu.Lock()
+	for _, f := range found {
+		rec := f.Record
+		p.registered[string(f.ID)] = map[string]struct{}{rec.Tenant: {}}
+		pods = append(pods, core.RestoredPod{ID: string(f.ID), Record: core.PodRecord{
+			Phase: policy.Phase(rec.Phase), Tenant: rec.Tenant, Kind: policy.Kind(rec.Kind), Key: rec.Key,
+			Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
+		}})
+	}
+	p.mu.Unlock()
+	p.core.Restore(pods)
+	return nil
+}
+
 // Wake tells a pod over its wake socket that a task is placed on it.
 func (p *Pool) Wake(pod string) { p.api.WakePod(pod) }
 
@@ -276,6 +328,13 @@ func (b backend) HeartbeatPod(ctx context.Context, podID, runtimeID string) *mul
 		// that only on a 404 whose body says "runtime not found"
 		// (daemon.isRuntimeNotFoundError).
 		return &multica.PodError{Status: http.StatusNotFound, Msg: "runtime not found: the runtime was deleted upstream; register again"}
+	}
+	if ws, ok := b.p.source.RuntimeWorkspace(runtimeID); !ok || !b.p.Registered(podID, ws) {
+		// The daemon registered before the manager last started, so the
+		// manager does not know the runtime, or that the pod serves its
+		// workspace. The same answer makes it register again, which tells
+		// the manager.
+		return &multica.PodError{Status: http.StatusNotFound, Msg: "runtime not found: the manager restarted; register again"}
 	}
 	return nil
 }
