@@ -101,6 +101,8 @@ func (f *fakeSandbox) Record(sandbox.PodID, sandbox.PodRecord) {}
 
 func (f *fakeSandbox) Restore(context.Context) ([]sandbox.RestoredPod, error) { return nil, nil }
 
+func (f *fakeSandbox) Halted() string { return "" }
+
 func (f *fakeSandbox) PutFiles(context.Context, sandbox.PodID, string, io.Reader) error {
 	return sandbox.ErrUnsupported
 }

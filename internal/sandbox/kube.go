@@ -194,6 +194,9 @@ type KubeService struct {
 	// kick wakes the loop that writes them.
 	dirty map[PodID]bool
 	kick  chan struct{}
+	// recordRefused is why Kubernetes refused the last record, empty once
+	// one is written. While it is set no pod is given out (see Halted).
+	recordRefused string
 }
 
 type kubePod struct {
@@ -492,6 +495,9 @@ func (k *KubeService) Create(ctx context.Context) (PodID, error) {
 	k.mu.Lock()
 	defer k.unlock()
 	k.sweepLocked()
+	if k.recordRefused != "" {
+		return "", fmt.Errorf("%w: %s", ErrNoCapacity, k.recordRefused)
+	}
 	var pick *kubePod
 	for _, pd := range k.pods {
 		if pd.state == PodFree && (pick == nil || pd.readyAt.Before(pick.readyAt) || pd.readyAt.Equal(pick.readyAt) && pd.seq < pick.seq) {
@@ -620,6 +626,16 @@ func podGone(pd *corev1.Pod, deleted bool) (string, bool) {
 		if t.Reason == "OOMKilled" {
 			return "the pod ran out of memory" + memoryLimit(pd, cs.Name), true
 		}
+		if t.ExitCode == 137 && pd.DeletionTimestamp == nil && hasLivenessProbe(pd, cs.Name) {
+			// With restartPolicy Never a failed liveness probe kills the
+			// container and leaves only this behind: killed, not out of
+			// memory, and the pod not being deleted.
+			who := cs.Name + " container"
+			if i, err := daemonContainer(pd); err == nil && pd.Spec.Containers[i].Name == cs.Name {
+				who = "daemon"
+			}
+			return "the pod's " + who + " stopped answering (its liveness probe failed)", true
+		}
 		why := fmt.Sprintf("the pod's %s container exited with code %d", cs.Name, t.ExitCode)
 		if t.Reason != "" {
 			why += " (" + t.Reason + ")"
@@ -640,6 +656,16 @@ func podGone(pd *corev1.Pod, deleted bool) (string, bool) {
 		return "the pod was deleted", true
 	}
 	return "", false
+}
+
+// hasLivenessProbe reports whether the container has a liveness probe.
+func hasLivenessProbe(pd *corev1.Pod, container string) bool {
+	for _, c := range pd.Spec.Containers {
+		if c.Name == container {
+			return c.LivenessProbe != nil
+		}
+	}
+	return false
 }
 
 // memoryLimit names the container's memory limit, for an out-of-memory
@@ -697,7 +723,11 @@ func (k *KubeService) Inventory() Inventory {
 		list = append(list, pd)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].seq < list[j].seq })
-	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: k.problem}
+	problem := k.problem
+	if k.recordRefused != "" {
+		problem = k.recordRefused
+	}
+	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: problem}
 	for _, pd := range list {
 		inv.Pods = append(inv.Pods, pd.info())
 	}

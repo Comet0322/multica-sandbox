@@ -81,43 +81,103 @@ func (k *KubeService) Record(id PodID, r PodRecord) {
 	}
 }
 
-// recordLoop writes the records that changed to their pods until ctx ends.
+// recordBackoffMax bounds the wait before a record that could not be written
+// is tried again; the wait starts at the tick interval and doubles.
+const recordBackoffMax = time.Minute
+
+// recordLoop writes the records that changed to their pods until ctx ends. A
+// record that could not be written stays to be written and is tried again
+// after a backoff, until it is written or its pod is gone.
 func (k *KubeService) recordLoop(ctx context.Context) {
+	var retry <-chan time.Time
+	var backoff time.Duration
+	if k.Halted() != "" {
+		backoff = k.cfg.TickInterval
+		retry = time.After(backoff)
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-k.kick:
-		}
-		for {
-			k.mu.Lock()
-			var id PodID
-			for d := range k.dirty {
-				id = d
-				break
-			}
-			if id == "" {
-				k.mu.Unlock()
-				break
-			}
-			delete(k.dirty, id)
-			pd := k.pods[id]
-			if pd == nil || pd.state == PodLost {
-				k.mu.Unlock()
+			if retry != nil {
+				// Backing off: the new record is written with the others.
 				continue
 			}
-			patch := recordPatch(pd.record)
-			k.mu.Unlock()
-			c, cancel := context.WithTimeout(ctx, apiTimeout)
-			_, err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).Patch(c, string(id), types.MergePatchType, patch, metav1.PatchOptions{})
-			cancel()
-			if err != nil && ctx.Err() == nil && !isNotFound(err) {
-				// The pod runs on; only a restart would not find what it serves.
-				k.failed("record what pod "+string(id)+" serves (a restart would not keep it)", err)
-			}
+		case <-retry:
+			retry = nil
 		}
+		if k.writeRecords(ctx) {
+			backoff = 0
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		backoff = min(max(2*backoff, k.cfg.TickInterval), recordBackoffMax)
+		retry = time.After(backoff)
 	}
 }
+
+// writeRecords writes every record that changed; false when one could not be
+// written, which then stays to be written.
+func (k *KubeService) writeRecords(ctx context.Context) bool {
+	for {
+		k.mu.Lock()
+		var id PodID
+		for d := range k.dirty {
+			id = d
+			break
+		}
+		if id == "" {
+			halted := k.recordRefused != ""
+			k.mu.Unlock()
+			// With no record left to write, the refusal is checked again
+			// on its own.
+			return !halted || k.mayRecord(ctx, probePod)
+		}
+		delete(k.dirty, id)
+		pd := k.pods[id]
+		if pd == nil || pd.state == PodLost {
+			k.mu.Unlock()
+			continue
+		}
+		patch := recordPatch(pd.record)
+		k.mu.Unlock()
+		c, cancel := context.WithTimeout(ctx, apiTimeout)
+		_, err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).Patch(c, string(id), types.MergePatchType, patch, metav1.PatchOptions{})
+		cancel()
+		switch {
+		case err == nil:
+			k.recordWritten()
+			continue
+		case ctx.Err() != nil || isNotFound(err):
+			continue
+		}
+		// The pod runs on; a restart would not find what it serves until
+		// the record is written.
+		why := k.failed("record what pod "+string(id)+" serves (a restart would not keep it)", err)
+		k.mu.Lock()
+		if cur := k.pods[id]; cur == pd && pd.state != PodLost {
+			k.dirty[id] = true
+		}
+		if refused(err) {
+			k.recordRefused = why
+		}
+		k.unlock()
+		return false
+	}
+}
+
+// recordWritten notes that a record was written: records are no longer
+// refused.
+func (k *KubeService) recordWritten() {
+	k.mu.Lock()
+	k.recordRefused = ""
+	k.unlock()
+}
+
+func refused(err error) bool { return apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) }
 
 // recordPatch is the merge patch that sets the record's labels and
 // annotations and removes those it leaves empty.
@@ -189,19 +249,38 @@ func parseRecord(obj *corev1.Pod) (PodRecord, bool, error) {
 	return r, true, nil
 }
 
+// probePod is the pod name the right to patch is checked on when the service
+// has no pod: the check is authorized before the pod is looked up.
+const probePod = "sandbox-manager-probe"
+
 // mayRecord reports whether the service may write records on its pods: a
 // patch of the pod that changes nothing (a server-side dry run) is not
-// refused.
+// refused. A refusal halts the service until a record is written.
 func (k *KubeService) mayRecord(ctx context.Context, name string) bool {
 	c, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	_, err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).Patch(c, name, types.MergePatchType, []byte(`{}`),
 		metav1.PatchOptions{DryRun: []string{metav1.DryRunAll}})
-	if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
-		k.failed("patch pods to record what they serve", err)
+	if refused(err) {
+		why := k.failed("patch pods to record what they serve", err)
+		k.mu.Lock()
+		k.recordRefused = why
+		k.unlock()
 		return false
 	}
+	if err == nil || isNotFound(err) {
+		k.recordWritten()
+	}
 	return true
+}
+
+// Halted is why no task may be claimed now, empty when tasks may be: while
+// Kubernetes refuses the pods' records, a restart would fail every running
+// task, so no pod is given out either.
+func (k *KubeService) Halted() string {
+	k.mu.Lock()
+	defer k.unlock()
+	return k.recordRefused
 }
 
 // podToken is the pod token in the pod's daemon container.
@@ -218,11 +297,26 @@ func podToken(obj *corev1.Pod) string {
 	return ""
 }
 
+// neverStarted reports whether none of the pod's containers ever started, so
+// its daemon cannot have called the manager or run a task.
+func neverStarted(obj *corev1.Pod) bool {
+	if obj.Status.Phase != corev1.PodPending {
+		return false
+	}
+	for _, cs := range obj.Status.ContainerStatuses {
+		if cs.State.Running != nil || cs.State.Terminated != nil || cs.LastTerminationState.Terminated != nil {
+			return false
+		}
+	}
+	return true
+}
+
 // Restore lists the pods a previous run left and takes them over: a pod that
 // serves someone is held by the caller and returned with its record; a pod
-// with no record is kept as warm once its daemon calls in; a pod it cannot
-// interpret (no pod token, a garbled record, or a warm pod that ended) is
-// deleted. Call it once, before Run. A restored pod that ended meanwhile is
+// with no record whose containers never started is kept as warm once its
+// daemon calls in; any other pod with no record may run a task whose record
+// was never written, and is deleted, as is a pod it cannot interpret (no pod
+// token, or a garbled record). Call it once, before Run. A restored pod that ended meanwhile is
 // reported lost once Run watches it.
 func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 	c, cancel := context.WithTimeout(ctx, apiTimeout)
@@ -240,7 +334,11 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 		}
 		return items[i].Name < items[j].Name
 	})
-	if len(items) > 0 && !k.mayRecord(ctx, items[0].Name) {
+	probe := probePod
+	if len(items) > 0 {
+		probe = items[0].Name
+	}
+	if !k.mayRecord(ctx, probe) {
 		// No record was ever written, so a pod with none may have served
 		// anyone: none can be kept.
 		for _, it := range items {
@@ -273,6 +371,13 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 			drop = append(drop, obj.Name)
 			continue
 		case !served && ended:
+			drop = append(drop, obj.Name)
+			continue
+		case !served && !neverStarted(obj):
+			// A task may have been placed on it before its record was
+			// written: kept as warm it could serve another key while it
+			// still runs that task.
+			k.log.Warn("deleting a pod a previous run left: it started and what it serves is not recorded", "pod", id)
 			drop = append(drop, obj.Name)
 			continue
 		}

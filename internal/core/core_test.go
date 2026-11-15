@@ -57,6 +57,32 @@ func TestNothingIsClaimedWithoutAPod(t *testing.T) {
 	}
 }
 
+// A halted pool (Kubernetes refuses the pods' records) stops every claim,
+// even onto a pod the core already holds, until it is no longer halted.
+func TestNothingIsClaimedWhileThePoolIsHalted(t *testing.T) {
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
+	r.pool.add("p1", "A")
+	r.source.add("A", "t1", "alice", 0)
+	r.dispatch()
+	if got := r.next("p1"); got != "t1" {
+		t.Fatalf("p1 picked up %q, want t1", got)
+	}
+	r.core.TaskEnded("p1", "t1", "pod reported complete")
+
+	r.pool.halt("Kubernetes refused the manager's credentials: patch pods")
+	r.source.add("A", "t2", "alice", 0)
+	r.dispatch()
+	if claims, _, _ := r.source.snapshot(); len(claims) != 1 {
+		t.Fatalf("claimed %v while the pool is halted", claims)
+	}
+
+	r.pool.halt("")
+	r.dispatch()
+	if claims, _, _ := r.source.snapshot(); len(claims) != 2 {
+		t.Fatalf("claimed %v, want t2 once the pool is no longer halted", claims)
+	}
+}
+
 func TestAnotherPodsTaskIsNotItsOwn(t *testing.T) {
 	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")

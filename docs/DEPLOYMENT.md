@@ -297,7 +297,8 @@ reason in words, and the pod is deleted:
 | --- | --- |
 | The pod's container ran out of memory | `the pod ran out of memory (limit <limit>)` |
 | The node evicted the pod | `the node evicted the pod: <message>` |
-| The daemon's container exited (a failing liveness probe ends this way) | `the pod's <container> container exited with code <code> (<reason>)` |
+| The daemon stopped answering: its liveness probe failed and the container was killed (exit code 137, not out of memory) | `the pod's daemon stopped answering (its liveness probe failed)` |
+| A container exited | `the pod's <container> container exited with code <code> (<reason>)` |
 | The pod was deleted outside the manager | `the pod was deleted` |
 
 The task fails as `the pod running this task was lost: <reason>`. A pod that
@@ -330,15 +331,21 @@ on a pod. When the manager starts it lists the pods labelled
   as before (it registers again on its next heartbeat);
 - a hold resumes with its remaining time, and an idle pod ages on from when it
   became idle;
-- a warm pod is kept and is ready again once its daemon calls in;
+- a pod with no record whose containers never started is kept as warm and is
+  ready once its daemon calls in;
+- any other pod with no record is deleted: a task may have been placed on it
+  just before the previous run stopped, before its record was written, and
+  kept as warm it could serve another key while still running that task;
 - a pod it cannot interpret (no pod token, a garbled record) is deleted;
 - a task placed on a pod that had not taken it up, and a task Multica shows
   dispatched to the manager that no pod has, are failed, so Multica retries
   them.
 
-Without the right to patch pods, nothing is recorded: the dispatch page shows
-the refusal, and a restarted manager deletes every pod it finds, failing the
-tasks that ran on them.
+A record that cannot be written is tried again, with a growing wait, until it
+is. When Kubernetes refuses to patch pods, the manager stops claiming until a
+record is written again, and the dispatch page shows the refusal: without
+records a restart would fail every running task. A restarted manager without
+the right to patch deletes every pod it finds.
 
 ## Pod API authorization
 

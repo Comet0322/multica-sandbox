@@ -120,6 +120,19 @@ type fakePool struct {
 	backs   []string // "pod reason"
 	preferd map[string]bool
 	records map[string]core.PodRecord
+	halted  string
+}
+
+func (p *fakePool) halt(why string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.halted = why
+}
+
+func (p *fakePool) Halted() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.halted
 }
 
 type fakePod struct {

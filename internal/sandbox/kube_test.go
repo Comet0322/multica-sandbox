@@ -37,6 +37,9 @@ func kubeTemplate() *corev1.Pod {
 					Resources: corev1.ResourceRequirements{
 						Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
 					},
+					LivenessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{Path: "/health"},
+					}},
 				},
 			},
 		},
@@ -295,6 +298,14 @@ func TestKubeReportsHowAHeldPodWasLost(t *testing.T) {
 		{"daemon exited", corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}},
 		}}}, "the pod's daemon container exited with code 1 (Error)"},
+		// With restartPolicy Never, a failed liveness probe kills the
+		// container: exit code 137, not out of memory.
+		{"daemon not answering", corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 137}},
+		}}}, "the pod's daemon stopped answering (its liveness probe failed)"},
+		{"killed with no liveness probe", corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
+			Name: "sidecar", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 137}},
+		}}}, "the pod's sidecar container exited with code 137 (Error)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

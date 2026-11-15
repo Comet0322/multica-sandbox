@@ -109,6 +109,9 @@ type Pool interface {
 	// Record keeps what a held pod serves where a restarted core finds it
 	// (see Restore). It must not block: the core calls it under its lock.
 	Record(pod string, rec PodRecord)
+	// Halted is why no task may be claimed now, empty when tasks may be;
+	// the Pool shows the reason itself.
+	Halted() string
 }
 
 // Verdict is the core's answer to whether a pod may act for a tenant.

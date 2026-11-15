@@ -149,9 +149,12 @@ func (c *Core) readPending(ctx context.Context) {
 // until a claim returns a task or the policy grants no more reservations.
 // When the policy asks for a pod, one is acquired from the pool; once the
 // pool has none, the policy may reserve a pod in hold instead. Every claim is
-// made against a held pod, so every claimed task has somewhere to run (ADR
-// 0001).
+// made against a held pod, so every claimed task has somewhere to run. A
+// halted pool stops every claim.
 func (c *Core) claimRound(ctx context.Context) {
+	if c.pool.Halted() != "" {
+		return
+	}
 	var tried []policy.Target
 	noCapacity := false
 	for {

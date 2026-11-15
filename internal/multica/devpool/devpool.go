@@ -222,6 +222,9 @@ func (p *Pool) Preferred(string) bool { return true }
 // Record: simulated pods keep nothing across a restart.
 func (p *Pool) Record(string, core.PodRecord) {}
 
+// Halted: a simulated pool never stops claims.
+func (p *Pool) Halted() string { return "" }
+
 // What the source tells (tasksource.Pods).
 
 // NotifyWorkspacesChanged makes the pods register for the workspaces now.
