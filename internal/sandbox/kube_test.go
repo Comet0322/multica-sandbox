@@ -392,3 +392,24 @@ func TestLoadPodTemplate(t *testing.T) {
 		}
 	}
 }
+
+// A pod's hostname would be its name, which agents print into what reaches
+// Multica; a template that sets none gets a neutral one, the same for every
+// pod, and one that sets its own keeps it.
+func TestKubeGivesPodsANeutralHostname(t *testing.T) {
+	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 2, MaxPods: 2})
+	h.eventually("two warm pods", func() bool { return len(h.pods()) == 2 })
+	for _, pd := range h.pods() {
+		if pd.Spec.Hostname != "sandbox" {
+			t.Errorf("pod %s hostname = %q, want sandbox", pd.Name, pd.Spec.Hostname)
+		}
+	}
+
+	tpl := kubeTemplate()
+	tpl.Spec.Hostname = "agent"
+	h = newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1, Template: tpl})
+	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
+	if got := h.pods()[0].Spec.Hostname; got != "agent" {
+		t.Errorf("hostname = %q, want the template's agent", got)
+	}
+}
