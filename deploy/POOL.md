@@ -24,8 +24,9 @@ The program runs in one process with one pod listener:
   back to be reset. `PutFiles`, `GetFiles` and `Exec` exist on the interface
   but the current pods do not support them. The service tells it when a pod it
   holds is interrupted or lost. Two packages hold its parts:
-  - `internal/lending`, the lending policy (queue, quota, affinity, hold,
-    lifetime), which knows nothing of Multica: a workspace is a tenant to it.
+  - `internal/policy`, the policy (queue, fair share, quota, placement by
+    runtime kind and key, holds, idle lifetime, budget deletion), which
+    knows nothing of Kubernetes or Multica: a workspace is a tenant to it.
   - `internal/multica`, everything the manager knows of Multica: the server's
     API, the daemon protocol it serves to the pods, runtime registration and
     the affinity rules.
@@ -265,15 +266,32 @@ in hold, `hold_until` and `hold_remaining_seconds`.
 
 ## Placement and pod lifetime
 
+Since ADR 0009 a pod runs one task at a time and never serves another
+workspace. A task's key is its issue, else its chat session; a task with
+neither has none. A **pool** task takes its key's held pod, then an idle pod
+of its workspace, then a warm pod, then a new one; a **clean** task its key's
+held pod, then a warm pod, then a new one. When a task ends its pod is held
+for its key; with no key or no hold, a pool pod becomes idle and a clean pod
+is deleted. When the budget is full, an idle pool pod goes first, then a held
+pool pod, then a held clean pod, from the workspace furthest over its share,
+never one within another workspace's guarantee. The affinity rule, pod
+capacity, placement wait, maximum lifetime and drain grace below are still
+read and checked, but no longer used; issue 07 removes them, and the
+sections on bindings below describe the GitOps pool before ADR 0009.
+
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDBOX_PLACEMENT` | `person-issue` | The affinity rule: which tasks share a pod. `task`, `person-issue` (one person's tasks on one issue, or in one chat session for a task without an issue), `person-agent`, `person`, or `workspace`. Under every rule but `workspace`, tasks of different people, and tasks without a known initiator, never share. `workspace` lets every task of a workspace share its pods, whoever it runs for, and keeps them: a pod stays bound to the workspace, in hold when idle, with no hold timeout and no maximum lifetime, until another workspace's task evicts it beyond the workspace's guarantee. |
-| `SANDBOX_POD_CAPACITY` | 20 | Pod capacity in slots; each task takes one. |
-| `SANDBOX_PLACEMENT_WAIT` | `30s` | How long a claimed task that has no pod waits for one before it is failed upstream: one whose pod was lost before it started, one orphaned by a lost reservation, or one whose hold another key evicted. |
+| `SANDBOX_RUNTIMES` | `pool` | The runtime kinds registered in every workspace: `pool`, `clean` or `pool,clean`. Each kind is a machine of its own upstream: the pool kind under the manager's daemon_id, the clean kind under it followed by `-clean`. Removing a kind stops heartbeating its runtimes, so they show offline. |
+| `SANDBOX_MANAGER_CLEAN_NAME` | `SANDBOX_MANAGER_NAME` followed by ` Clean` | The machine name of the clean runtimes. |
+| `SANDBOX_MANAGER_CLEAN_DEVICE_NAME` | the clean name | Shown under it. |
+| `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool pod is kept before it is deleted. |
+| `SANDBOX_PLACEMENT` | `person-issue` | No longer used (ADR 0009). |
+| `SANDBOX_POD_CAPACITY` | 20 | No longer used (ADR 0009). |
+| `SANDBOX_PLACEMENT_WAIT` | `30s` | No longer used (ADR 0009). |
 | `SANDBOX_POOL_WAKE_INTERVAL` | `1s` | Dispatch tick. `0` does not turn dispatch off: the tick then runs every second and only the wake socket hints are disabled. |
-| `SANDBOX_HOLD_TIMEOUT` | `15m` | How long a pod whose last task ended waits for another task of its affinity key before it is reset. `0` resets it at once. |
-| `SANDBOX_POD_MAX_LIFETIME` | `2h` | How long a binding takes new tasks after it opened. Past it, the pod is reset once its tasks end (`maximum lifetime reached`), or at once when it is in hold. A binding whose key is unique to its task (`task` rule, no initiator) ends with its task instead. |
-| `SANDBOX_POD_DRAIN_GRACE` | `10m` | How long a binding's tasks may still run past its maximum lifetime. Then they are failed upstream ("the sandbox pod reached its maximum lifetime and the task ran past the drain grace period") and the pod is reset. |
+| `SANDBOX_HOLD_TIMEOUT` | `10m` | How long a pod whose task ended is held for the task's key. Then a pool pod becomes idle and a clean pod is deleted. `0` holds nothing. A hold is never a guarantee: it ends early when the budget is full. |
+| `SANDBOX_POD_MAX_LIFETIME` | `2h` | No longer used (ADR 0009). |
+| `SANDBOX_POD_DRAIN_GRACE` | `10m` | No longer used (ADR 0009). |
 
 ## Bindings, hold and eviction
 
