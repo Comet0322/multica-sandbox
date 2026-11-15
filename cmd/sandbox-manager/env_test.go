@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/policy"
 )
 
@@ -117,8 +118,8 @@ func TestLoadSettingsReadsTheRuntimeKindsAndTheirNames(t *testing.T) {
 	env["SANDBOX_MANAGER_CLEAN_NAME"] = "Clean Sandbox"
 	env["SANDBOX_MANAGER_CLEAN_DEVICE_NAME"] = "clean pods"
 	s, err := loadSettings(envLookup(env))
-	if err != nil || s.config.CleanName != "Clean Sandbox" || s.config.CleanDeviceName != "clean pods" {
-		t.Fatalf("clean names: %q %q, %v", s.config.CleanName, s.config.CleanDeviceName, err)
+	if err != nil || s.config.Clean != (multica.Machine{Name: "Clean Sandbox", DeviceName: "clean pods"}) {
+		t.Fatalf("clean names: %+v, %v", s.config.Clean, err)
 	}
 }
 

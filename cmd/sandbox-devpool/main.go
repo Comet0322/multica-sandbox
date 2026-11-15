@@ -65,8 +65,8 @@ func run() error {
 		return fmt.Errorf("the bot account's PAT is required: -token-file or SANDBOX_POOL_TOKEN")
 	}
 	cfg := manager.Config{
-		MulticaURL: *url, PAT: pat, Name: os.Getenv("SANDBOX_MANAGER_NAME"),
-		DeviceName:  os.Getenv("SANDBOX_MANAGER_DEVICE_NAME"),
+		MulticaURL: *url, PAT: pat,
+		Pool:        multica.Machine{Name: os.Getenv("SANDBOX_MANAGER_NAME"), DeviceName: os.Getenv("SANDBOX_MANAGER_DEVICE_NAME")},
 		HoldTimeout: *hold, SyncInterval: *syncEvery,
 		DispatchInterval: *dispatchEv, ReconcileInterval: 30 * time.Second, Providers: []string{"claude"},
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 )
 
 // daemonIDsSent lists the daemon_id of every registration and claim the fake
@@ -196,8 +197,7 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
 	serveTwoWorkspaces(t, up, func(c *manager.Config) {
-		c.Name = "Example Sandbox"
-		c.DeviceName = "GPU pool, us-east"
+		c.Pool = multica.Machine{Name: "Example Sandbox", DeviceName: "GPU pool, us-east"}
 		c.Providers = []string{"claude"}
 	})
 	for _, r := range up.requestsTo("/api/daemon/register") {
@@ -220,8 +220,9 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 func TestAMachineNameTheRuntimeListWouldMisreadIsRefused(t *testing.T) {
 	t.Parallel()
 	for _, cfg := range []manager.Config{
-		{Name: "Sandbox (prod)"},
-		{DeviceName: "linux · amd64"},
+		{Pool: multica.Machine{Name: "Sandbox (prod)"}},
+		{Pool: multica.Machine{DeviceName: "linux · amd64"}},
+		{Clean: multica.Machine{Name: "Clean (prod)"}},
 	} {
 		cfg.MulticaURL, cfg.PAT = "http://127.0.0.1:1", "mul_pat"
 		if _, err := manager.New(cfg, nil); err == nil || !strings.Contains(err.Error(), "parentheses") {

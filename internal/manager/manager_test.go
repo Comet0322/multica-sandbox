@@ -9,12 +9,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
-	"sandbox-manager/internal/policy"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/sandbox"
@@ -144,7 +146,7 @@ func (f *fakeSandbox) Pod(id sandbox.PodID) (sandbox.PodInfo, bool) {
 func newFakeSandboxHarness(t *testing.T, opts ...func(*manager.Config)) (*harness, *fakeSandbox) {
 	t.Helper()
 	up := newFakeMultica(t)
-	cfg := manager.Config{MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool", Runtimes: []policy.Kind{policy.KindClean}}
+	cfg := manager.Config{MulticaURL: up.URL, PAT: harnessPAT, Pool: multica.Machine{Name: "Test Pool"}, Runtimes: []policy.Kind{policy.KindClean}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}

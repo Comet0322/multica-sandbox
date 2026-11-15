@@ -45,7 +45,7 @@ func (f *overridesFile) read() ([]byte, error) {
 // workspace the fake lists, with the overrides file, after one Sync.
 func newOverrideHarness(t *testing.T, up *multiMultica, file *overridesFile, cfg manager.Config) *harness {
 	t.Helper()
-	cfg.MulticaURL, cfg.PAT, cfg.Name = up.URL, patPool, "Shared Pool"
+	cfg.MulticaURL, cfg.PAT, cfg.Pool.Name = up.URL, patPool, "Shared Pool"
 	cfg.UpstreamBackoff = time.Minute
 	cfg.ReadOverrides = file.read
 	if len(cfg.Runtimes) == 0 {
