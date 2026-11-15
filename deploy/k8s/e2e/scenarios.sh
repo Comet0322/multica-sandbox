@@ -15,9 +15,9 @@
 #   restart              restarting the manager mid-task keeps the task
 #   handoff-on-one-pod   agent B lands on the held pod and finds agent A's
 #                        unpushed branch
-#   budget               a full budget deletes an idle pool runtime pod before a held
-#                        one, and never a pod within another department's
-#                        guarantee
+#   budget               a full budget deletes an idle pool runtime pod
+#                        before a held one, and never a pod within another
+#                        department's guarantee
 #   cannot-start         a pod that cannot start leaves its task queued
 #   privacy              no pod name, hostname or IP appears in Multica
 #
