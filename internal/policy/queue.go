@@ -196,6 +196,14 @@ func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
 			pd = p.warmPod(tg.Tenant, nil)
 		}
 		if pd == nil {
+			// A probe of a list that shows nothing queued may ask for a
+			// pod, but never deletes one: there may be no task to need it.
+			if p.probing(tg) {
+				if !req.NoCapacity && take {
+					return append(ds, Acquire{})
+				}
+				continue
+			}
 			if need := p.needPod(req, tg.Tenant, take); need != nil {
 				return append(ds, need...)
 			}
@@ -210,6 +218,23 @@ func (p *Policy) RequestClaim(req ClaimRequest) []Decision {
 		return append(ds, Claim{Tenant: tg.Tenant, Kind: tg.Kind, Reservation: r.id, Pod: pd.id})
 	}
 	return ds
+}
+
+// probing reports whether a claim for the target would be a probe: its
+// pending list was read and has no queued task left that claims in flight
+// do not account for.
+func (p *Policy) probing(tg Target) bool {
+	l := p.pending[tg]
+	if l == nil {
+		return false
+	}
+	inFlight := 0
+	for _, r := range p.reservations {
+		if r.target == tg {
+			inFlight++
+		}
+	}
+	return len(l.queued) <= inFlight
 }
 
 // needPod is what gets a tenant a ready pod: Acquire while the pool may have

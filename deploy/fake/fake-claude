@@ -6,7 +6,11 @@
 # environment reached the agent. SANDBOX_FAKE_SLEEP (seconds) keeps the task
 # running that long after the comment, so a trial can fill the pool.
 # SANDBOX_FAKE_MEMORY (MiB) makes the task hold that much memory for a few
-# seconds, so a trial can run a pod out of memory.
+# seconds, so a trial can run a pod out of memory. SANDBOX_FAKE_BRANCH names a
+# git branch the agent looks for in a repository under the pod's bare repo
+# cache (MULTICA_WORKSPACES_ROOT/.repos): found, it says so; not found, it
+# commits to a new branch of that name and never pushes it, as an agent that
+# hands its work to the next one on the same pod would.
 case "${1:-}" in
 --version | -v)
 	echo "2.1.0 (Claude Code)"
@@ -26,9 +30,23 @@ done
 issue="$(printf '%s' "$prompt" | grep -oE 'assigned issue ID is: [0-9a-f-]{36}' | head -n 1 | sed 's/.* //')"
 # A task a comment started must reply under that comment.
 parent="$(printf '%s' "$prompt" | grep -oE -- '--parent [0-9a-f-]{36}' | head -n 1 | sed 's/.* //')"
+branch=""
+if [ -n "${SANDBOX_FAKE_BRANCH:-}" ]; then
+	repo="${MULTICA_WORKSPACES_ROOT:-$HOME/multica_workspaces}/.repos/sandbox-fake"
+	if sha="$(git -C "$repo" rev-parse --short --verify -q "refs/heads/$SANDBOX_FAKE_BRANCH" 2>/dev/null)"; then
+		branch=", branch $SANDBOX_FAKE_BRANCH found at $sha"
+	elif mkdir -p "$repo" && git -C "$repo" init -q 2>/dev/null &&
+		git -C "$repo" checkout -q -B "$SANDBOX_FAKE_BRANCH" &&
+		git -C "$repo" commit -q --allow-empty -m "unpushed work of task $$" &&
+		sha="$(git -C "$repo" rev-parse --short HEAD)"; then
+		branch=", branch $SANDBOX_FAKE_BRANCH created at $sha, not pushed"
+	else
+		branch=", branch $SANDBOX_FAKE_BRANCH could not be created"
+	fi
+fi
 note="no issue ID in prompt"
 if [ -n "$issue" ]; then
-	if multica issue comment add "$issue" ${parent:+--parent "$parent"} --content "sandbox-fake: agent ran in $(hostname) with skill $(ls "$HOME/.claude/skills" 2>/dev/null | tr '\n' ' ')earlier task files $left, note ${SANDBOX_FAKE_NOTE:-unset}">/tmp/comment.log 2>&1; then
+	if multica issue comment add "$issue" ${parent:+--parent "$parent"} --content "sandbox-fake: agent ran in $(hostname) with skill $(ls "$HOME/.claude/skills" 2>/dev/null | tr '\n' ' ')earlier task files $left, note ${SANDBOX_FAKE_NOTE:-unset}$branch">/tmp/comment.log 2>&1; then
 		note="commented on $issue"
 	else
 		note="comment failed: $(tail -n 1 /tmp/comment.log)"
