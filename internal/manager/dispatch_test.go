@@ -161,6 +161,29 @@ func TestDispatchPageReadsTheViewItself(t *testing.T) {
 	}
 }
 
+func TestDispatchPageIsServedFreshUnderItsPolicy(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 1)
+	resp, err := http.Get(h.admin.URL + "/dispatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if got := resp.Header.Get("Content-Type"); got != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type %q", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control %q, want no-store", got)
+	}
+	if got := resp.Header.Get("Content-Security-Policy"); !strings.HasPrefix(got, "default-src 'none';") || !strings.Contains(got, "connect-src 'self'") {
+		t.Errorf("Content-Security-Policy %q", got)
+	}
+	if !strings.HasPrefix(string(body), "<!doctype html>") {
+		t.Errorf("the body is not the page: %.40q", body)
+	}
+}
+
 func TestDispatchViewListsEachWorkspacesTasks(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 2)

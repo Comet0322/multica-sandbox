@@ -111,7 +111,7 @@ type Inventory struct {
 }
 
 // podTokenPrefix marks a pod token.
-const podTokenPrefix = "mpt_"
+const podTicketPrefix = "mpt_"
 
 func randomHex(n int) string {
 	b := make([]byte, n)

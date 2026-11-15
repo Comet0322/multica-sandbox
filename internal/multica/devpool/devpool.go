@@ -12,10 +12,11 @@ package devpool
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math/rand/v2"
+	"math/big"
 	"net/http"
 	"slices"
 	"sync"
@@ -373,7 +374,7 @@ func (p *Pool) run(ctx context.Context, podID string, t claimed) {
 	}
 	d := p.cfg.TaskMin
 	if span := p.cfg.TaskMax - p.cfg.TaskMin; span > 0 {
-		d += time.Duration(rand.Int64N(int64(span)))
+		d += time.Duration(randInt64N(int64(span)))
 	}
 	p.log.Info("simulated task running", "pod_id", podID, "task_id", t.ID, "for", d.Round(time.Second))
 	select {
@@ -384,7 +385,7 @@ func (p *Pool) run(ctx context.Context, podID string, t claimed) {
 	if !p.core.Owns(podID, t.ID) {
 		return // the core ended the lease meanwhile
 	}
-	if rand.Float64() < p.cfg.FailRate {
+	if randFloat64() < p.cfg.FailRate {
 		p.end(podID, t.ID, "fail", map[string]any{"error": "devpool: simulated failure"})
 		return
 	}
@@ -405,4 +406,18 @@ func (p *Pool) end(podID, taskID, action string, body map[string]any) {
 	default:
 		p.log.Warn("simulated task report failed; the lease is left to reconciliation", "pod_id", podID, "task_id", taskID, "action", action, "error", err)
 	}
+}
+
+// randInt64N is a uniform number in [0, n), n > 0, from crypto/rand.
+func randInt64N(n int64) int64 {
+	v, err := rand.Int(rand.Reader, big.NewInt(n))
+	if err != nil {
+		return 0
+	}
+	return v.Int64()
+}
+
+// randFloat64 is a uniform number in [0, 1).
+func randFloat64() float64 {
+	return float64(randInt64N(1<<53)) / (1 << 53)
 }

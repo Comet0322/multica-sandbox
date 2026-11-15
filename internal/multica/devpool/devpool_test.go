@@ -114,6 +114,50 @@ func TestASimulatedPodRunsItsTaskAndReportsIt(t *testing.T) {
 	}
 }
 
+func TestAtAFailRateOfOneASimulatedTaskFailsWithinItsDurations(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.URL.Path)
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := &fakeCore{queue: map[string][]json.RawMessage{}, owned: map[string]string{}}
+	cfg := devpool.Config{Pods: 1, TaskMin: 5 * time.Millisecond, TaskMax: 30 * time.Millisecond, FailRate: 1, Poll: 10 * time.Millisecond}
+	p := devpool.New(cfg, c, fakeSource{}, multica.NewClient(srv.URL, "mul_pat", "devpool", nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.Run(ctx)
+
+	id, err := p.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mu.Lock()
+	c.queue[id] = append(c.queue[id], json.RawMessage(`{"id":"t1"}`))
+	c.mu.Unlock()
+	p.Wake(id)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		got := slices.Clone(calls)
+		mu.Unlock()
+		if len(got) == 2 {
+			if !slices.Equal(got, []string{"/api/daemon/tasks/t1/start", "/api/daemon/tasks/t1/fail"}) {
+				t.Fatalf("upstream calls %v", got)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the task did not end; calls %v", got)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestAHandedBackPodIsReplacedByANewOne(t *testing.T) {
 	p := devpool.New(devpool.Config{Pods: 1, StartTime: time.Hour}, &fakeCore{}, fakeSource{}, multica.NewClient("http://127.0.0.1:1", "x", "d", nil))
 	id, err := p.Acquire(context.Background())

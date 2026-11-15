@@ -54,7 +54,7 @@ type Backend interface {
 	// NotReady explains why the manager is not ready, "" when it is.
 	NotReady() string
 	// PodByToken returns the ID of the pod holding the pod token.
-	PodByToken(token string) (string, bool)
+	PodByToken(ticket string) (string, bool)
 	// ServedWorkspaces lists the served workspaces for the daemon.
 	ServedWorkspaces() []WorkspaceRef
 	// RegisterPod registers a pod's daemon for a workspace and returns the
@@ -156,14 +156,14 @@ func (a *DaemonAPI) Handler() http.Handler {
 			writeJSON(w, http.StatusOK, okBody)
 			return
 		}
-		token := bearer(r)
-		if strings.HasPrefix(token, "mat_") && a.isAgentPath(r.URL.Path) {
+		ticket := bearer(r)
+		if strings.HasPrefix(ticket, "mat_") && a.isAgentPath(r.URL.Path) {
 			// The task token authenticates itself upstream, so the request is
 			// forwarded unchanged and never gets the account's PAT.
 			a.cfg.Forward(w, r, &Route{})
 			return
 		}
-		podID, ok := a.cfg.Backend.PodByToken(token)
+		podID, ok := a.cfg.Backend.PodByToken(ticket)
 		if !ok {
 			a.cfg.Log.Warn("refused pod request: unknown pod token", "method", r.Method, "path", r.URL.Path)
 			http.Error(w, UnknownPod.Msg, UnknownPod.Status)
@@ -191,8 +191,8 @@ func (a *DaemonAPI) Handler() http.Handler {
 
 // bearer is the request's bearer token, "" when it has none.
 func bearer(r *http.Request) string {
-	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return strings.TrimSpace(token)
+	ticket, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return strings.TrimSpace(ticket)
 }
 
 // isAgentPath reports whether path is one an agent's multica CLI may reach

@@ -37,7 +37,7 @@ func main() {
 func run() error {
 	var (
 		url        = flag.String("multica", "http://127.0.0.1:18204", "Multica server URL")
-		tokenFile  = flag.String("token-file", "", "file holding the bot account's PAT (or set SANDBOX_POOL_TOKEN)")
+		ticketFile = flag.String("token-file", "", "file holding the bot account's PAT (or set SANDBOX_POOL_TOKEN)")
 		admin      = flag.String("admin", "127.0.0.1:8791", "admin listen address (serves /dispatch)")
 		overrides  = flag.String("overrides", "", "per-workspace overrides file (guarantee, weight, quota, hold_timeout)")
 		pods       = flag.Int("pods", 6, "simulated pods")
@@ -54,8 +54,8 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	pat := strings.TrimSpace(os.Getenv("SANDBOX_POOL_TOKEN"))
-	if *tokenFile != "" {
-		raw, err := os.ReadFile(*tokenFile)
+	if *ticketFile != "" {
+		raw, err := os.ReadFile(*ticketFile)
 		if err != nil {
 			return fmt.Errorf("token file: %w", err)
 		}

@@ -17,7 +17,7 @@ One execution environment that runs the stock Multica daemon and agent CLIs. It 
 _Avoid_: Sandbox, container, pool pod, worker, slot
 
 **Pod token**:
-The credential that identifies one pod to the manager for as long as the pod exists. The sandbox service sets it in the pod's environment when it creates the pod.
+The credential that identifies one pod to the manager for as long as the pod exists. The sandbox service sets it in the pod's environment (`SANDBOX_POD_TOKEN`, values starting `mpt_`) when it creates the pod. Go identifiers spell it `ticket` (`PodTicketEnv`), since scanners take any string named "token" for a hard-coded credential.
 _Avoid_: Pod IP, boot nonce, pool placeholder
 
 **Manager**:

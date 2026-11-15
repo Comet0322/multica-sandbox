@@ -23,10 +23,10 @@ import (
 )
 
 type fakeSandbox struct {
-	mu     sync.Mutex
-	order  []sandbox.PodID
-	state  map[sandbox.PodID]sandbox.PodState
-	tokens map[string]sandbox.PodID
+	mu      sync.Mutex
+	order   []sandbox.PodID
+	state   map[sandbox.PodID]sandbox.PodState
+	tickets map[string]sandbox.PodID
 	// calls records "create <id>", "create: no capacity" and
 	// "delete <id> (<reason>)" in order.
 	calls []string
@@ -36,7 +36,7 @@ type fakeSandbox struct {
 }
 
 func newFakeSandbox() *fakeSandbox {
-	return &fakeSandbox{state: map[sandbox.PodID]sandbox.PodState{}, tokens: map[string]sandbox.PodID{}}
+	return &fakeSandbox{state: map[sandbox.PodID]sandbox.PodState{}, tickets: map[string]sandbox.PodID{}}
 }
 
 // add registers a free pod and returns its token.
@@ -45,9 +45,9 @@ func (f *fakeSandbox) add(id string) string {
 	defer f.mu.Unlock()
 	f.order = append(f.order, sandbox.PodID(id))
 	f.state[sandbox.PodID(id)] = sandbox.PodFree
-	token := "mpt_" + id
-	f.tokens[token] = sandbox.PodID(id)
-	return token
+	ticket := "mpt_" + id
+	f.tickets[ticket] = sandbox.PodID(id)
+	return ticket
 }
 
 // set changes a pod's state, as its start or its loss would.
@@ -117,10 +117,10 @@ func (f *fakeSandbox) Exec(context.Context, sandbox.PodID, sandbox.Command) (san
 	return sandbox.Result{}, sandbox.ErrUnsupported
 }
 
-func (f *fakeSandbox) Authenticate(token string) (sandbox.PodID, bool) {
+func (f *fakeSandbox) Authenticate(ticket string) (sandbox.PodID, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	id, ok := f.tokens[token]
+	id, ok := f.tickets[ticket]
 	return id, ok
 }
 
@@ -170,7 +170,7 @@ func newFakeSandboxHarness(t *testing.T, opts ...func(*manager.Config)) (*harnes
 
 // fakePod is a pod of the fake service whose daemon has not started yet.
 func (h *harness) fakePod(svc *fakeSandbox, id string) *simPod {
-	return &simPod{h: h, name: id, id: id, token: svc.add(id), client: h.podAPI.Client()}
+	return &simPod{h: h, name: id, id: id, ticket: svc.add(id), client: h.podAPI.Client()}
 }
 
 // issueTask queues a task of an issue.

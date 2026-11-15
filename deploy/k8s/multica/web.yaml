@@ -23,6 +23,15 @@ spec:
       labels:
         app.kubernetes.io/name: multica-web
     spec:
+      # The image's files are world-readable, so any user runs it. Next.js
+      # writes only its cache (.next/cache) and temporary files.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
       containers:
         - name: web
           image: ghcr.io/multica-ai/multica-web:v0.6.4
@@ -37,4 +46,16 @@ spec:
             - containerPort: 3000
           resources:
             requests: {cpu: 50m, memory: 128Mi}
-            limits: {memory: 512Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: cache, mountPath: /app/apps/web/.next/cache}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

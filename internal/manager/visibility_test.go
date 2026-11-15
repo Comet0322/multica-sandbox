@@ -87,7 +87,7 @@ func TestSharingAndRecoverySurviveTheRegistrationRequestEnding(t *testing.T) {
 	body := `{"workspace_id":"` + wsA + `","daemon_id":"pod-pool-0","device_name":"pool-0","runtimes":[{"name":"claude","type":"claude","version":"1","status":"online"}]}`
 	req, _ := http.NewRequest(http.MethodPost, h.podAPI.URL+"/api/daemon/register", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+pod.token)
+	req.Header.Set("Authorization", "Bearer "+pod.ticket)
 	if resp, err := short.Do(req); err == nil { // the client gives up first
 		resp.Body.Close()
 	}

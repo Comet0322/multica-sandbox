@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	_ "embed"
 	"net/http"
 	"time"
@@ -231,9 +232,9 @@ func dispatchView(inv Inventory, tasks map[string][]DispatchTask, now time.Time)
 var dispatchPage []byte
 
 // serveDispatchPage serves the page that shows /v1/dispatch.
-func serveDispatchPage(w http.ResponseWriter, _ *http.Request) {
+func serveDispatchPage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'")
-	_, _ = w.Write(dispatchPage)
+	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(dispatchPage))
 }

@@ -56,7 +56,7 @@ func (h *kubeHarness) pod(name string) (corev1.Pod, bool) {
 
 // leftPod is a pod a previous run created, with its pod token and what that
 // run recorded on it.
-func leftPod(name, token string, labels, annotations map[string]string) *corev1.Pod {
+func leftPod(name, ticket string, labels, annotations map[string]string) *corev1.Pod {
 	l := map[string]string{sandbox.ManagedByLabel: sandbox.ManagedByValue}
 	for k, v := range labels {
 		l[k] = v
@@ -64,8 +64,8 @@ func leftPod(name, token string, labels, annotations map[string]string) *corev1.
 	pd := kubeTemplate()
 	pd.ObjectMeta = metav1.ObjectMeta{Name: name, Namespace: kubeNS, Labels: l, Annotations: annotations,
 		CreationTimestamp: metav1.NewTime(time.Date(2026, 11, 16, 8, 0, 0, 0, time.UTC))}
-	if token != "" {
-		pd.Spec.Containers[1].Env = []corev1.EnvVar{{Name: sandbox.PodTokenEnv, Value: token}}
+	if ticket != "" {
+		pd.Spec.Containers[1].Env = []corev1.EnvVar{{Name: sandbox.PodTicketEnv, Value: ticket}}
 	} else {
 		pd.Spec.Containers[1].Env = nil
 	}
