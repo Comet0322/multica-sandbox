@@ -54,7 +54,7 @@ spec:
         - name: SANDBOX_MANAGER_URL
           value: "http://sandbox-manager:8080" # PLACEHOLDER if the Service is named otherwise
       # One task per pod, so the limit is the task's. Measured with no model
-      # reachable (deploy/k8s/README.md): an idle pod uses about 10 MiB; a
+      # reachable (docs/DEPLOYMENT.md): an idle pod uses about 10 MiB; a
       # pod starting a Claude Code task peaks near 145 MiB; opencode starting
       # a task about 1.2 GiB.
       # A task's own peak depends on what it builds or runs; size the limit

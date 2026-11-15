@@ -6,8 +6,8 @@ PID 1 is `tini`, which runs the stock `multica daemon` as uid 1001; the daemon
 starts every agent CLI itself, as the same user. Nothing runs as root or with
 a capability. A pod runs one task at a time, never serves another department,
 and is deleted, never reused across departments or cleaned for reuse. The
-manager is described in [POOL.md](POOL.md); the pod template and the memory
-pods use in [k8s/README.md](k8s/README.md).
+manager and the pod template are described in the
+[deployment guide](../docs/DEPLOYMENT.md).
 
 | File | What |
 |---|---|

@@ -1,7 +1,7 @@
 // sandbox-manager runs the sandbox manager: the Multica runtimes of every
 // workspace of a bot account, whose tasks run one at a time on pods the
 // manager creates through the Kubernetes API, each running the stock Multica
-// daemon. See deploy/POOL.md.
+// daemon. See docs/DEPLOYMENT.md.
 package main
 
 import (
