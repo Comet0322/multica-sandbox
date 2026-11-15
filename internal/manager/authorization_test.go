@@ -13,9 +13,6 @@ func TestStartUpFlowIsNotBlockedByTheListAuthorization(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 1)
 	pod := h.newPod("pool-0")
-	if status := pod.event("started"); status != http.StatusOK { // the supervisor
-		t.Fatalf("started: status %d", status)
-	}
 	if status, _ := pod.call(http.MethodPost, "/api/tokens/current/renew", map[string]any{}); status != http.StatusOK {
 		t.Fatalf("renew: status %d", status)
 	}
@@ -70,12 +67,12 @@ func TestRepoListIsServedOnlyToAPodWorkingForTheWorkspace(t *testing.T) {
 		t.Fatalf("leased pod reading another workspace: status %d", status)
 	}
 
-	// Once the lease ends the pod is resetting and reads nothing.
+	// Once the lease ends its clean pod is deleted and reads nothing more.
 	if status := idle.report("ta1", "complete"); status != http.StatusOK {
 		t.Fatalf("complete: status %d", status)
 	}
-	if status := repoStatus(idle, wsA); status != http.StatusForbidden {
-		t.Fatalf("resetting pod: status %d", status)
+	if status := repoStatus(idle, wsA); status != http.StatusUnauthorized {
+		t.Fatalf("deleted pod: status %d", status)
 	}
 }
 
@@ -85,28 +82,11 @@ func TestRepoListOfAPodThatRegisteredForOneWorkspaceStopsThere(t *testing.T) {
 	up := newMultiMultica(t, a, b)
 	h := newMultiHarness(t, up, twoWorkspaces(nil, nil))
 	pod := h.newPod("pool-1")
-
-	// First sight: the manager orders a reset, the pod is resetting.
 	pod.registerFor(wsA)
-	if status := repoStatus(pod, wsA); status != http.StatusForbidden {
-		t.Fatalf("resetting pod without a registration after the reset: status %d", status)
-	}
-	// The supervisor takes the command; the daemon, still running, registers
-	// again before the report arrives. The pod reads nothing until it is reset.
-	cmd := pod.pollControl()
-	if cmd == nil {
-		t.Fatal("no reset command")
-	}
-	pod.registerFor(wsA)
-	if status := repoStatus(pod, wsA); status != http.StatusForbidden {
-		t.Fatalf("resetting pod, workspace it registered: status %d", status)
-	}
-	// Then the report: idle with the same workspace set.
-	pod.reportControl(cmd.ID, "done")
 	if status := repoStatus(pod, wsA); status != http.StatusOK {
-		t.Fatalf("idle pod, workspace it registered: status %d", status)
+		t.Fatalf("warm pod, workspace it registered: status %d", status)
 	}
 	if status := repoStatus(pod, wsB); status != http.StatusForbidden {
-		t.Fatalf("idle pod, workspace it did not register: status %d", status)
+		t.Fatalf("warm pod, workspace it did not register: status %d", status)
 	}
 }

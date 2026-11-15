@@ -1,6 +1,6 @@
 # Sandbox Manager Instructions
 
-This repository is our sandbox manager: the program that lends pooled pods to Multica tasks, the sandbox service that runs the pods, and the pod supervisor. Multica itself is a separate checkout next to it (`../multica`), used only to build the stock daemon into the pod image; do not change it for the manager's sake.
+This repository is our sandbox manager: the program that runs Multica tasks one at a time on pods it creates through the Kubernetes API, and the sandbox service that creates, watches and deletes those pods. Multica itself is a separate checkout next to it (`../multica`), used only to build the stock daemon into the pod image; do not change it for the manager's sake.
 
 ## Boundaries
 
@@ -13,7 +13,7 @@ This repository is our sandbox manager: the program that lends pooled pods to Mu
 ## Checks
 
 - Go: `gofmt -l .`, `go vet ./...` and `go test -race ./...`, as a non-root user.
-- End to end: build the images (see `deploy/pool/compose/smoke/smoke.sh`; the pod image needs `--build-context multica=../multica`), then run `deploy/pool/compose/smoke/scenarios.sh` and `smoke.sh` against `ghcr.io/multica-ai/multica-backend:v0.6.4`. They use their own compose projects; tear them down with `down -v`.
+- End to end: the local kind namespace in `deploy/k8s/dev` (`up.sh`, then `manager.sh`; see `deploy/k8s/README.md`) runs Multica v0.6.4, the manager and real pods. Build the pod image with `--build-context multica=../multica` and load it into kind. Automated namespace scenarios are not written yet; leave no pod or manager running after a manual run.
 
 ## Agent skills
 

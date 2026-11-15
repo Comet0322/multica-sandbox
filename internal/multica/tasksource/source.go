@@ -59,9 +59,8 @@ type Config struct {
 	// under its own daemon_id (see DaemonIDSuffix), name and device name.
 	// Empty registers the pool kind alone, under Name and DeviceName.
 	Runtimes []RuntimeSet
-	// Quota and AffinityRule are the defaults of every workspace.
-	Quota        int
-	AffinityRule multica.AffinityRule
+	// Quota is the default of every workspace.
+	Quota int
 	// SyncInterval is how often SyncLoop lists the workspaces. Zero means
 	// DefaultSyncInterval.
 	SyncInterval time.Duration
@@ -101,6 +100,9 @@ func DaemonIDSuffix(kind policy.Kind) string {
 type Core interface {
 	SetTenants(ctx context.Context, list []core.Tenant) core.TenantChanges
 	TenantBusy(id string) bool
+	// Knows reports whether the core holds a task: leased, or claimed and
+	// not picked up yet.
+	Knows(taskID string) bool
 }
 
 // Pods is what the source tells the pod side directly: nothing of it touches
@@ -299,7 +301,7 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 	next := slices.Clone(workspaces)
 	seen := map[string]bool{}
 	for i := range next {
-		if err := next[i].normalize(s.cfg.Name, s.cfg.AffinityRule); err != nil {
+		if err := next[i].normalize(s.cfg.Name); err != nil {
 			return ReloadResult{}, err
 		}
 		if seen[next[i].WorkspaceID] {
@@ -346,13 +348,15 @@ func (s *Source) Close(tenant string) {
 	}
 }
 
-// recoverOrphansOnce runs on the first successful Sync. The leases of an
-// earlier manager are gone with it and every pod is reset, so whatever Multica
-// still shows running on the manager's runtimes will never finish: it is
-// failed in every served workspace, which lets Multica retry it, without
-// waiting for a pod to register the workspace. The first Sync runs before pods
-// are served, so no live task can be hit. Best effort: a failure leaves the
-// tasks to Multica's own timeout, or to the recovery a pod's registration runs.
+// recoverOrphansOnce runs on the first successful Sync, after the core took
+// over the pods an earlier manager left. In a workspace with no work taken
+// over, whatever Multica still shows running on the manager's runtimes will
+// never finish: it is failed, which lets Multica retry it, without waiting for
+// a pod to register the workspace. In a workspace with work taken over, only
+// the tasks shown dispatched that the core does not hold are failed. The
+// first Sync runs before pods are served, so no live task can be hit. Best
+// effort: a failure leaves the tasks to Multica's own timeout, or to the
+// recovery a pod's registration runs.
 func (s *Source) recoverOrphansOnce(ctx context.Context) {
 	s.mu.Lock()
 	if s.orphansRecovered {
@@ -362,13 +366,35 @@ func (s *Source) recoverOrphansOnce(ctx context.Context) {
 	s.orphansRecovered = true
 	s.mu.Unlock()
 	for _, ws := range s.ws.served() {
-		if !s.core.TenantBusy(ws.cfg.WorkspaceID) {
+		id := ws.cfg.WorkspaceID
+		if !s.core.TenantBusy(id) {
 			for _, set := range ws.sets {
 				set.rt.RecoverOrphans(ctx)
+			}
+			continue
+		}
+		// The workspace has work the core took over from the pods; only the
+		// tasks dispatched here that no pod has are orphans. A task running
+		// on a pod that is gone was failed when the pod was found lost.
+		for _, set := range ws.sets {
+			ids, err := set.rt.Dispatched(ctx)
+			if err != nil {
+				s.log.Warn("list the tasks dispatched to the manager", "workspace_id", id, "error", err)
+				continue
+			}
+			for _, task := range ids {
+				if !s.core.Knows(task) {
+					s.log.Warn("failing a task dispatched to the manager before it restarted", "workspace_id", id, "task_id", task)
+					s.Fail(ctx, id, task, reasonLostInRestart)
+				}
 			}
 		}
 	}
 }
+
+// reasonLostInRestart fails a task the manager claimed before it restarted
+// and no pod took up.
+const reasonLostInRestart = "the sandbox manager restarted before the task reached a pod"
 
 // unregisteredWithPods reports whether some served workspace has no upstream
 // registration while live pods are in the pool to register it.
@@ -705,6 +731,17 @@ func (s *Source) RuntimeServed(runtimeID string) bool {
 		}
 	}
 	return false
+}
+
+// RuntimeWorkspace is the served workspace one of the manager's runtimes
+// belongs to.
+func (s *Source) RuntimeWorkspace(runtimeID string) (string, bool) {
+	for _, ws := range s.ws.served() {
+		if ws.owning(runtimeID) != nil {
+			return ws.cfg.WorkspaceID, true
+		}
+	}
+	return "", false
 }
 
 // RuntimeGone reports whether Multica said the runtime no longer exists.

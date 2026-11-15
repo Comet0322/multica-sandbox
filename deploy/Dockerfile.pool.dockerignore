@@ -1,11 +1,6 @@
-# The pod image needs the Go module and the pod files. Multica's sources come
-# from the "multica" build context, filtered by that checkout's own
-# .dockerignore.
+# The pod image needs only the pod files. Multica's sources come from the
+# "multica" build context, filtered by that checkout's own .dockerignore.
 *
-!go.mod
-!go.sum
-!cmd/
-!internal/
 !deploy/pool/
 !deploy/home/
 !deploy/fake/

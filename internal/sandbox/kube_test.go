@@ -227,6 +227,9 @@ func TestKubeLendsAPodOnceItsDaemonCallsIn(t *testing.T) {
 	if _, ok := h.svc.Authenticate(tokenOf(corev1.Pod{})); ok {
 		t.Fatal("an empty token authenticated")
 	}
+	if _, ok := h.svc.Pod(id); ok {
+		t.Fatal("a deleted pod is still listed")
+	}
 }
 
 func TestKubeCreatesAPodOnDemandWithNoWarmPods(t *testing.T) {

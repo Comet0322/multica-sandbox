@@ -39,16 +39,13 @@ func run() error {
 		url        = flag.String("multica", "http://127.0.0.1:18204", "Multica server URL")
 		tokenFile  = flag.String("token-file", "", "file holding the bot account's PAT (or set SANDBOX_POOL_TOKEN)")
 		admin      = flag.String("admin", "127.0.0.1:8791", "admin listen address (serves /dispatch)")
-		overrides  = flag.String("overrides", "", "per-workspace overrides file (guarantee, weight, quota, ...)")
+		overrides  = flag.String("overrides", "", "per-workspace overrides file (guarantee, weight, quota, hold_timeout)")
 		pods       = flag.Int("pods", 6, "simulated pods")
 		taskMin    = flag.Duration("task-min", 20*time.Second, "shortest simulated task")
 		taskMax    = flag.Duration("task-max", 90*time.Second, "longest simulated task")
 		failRate   = flag.Float64("fail-rate", 0.1, "share of tasks reported failed")
-		resetTime  = flag.Duration("reset", 5*time.Second, "how long a simulated reset takes")
-		capacity   = flag.Int("capacity", 1, "slots per pod")
-		placement  = flag.String("placement", "", "affinity rule (default person-issue)")
+		startTime  = flag.Duration("start", 5*time.Second, "how long a new simulated pod takes to start")
 		hold       = flag.Duration("hold", 2*time.Minute, "hold timeout")
-		lifetime   = flag.Duration("lifetime", 30*time.Minute, "binding maximum lifetime")
 		syncEvery  = flag.Duration("sync", 10*time.Second, "workspace listing interval")
 		dispatchEv = flag.Duration("dispatch", time.Second, "dispatch tick")
 		models     = flag.String("models", envOr("SANDBOX_MODELS", "claude=claude-sonnet-4-6,claude-opus-4-7,claude-haiku-4-5-20251001"), "models the agent picker offers, as SANDBOX_MODELS: provider=model,model;provider=... (the first is the default)")
@@ -69,9 +66,8 @@ func run() error {
 	}
 	cfg := manager.Config{
 		MulticaURL: *url, PAT: pat, Name: os.Getenv("SANDBOX_MANAGER_NAME"),
-		DeviceName: os.Getenv("SANDBOX_MANAGER_DEVICE_NAME"), ExpectedSize: *pods,
-		Capacity: *capacity, AffinityRule: multica.AffinityRule(*placement),
-		HoldTimeout: *hold, MaxLifetime: *lifetime, SyncInterval: *syncEvery,
+		DeviceName:  os.Getenv("SANDBOX_MANAGER_DEVICE_NAME"),
+		HoldTimeout: *hold, SyncInterval: *syncEvery,
 		DispatchInterval: *dispatchEv, ReconcileInterval: 30 * time.Second, Providers: []string{"claude"},
 	}
 	var err error
@@ -84,7 +80,7 @@ func run() error {
 	}
 	m, err := manager.NewSimulated(cfg, log, func(c *core.Core, s *tasksource.Source, client *multica.Client) (manager.PodSide, func(context.Context)) {
 		p := devpool.New(devpool.Config{
-			Log: log, Pods: *pods, TaskMin: *taskMin, TaskMax: *taskMax, FailRate: *failRate, ResetTime: *resetTime,
+			Log: log, Pods: *pods, TaskMin: *taskMin, TaskMax: *taskMax, FailRate: *failRate, StartTime: *startTime,
 		}, c, s, client)
 		return p, p.Run
 	})

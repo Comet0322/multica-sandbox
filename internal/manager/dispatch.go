@@ -14,15 +14,15 @@ import (
 // DispatchView is the pool's sharing at one moment.
 type DispatchView struct {
 	At time.Time `json:"at"`
-	// Pool counts the pods by state; Live are those that can be lent (not
-	// lost), the pods the fair shares split.
+	// Pool counts the pods by phase; Live are those not failed, the pods the
+	// fair shares split.
 	Pool DispatchPool `json:"pool"`
 	// Workspaces lists each served workspace's share, then the draining
 	// ones.
 	Workspaces []DispatchWorkspace `json:"workspaces"`
 	// Totals add up the workspaces.
 	Totals DispatchTotals `json:"totals"`
-	// Pods lists every pod, in registration order.
+	// Pods lists every pod, in creation order.
 	Pods []DispatchPod `json:"pods"`
 }
 
@@ -30,32 +30,34 @@ type DispatchView struct {
 type DispatchPod struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// State is idle, leased, resetting or lost (see PodInfo).
-	State string `json:"state"`
-	// WorkspaceID is the workspace the pod is bound to; empty when none.
+	// Phase is warm, starting, running, held, idle or failed (see PodInfo).
+	Phase string `json:"phase"`
+	// Kind, WorkspaceID, Key and TaskID are what it serves, once it served
+	// a task.
+	Kind        string `json:"kind,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
-	// Hold is set while its binding runs nothing; HoldRemainingSeconds is
-	// how long before it is reset.
-	Hold                 bool  `json:"hold,omitempty"`
-	HoldRemainingSeconds int64 `json:"hold_remaining_seconds,omitempty"`
-	// Kept is set for a binding of the workspace rule, whose hold has no end.
-	Kept bool `json:"kept,omitempty"`
-	// Tasks are the tasks its binding holds, and UsedSlots/CapacitySlots its
-	// slot use.
-	Tasks         int      `json:"tasks,omitempty"`
-	UsedSlots     int      `json:"used_slots,omitempty"`
-	CapacitySlots int      `json:"capacity_slots,omitempty"`
-	Initiators    []string `json:"initiators,omitempty"`
+	Key         string `json:"key,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
+	// HoldRemainingSeconds is how long a held pod stays held.
+	HoldRemainingSeconds int64    `json:"hold_remaining_seconds,omitempty"`
+	Initiators           []string `json:"initiators,omitempty"`
+	// Reason is why a failed pod failed, or why a starting pod still waits.
+	Reason string `json:"reason,omitempty"`
 }
 
-// DispatchPool counts the pool's pods.
+// DispatchPool counts the pods by phase, against the budget.
 type DispatchPool struct {
-	Expected  int `json:"expected"`
-	Live      int `json:"live"`
-	Idle      int `json:"idle"`
-	Leased    int `json:"leased"`
-	Resetting int `json:"resetting"`
-	Lost      int `json:"lost"`
+	Max      int `json:"max"`
+	Live     int `json:"live"`
+	Warm     int `json:"warm"`
+	Starting int `json:"starting"`
+	Running  int `json:"running"`
+	Held     int `json:"held"`
+	Idle     int `json:"idle"`
+	Failed   int `json:"failed"`
+	// Problem is why pods could not be created or started lately, such as
+	// no node capacity or an image that cannot be pulled.
+	Problem string `json:"problem,omitempty"`
 }
 
 // DispatchWorkspace is one workspace's share: its settings, the target the
@@ -69,7 +71,7 @@ type DispatchWorkspace struct {
 	Guarantee         int `json:"guarantee"`
 	GuaranteeInEffect int `json:"guarantee_in_effect"`
 	Weight            int `json:"weight"`
-	// Quota caps its running tasks in slots; 0 is no cap.
+	// Quota caps its running tasks in pods; 0 is no cap.
 	Quota int `json:"quota"`
 	// TargetPods is the policy's share for it of the live pods, for the work
 	// there is now.
@@ -181,18 +183,16 @@ func dispatchView(inv Inventory, tasks map[string][]DispatchTask, now time.Time)
 	v := DispatchView{
 		At: now.UTC(),
 		Pool: DispatchPool{
-			Expected: inv.ExpectedSize, Live: inv.LivePods,
-			Idle: inv.Idle, Leased: inv.Leased, Resetting: inv.Resetting, Lost: inv.Lost,
+			Max: inv.MaxPods, Live: inv.LivePods, Warm: inv.Warm, Starting: inv.Starting,
+			Running: inv.Running, Held: inv.Held, Idle: inv.Idle, Failed: inv.Failed, Problem: inv.Problem,
 		},
 		Workspaces: []DispatchWorkspace{},
 		Pods:       []DispatchPod{},
 	}
 	for _, pd := range inv.Pods {
-		dp := DispatchPod{ID: pd.ID, Name: pd.Name, State: pd.State, WorkspaceID: pd.WorkspaceID, Initiators: pd.Initiators}
-		if b := pd.Binding; b != nil {
-			dp.WorkspaceID = b.WorkspaceID
-			dp.Hold, dp.HoldRemainingSeconds, dp.Kept = b.Hold, b.HoldRemainingSeconds, b.Kept
-			dp.Tasks, dp.UsedSlots, dp.CapacitySlots = b.Tasks, b.UsedSlots, b.CapacitySlots
+		dp := DispatchPod{
+			ID: pd.ID, Name: pd.Name, Phase: pd.Phase, Kind: pd.Kind, WorkspaceID: pd.WorkspaceID, Key: pd.Key, TaskID: pd.TaskID,
+			HoldRemainingSeconds: pd.HoldRemainingSeconds, Initiators: pd.Initiators, Reason: pd.Reason,
 		}
 		v.Pods = append(v.Pods, dp)
 	}

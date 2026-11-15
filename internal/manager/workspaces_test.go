@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 const (
@@ -275,23 +276,18 @@ func newMultiHarness(t *testing.T, up *multiMultica, workspaces []manager.Worksp
 // with its own settings, as a Sync that found them would.
 func newBotHarness(t *testing.T, up *multiMultica, workspaces []manager.WorkspaceConfig, cfg manager.Config) *harness {
 	t.Helper()
-	logs, audit := &syncBuffer{}, &syncBuffer{}
-	cfg.MulticaURL, cfg.PAT, cfg.Name, cfg.AuditLog = up.URL, patPool, "Shared Pool", audit
-	cleanRuntimes(&cfg)
-	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
+	cfg.MulticaURL, cfg.PAT, cfg.Name = up.URL, patPool, "Shared Pool"
+	if len(cfg.Runtimes) == 0 {
+		clean(&cfg)
 	}
-	if _, err := pool.Reload(context.Background(), workspaces); err != nil {
-		t.Fatal(err)
-	}
-	h := &harness{t: t, pool: pool, logs: logs, audit: audit}
-	h.podAPI = httptest.NewServer(pool.PodHandler())
-	h.admin = httptest.NewServer(pool.AdminHandler())
-	t.Cleanup(h.podAPI.Close)
-	t.Cleanup(h.admin.Close)
-	return h
+	return startManager(t, fake.NewSimpleClientset(), cfg, botPods, botPods, func(ctx context.Context, m *manager.Manager) error {
+		_, err := m.Reload(ctx, workspaces)
+		return err
+	})
 }
+
+// botPods is how many warm pods a bot harness keeps, and its budget.
+const botPods = 4
 
 // registerFor registers the pod's daemon for one workspace and returns the
 // runtime IDs it was given.
@@ -324,11 +320,7 @@ func (p *simPod) registerFor(workspaceID string) []string {
 // startAll plays a daemon that watches every workspace the manager lists.
 func (p *simPod) startAll() []string {
 	p.h.t.Helper()
-	ids := p.startAllRaw()
-	if p.settleFirstSeen() {
-		ids = p.startAllRaw()
-	}
-	return ids
+	return p.startAllRaw()
 }
 
 func (p *simPod) startAllRaw() []string {
@@ -419,7 +411,7 @@ func TestPodSeesEveryWorkspaceAndTasksAreClaimedInTheirOwnWorkspace(t *testing.T
 	}
 }
 
-func TestPodLentToAIsNotLentToBUntilReset(t *testing.T) {
+func TestAPodLentToAIsNeverLentToB(t *testing.T) {
 	t.Parallel()
 	a, b := &fakeWorkspace{id: wsA}, &fakeWorkspace{id: wsB}
 	up := newMultiMultica(t, a, b)
@@ -434,23 +426,21 @@ func TestPodLentToAIsNotLentToBUntilReset(t *testing.T) {
 		t.Fatalf("complete: status %d", status)
 	}
 
-	// B has a task the moment A's lease ends.
+	// B has a task the moment A's lease ends. A's clean pod is deleted, and
+	// B's queue is not touched before a new pod is ready.
 	up.enqueue(b, "tb")
 	before := up.claimCount(b)
-	if got := pod.claimFrom(ids); len(got) != 0 {
-		t.Fatalf("pod still resetting was handed %v", got)
+	eventually(t, "A's pod deleted", func() bool { return !h.kubeHas(pod.id) })
+	if code := pod.heartbeat(); code != http.StatusUnauthorized {
+		t.Fatalf("the deleted pod's daemon still reaches the manager: %d", code)
 	}
-	cmd := pod.pollControl()
-	if cmd == nil {
-		t.Fatal("want a reset command")
-	}
+	h.dispatch()
 	if n := up.claimCount(b) - before; n != 0 {
-		t.Fatalf("B's queue must not be touched before the pod is reset, saw %d claims", n)
+		t.Fatalf("B's queue must not be touched before a new pod is ready, saw %d claims", n)
 	}
-	// The daemon stays registered for both workspaces through the reset.
-	pod.reportControl(cmd.ID, "done")
+	ids = pod.recycleMulti()
 	if got := pod.claimFrom(ids); !slices.Equal(got, []string{"tb"}) {
-		t.Fatalf("want [tb] once the reset is done, got %v", got)
+		t.Fatalf("want [tb] on the new pod, got %v", got)
 	}
 }
 
@@ -559,7 +549,7 @@ func TestInventoryLeasesAndAuditCarryTheWorkspace(t *testing.T) {
 	}
 
 	inv := h.inventory()
-	if len(inv.Pods) != 1 || inv.Pods[0].WorkspaceID != wsB {
+	if i := slices.IndexFunc(inv.Pods, func(p manager.PodInfo) bool { return p.ID == pod.id }); i < 0 || inv.Pods[i].WorkspaceID != wsB {
 		t.Fatalf("leased pod must show workspace B: %+v", inv.Pods)
 	}
 	counts := map[string]int{}
@@ -576,7 +566,7 @@ func TestInventoryLeasesAndAuditCarryTheWorkspace(t *testing.T) {
 	pod.report("tb", "complete")
 	for _, rec := range h.auditRecords() {
 		if rec.TaskID == "" {
-			continue // a pod-level reset record, tied to no workspace
+			continue // a pod-level record, tied to no workspace
 		}
 		if rec.WorkspaceID != wsB {
 			t.Fatalf("audit record without workspace B: %+v", rec)
@@ -593,10 +583,9 @@ func TestPoolRejectsBadWorkspaceEntries(t *testing.T) {
 		"duplicate":      {{WorkspaceID: wsA}, {WorkspaceID: wsA}},
 		"bad ID":         {{WorkspaceID: "nope"}},
 		"negative quota": {{WorkspaceID: wsA, Quota: -1}},
-		"bad placement":  {{WorkspaceID: wsA, AffinityRule: "pod"}},
 	}
 	up := newMultiMultica(t, &fakeWorkspace{id: wsA})
-	pool, err := manager.New(manager.Config{MulticaURL: up.URL, PAT: patPool}, nil)
+	pool, err := manager.New(manager.Config{MulticaURL: up.URL, PAT: patPool, Kube: testKube()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

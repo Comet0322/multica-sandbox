@@ -20,6 +20,7 @@ import (
 
 	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -33,6 +34,10 @@ type Service interface {
 	Inventory() sandbox.Inventory
 	// Pod reports one pod; false when the service does not know it.
 	Pod(id sandbox.PodID) (sandbox.PodInfo, bool)
+	// Record keeps what a held pod serves on the pod; Restore takes over the
+	// pods a previous run left, with what they serve.
+	Record(id sandbox.PodID, r sandbox.PodRecord)
+	Restore(ctx context.Context) ([]sandbox.RestoredPod, error)
 }
 
 // Core is what the pool asks and tells the core.
@@ -42,8 +47,8 @@ type Core interface {
 	TaskEnded(pod, task, reason string)
 	MayServe(pod, tenant string) core.Verdict
 	PodServes(pod, tenant string)
+	Restore(pods []core.RestoredPod)
 	PodLost(pod, why string)
-	PodInterrupted(pod, why string)
 	Touch()
 }
 
@@ -55,6 +60,7 @@ type Source interface {
 	Served(id string) (string, bool)
 	Register(ctx context.Context, pod string, req multica.Registration) (map[string]json.RawMessage, string, *multica.PodError)
 	RuntimeServed(runtimeID string) bool
+	RuntimeWorkspace(runtimeID string) (string, bool)
 	RuntimeGone(runtimeID string) bool
 	ModelsReported(runtimeID string, report []byte)
 }
@@ -63,10 +69,8 @@ type Source interface {
 type Config struct {
 	Log *slog.Logger
 	Now func() time.Time
-	// Service is the sandbox service the pods are reached through. Handler
-	// serves its own pod paths on the pod listener, nil when it has none.
+	// Service is the sandbox service the pods are reached through.
 	Service Service
-	Handler http.Handler
 	// Client relays the pods' requests upstream.
 	Client *multica.Client
 	// Wake serves the wake socket; without it pods only poll.
@@ -98,13 +102,8 @@ func New(cfg Config) *Pool {
 		cfg.Now = time.Now
 	}
 	p := &Pool{cfg: cfg, log: cfg.Log, svc: cfg.Service, registered: map[string]map[string]struct{}{}}
-	podPaths := cfg.Handler
-	if podPaths == nil {
-		podPaths = http.NotFoundHandler()
-	}
 	p.api = multica.NewDaemonAPI(multica.DaemonAPIConfig{
 		Log: cfg.Log, Now: cfg.Now, Wake: cfg.Wake, Backend: backend{p}, Forward: cfg.Client.Forward,
-		PodPaths: map[string]http.Handler{sandbox.RegisterPath: podPaths, sandbox.ControlPath: podPaths},
 	})
 	return p
 }
@@ -124,12 +123,11 @@ func (p *Pool) Notifier() sandbox.Notifier { return notifier{p} }
 
 type notifier struct{ p *Pool }
 
-func (n notifier) Interrupted(id sandbox.PodID, why string) { n.p.core.PodInterrupted(string(id), why) }
-func (n notifier) Lost(id sandbox.PodID, why string)        { n.p.core.PodLost(string(id), why) }
+func (n notifier) Lost(id sandbox.PodID, why string) { n.p.core.PodLost(string(id), why) }
 
 // What the core asks (core.Pool).
 
-// Acquire takes a free, reset pod from the sandbox service.
+// Acquire takes a ready pod that served no one from the sandbox service.
 func (p *Pool) Acquire(ctx context.Context) (string, error) {
 	id, err := p.svc.Create(ctx)
 	if errors.Is(err, sandbox.ErrNoCapacity) {
@@ -138,7 +136,7 @@ func (p *Pool) Acquire(ctx context.Context) (string, error) {
 	return string(id), err
 }
 
-// HandBack hands a pod back to the sandbox service, which resets it.
+// HandBack hands a pod back to the sandbox service, which deletes it.
 func (p *Pool) HandBack(ctx context.Context, pod string, why core.HandBack) error {
 	return p.svc.Delete(ctx, sandbox.PodID(pod), sandbox.AuditLabel{
 		Reason: why.Reason, TaskID: why.TaskID, WorkspaceID: why.Tenant, Initiator: why.Initiator,
@@ -146,7 +144,7 @@ func (p *Pool) HandBack(ctx context.Context, pod string, why core.HandBack) erro
 }
 
 func podInfo(sp sandbox.PodInfo) core.PodInfo {
-	return core.PodInfo{ID: string(sp.ID), Name: sp.Label, State: core.PodState(sp.State), RegisteredAt: sp.RegisteredAt, LastSeen: sp.LastSeen}
+	return core.PodInfo{ID: string(sp.ID), Name: sp.Label, State: core.PodState(sp.State), CreatedAt: sp.CreatedAt, LastSeen: sp.LastSeen, Reason: sp.Reason}
 }
 
 // Pod reports one pod.
@@ -158,7 +156,7 @@ func (p *Pool) Pod(id string) (core.PodInfo, bool) {
 	return podInfo(sp), true
 }
 
-// Pods lists every pod, in registration order, and forgets the registrations
+// Pods lists every pod, in creation order, and forgets the registrations
 // of pods the sandbox service no longer lists.
 func (p *Pool) Pods() []core.PodInfo {
 	inv := p.svc.Inventory()
@@ -181,6 +179,10 @@ func (p *Pool) Pods() []core.PodInfo {
 // PrunedTotal counts the lost pods the sandbox service pruned.
 func (p *Pool) PrunedTotal() int { return p.svc.Inventory().PrunedTotal }
 
+// Problem is why pods could not be created or started lately, empty when
+// none is known.
+func (p *Pool) Problem() string { return p.svc.Inventory().Problem }
+
 // Tenants lists the tenants the pod's daemon registered for, sorted.
 func (p *Pool) Tenants(pod string) []string {
 	p.mu.Lock()
@@ -191,6 +193,37 @@ func (p *Pool) Tenants(pod string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// Record keeps what a held pod serves on the pod.
+func (p *Pool) Record(pod string, rec core.PodRecord) {
+	p.svc.Record(sandbox.PodID(pod), sandbox.PodRecord{
+		Phase: string(rec.Phase), Tenant: rec.Tenant, Kind: string(rec.Kind), Key: rec.Key,
+		Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
+	})
+}
+
+// Restore takes over the pods a previous run left: the core holds those that serve anyone, each
+// registered for its own workspace until its daemon registers again (see
+// HeartbeatPod). Call it before the pool serves anything.
+func (p *Pool) Restore(ctx context.Context) error {
+	found, err := p.svc.Restore(ctx)
+	if err != nil {
+		return err
+	}
+	pods := make([]core.RestoredPod, 0, len(found))
+	p.mu.Lock()
+	for _, f := range found {
+		rec := f.Record
+		p.registered[string(f.ID)] = map[string]struct{}{rec.Tenant: {}}
+		pods = append(pods, core.RestoredPod{ID: string(f.ID), Record: core.PodRecord{
+			Phase: policy.Phase(rec.Phase), Tenant: rec.Tenant, Kind: policy.Kind(rec.Kind), Key: rec.Key,
+			Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
+		}})
+	}
+	p.mu.Unlock()
+	p.core.Restore(pods)
+	return nil
 }
 
 // Wake tells a pod over its wake socket that a task is placed on it.
@@ -246,8 +279,8 @@ func (b backend) RuntimeServed(runtimeID string) bool { return b.p.source.Runtim
 // RegisterPod registers the pod's daemon for a workspace: the source
 // registers the workspace's runtimes upstream on the first pod's behalf and
 // answers, and the core learns the pod can serve the workspace. The
-// registration is kept whether or not the core holds the pod: the daemon
-// keeps running, and registered, through resets.
+// registration is kept whether or not the core holds the pod, for as long as
+// the pod exists.
 func (b backend) RegisterPod(ctx context.Context, podID string, reg multica.Registration) (map[string]json.RawMessage, *multica.PodError) {
 	resp, tenant, perr := b.p.source.Register(ctx, podID, reg)
 	if perr != nil {
@@ -277,6 +310,13 @@ func (b backend) HeartbeatPod(ctx context.Context, podID, runtimeID string) *mul
 		// (daemon.isRuntimeNotFoundError).
 		return &multica.PodError{Status: http.StatusNotFound, Msg: "runtime not found: the runtime was deleted upstream; register again"}
 	}
+	if ws, ok := b.p.source.RuntimeWorkspace(runtimeID); !ok || !b.p.Registered(podID, ws) {
+		// The daemon registered before the manager last started, so the
+		// manager does not know the runtime, or that the pod serves its
+		// workspace. The same answer makes it register again, which tells
+		// the manager.
+		return &multica.PodError{Status: http.StatusNotFound, Msg: "runtime not found: the manager restarted; register again"}
+	}
 	return nil
 }
 
@@ -286,10 +326,9 @@ func (b backend) ClaimFor(ctx context.Context, podID string) json.RawMessage {
 
 // ReposRoute is the route for the pod to read a workspace's repos and
 // settings with the account's credential, when it may: it holds a task of the
-// workspace, or it runs nothing and has no binding, registered for the
-// workspace and is clean (free in the sandbox service, or held and idle). A
-// pod working for another workspace, a pod between its lease's end and the
-// end of its reset, and an unknown pod read nothing.
+// workspace, or it is warm (it served no one) and registered for the
+// workspace. A pod working for another workspace, a pod that served a task
+// and has none placed on it, and an unknown pod read nothing.
 func (b backend) ReposRoute(podID, workspaceID string) (*multica.Route, bool) {
 	switch b.p.core.MayServe(podID, workspaceID) {
 	case core.Allowed:

@@ -1,25 +1,26 @@
 package manager_test
 
-// The task-lifecycle harness: a fake Multica server, simulated pods that
-// register with the manager and present the pod token it issued, and the pool
-// manager under test, all inside one test process. Every simulated pod reaches
-// the manager from the same loopback address: only the token tells them apart.
+// The task-lifecycle harness: a fake Multica server, a fake Kubernetes API
+// the manager creates its pods in, simulated daemons that present the pod
+// token the manager put in their pod's environment, and the manager under
+// test, all inside one test process. Every simulated pod reaches the manager
+// from the same loopback address: only the token tells them apart.
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"sandbox-manager/internal/policy"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"k8s.io/client-go/kubernetes/fake"
 
 	"sandbox-manager/internal/manager"
 )
@@ -266,6 +267,13 @@ type harness struct {
 	logs *syncBuffer
 	// audit captures the manager's audit log.
 	audit *syncBuffer
+	// kube is the Kubernetes API the manager creates its pods in, and stop
+	// ends the manager.
+	kube *fake.Clientset
+	stop context.CancelFunc
+	// adopted are the pods a simulated daemon plays, by name.
+	adoptMu sync.Mutex
+	adopted map[string]bool
 }
 
 // syncBuffer is a log sink safe for the manager's concurrent handlers.
@@ -286,45 +294,12 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// cleanRuntimes claims for the clean kind unless the test chose: the GitOps
-// pods these tests run are reset after every task, as a clean task with no
-// hold has its pod deleted.
-func cleanRuntimes(cfg *manager.Config) {
-	if len(cfg.Runtimes) == 0 {
-		cfg.Runtimes = []policy.Kind{policy.KindClean}
-	}
-}
-
+// newHarness starts a manager whose sandbox service keeps expectedSize warm
+// pods, which is also its budget. Tests that do not choose claim for the
+// pool kind with no hold.
 func newHarness(t *testing.T, expectedSize int, opts ...func(*manager.Config)) *harness {
 	t.Helper()
-	up := newFakeMultica(t)
-	cfg := manager.Config{
-		MulticaURL:   up.URL,
-		PAT:          harnessPAT,
-		Name:         "Test Pool",
-		ExpectedSize: expectedSize,
-	}
-	cleanRuntimes(&cfg)
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	logs := &syncBuffer{}
-	audit := &syncBuffer{}
-	cfg.AuditLog = audit
-	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The manager serves the bot account's workspaces once it has found them.
-	if _, err := pool.Sync(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	h := &harness{t: t, upstream: up, pool: pool, logs: logs, audit: audit}
-	h.podAPI = httptest.NewServer(pool.PodHandler())
-	h.admin = httptest.NewServer(pool.AdminHandler())
-	t.Cleanup(h.podAPI.Close)
-	t.Cleanup(h.admin.Close)
-	return h
+	return newKubeWorld(t).manager(expectedSize, max(expectedSize, 1), opts...)
 }
 
 // inventory queries the manager's read-only inventory endpoint.
@@ -345,59 +320,39 @@ func (h *harness) inventory() manager.Inventory {
 	return inv
 }
 
-// simPod plays a pod: its entrypoint registers with the manager, and its
-// standard daemon and supervisor present the pod token it got.
+// simPod plays a pod's stock daemon, presenting the pod token the manager
+// put in the pod's environment.
 type simPod struct {
 	h    *harness
 	name string
-	// id and token are the pod identity the manager issued at registration.
+	// id is the pod's name in Kubernetes, token its pod token.
 	id, token string
 	client    *http.Client
-	// seen is set by the first start; see start.
-	seen bool
 }
 
-// newPod plays a container start: the entrypoint registers the pod, labelled
-// with name, and keeps the pod token for the daemon and the supervisor.
+// newPod plays the daemon of the next warm pod the manager created that no
+// simulated daemon plays yet; name is the daemon's own name, which the
+// manager never shows.
 func (h *harness) newPod(name string) *simPod {
 	h.t.Helper()
-	transport := &http.Transport{}
-	h.t.Cleanup(transport.CloseIdleConnections)
-	p := &simPod{h: h, name: name, client: &http.Client{Transport: transport, Timeout: 10 * time.Second}}
-	p.id, p.token = h.registerPod(name)
+	var p *simPod
+	eventually(h.t, "a new pod", func() bool {
+		for _, pd := range h.kubePods() {
+			h.adoptMu.Lock()
+			taken := h.adopted[pd.Name]
+			if !taken {
+				h.adopted[pd.Name] = true
+			}
+			h.adoptMu.Unlock()
+			if !taken {
+				p = h.adopt(pd)
+				p.name = name
+				return true
+			}
+		}
+		return false
+	})
 	return p
-}
-
-// registerPod plays a pod's entrypoint calling the registration endpoint.
-func (h *harness) registerPod(label string) (id, token string) {
-	h.t.Helper()
-	status, raw := h.registerPodRaw(map[string]string{"label": label})
-	if status != http.StatusOK {
-		h.t.Fatalf("register pod: status %d: %s", status, raw)
-	}
-	var resp struct {
-		PodID string `json:"pod_id"`
-		Token string `json:"token"`
-	}
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		h.t.Fatal(err)
-	}
-	if resp.PodID == "" || resp.Token == "" {
-		h.t.Fatalf("registration answered no pod identity: %s", raw)
-	}
-	return resp.PodID, resp.Token
-}
-
-func (h *harness) registerPodRaw(body any) (int, []byte) {
-	h.t.Helper()
-	raw, _ := json.Marshal(body)
-	resp, err := http.Post(h.podAPI.URL+"/pod/register", "application/json", bytes.NewReader(raw))
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	out, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, out
 }
 
 func (p *simPod) call(method, path string, body any) (int, []byte) {
@@ -509,39 +464,13 @@ func (h *harness) leases() []manager.LeaseInfo {
 
 // start runs the calls a daemon makes while starting up: renew its token, list
 // workspaces, then register its runtimes. It returns the register response.
-//
-// The first start of a pod plays the rest of its arrival: the manager resets a
-// newly registered pod before lending it, so the supervisor takes the reset
-// command and reports it done once the daemon is up, and the daemon registers
-// again. The pod is idle when start returns.
+// The pod is ready once start returns.
 func (p *simPod) start() map[string]any {
 	p.h.t.Helper()
-	resp := p.startRaw()
-	if p.settleFirstSeen() {
-		resp = p.startRaw()
-	}
-	return resp
+	return p.startRaw()
 }
 
-// settleFirstSeen plays the supervisor for the reset the manager orders for a
-// pod it has never seen. It reports whether the daemon has to register again.
-func (p *simPod) settleFirstSeen() bool {
-	p.h.t.Helper()
-	if p.seen {
-		return false
-	}
-	p.seen = true
-	cmd := p.pollControl()
-	if cmd == nil || cmd.Command != "reset" {
-		return false
-	}
-	if code := p.reportControl(cmd.ID, "done"); code != http.StatusOK {
-		p.h.t.Fatalf("report first-seen reset done: status %d", code)
-	}
-	return true
-}
-
-// startRaw is one daemon start with no supervisor involved.
+// startRaw is one daemon start.
 func (p *simPod) startRaw() map[string]any {
 	p.h.t.Helper()
 	if status, _ := p.call(http.MethodPost, "/api/tokens/current/renew", map[string]any{}); status != http.StatusOK {
@@ -666,13 +595,6 @@ func (h *harness) withClock() *testClock {
 	return c
 }
 
-// shortTimeout makes a pod silent on its control channel for 3 seconds lost.
-func shortTimeout(c *manager.Config) { c.HeartbeatTimeout = 3 * time.Second }
-
-// farHeartbeat keeps a pod from being listed lost while the test moves the
-// clock.
-func farHeartbeat(c *manager.Config) { c.HeartbeatTimeout = 1000 * time.Hour }
-
 // leaseOne starts the pod and hands it task id.
 func leaseOne(t *testing.T, h *harness, pod *simPod, id string) {
 	t.Helper()
@@ -735,10 +657,4 @@ func answerTask(f *fakeMultica, answer func(id, action string) (code int, status
 		}
 		return true
 	})
-}
-
-func (p *simPod) event(name string) int {
-	p.h.t.Helper()
-	status, _ := p.call(http.MethodPost, "/pod/control", map[string]string{"event": name})
-	return status
 }

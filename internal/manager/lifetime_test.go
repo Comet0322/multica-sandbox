@@ -1,8 +1,8 @@
 package manager_test
 
 // These tests check that the manager carries out the policy's hold and
-// budget decisions on GitOps pods: the reset sent, the audit record written.
-// The decisions themselves are tested in internal/policy.
+// budget decisions on its pods: the pod made idle or deleted, the audit
+// record written. The decisions themselves are tested in internal/policy.
 
 import (
 	"slices"
@@ -13,7 +13,7 @@ import (
 	"sandbox-manager/internal/manager"
 )
 
-func TestHeldPodIsResetWhenItsHoldRunsOut(t *testing.T) {
+func TestAPoolPodIsIdleWhenItsHoldRunsOut(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 1, holding(150*time.Millisecond))
 	h.upstream.enqueueIn("t1", "issue-1", "")
@@ -21,22 +21,42 @@ func TestHeldPodIsResetWhenItsHoldRunsOut(t *testing.T) {
 	a.start()
 	a.claimBatch()
 	a.report("t1", "complete")
+	if inv := h.inventory(); inv.Held != 1 {
+		t.Fatalf("a pod whose task ended should be held: %+v", inv)
+	}
 
 	time.Sleep(300 * time.Millisecond)
-	if inv := h.inventory(); inv.Resetting != 1 || inv.Leased != 0 {
-		t.Fatalf("a pod whose hold ran out should be resetting: %+v", inv)
+	if inv := h.inventory(); inv.Idle != 1 || inv.Held != 0 {
+		t.Fatalf("a pool pod whose hold ran out should be idle: %+v", inv)
 	}
-	h.upstream.enqueueIn("t2", "issue-1", "")
-	if got := a.claimBatch(); len(got) != 0 {
-		t.Fatalf("a resetting pod took a new task: %v", got)
-	}
-	a.completeReset()
-	// The hold is gone: the same issue's next task takes the pod anew.
+	// Another key of the workspace takes it.
+	h.upstream.enqueueIn("t2", "issue-2", "")
 	if got := a.claimBatch(); !slices.Equal(got, []string{"t2"}) {
-		t.Fatalf("the next task of the key should take a pod again: %v", got)
+		t.Fatalf("another key's task should take the idle pod: %v", got)
 	}
-	if got := leasePods(h); got["t2"] != a.id {
-		t.Fatalf("unexpected placement: %v", got)
+}
+
+func TestACleanPodIsDeletedWhenItsHoldRunsOut(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 1, holding(150*time.Millisecond), clean)
+	h.upstream.enqueueIn("t1", "issue-1", "")
+	a := h.newPod("pool-0")
+	a.start()
+	a.claimBatch()
+	a.report("t1", "complete")
+
+	time.Sleep(300 * time.Millisecond)
+	h.inventory()
+	eventually(t, "the clean pod deleted", func() bool { return !h.kubeHas(a.id) })
+	if !deletedFor(h, a.id, "hold expired") {
+		t.Fatalf("the deletion is not in the audit log: %+v", h.auditRecords())
+	}
+	// The next task of the key gets a new pod.
+	h.upstream.enqueueIn("t2", "issue-1", "")
+	b := h.newPod("pool-1")
+	b.start()
+	if got := b.claimBatch(); !slices.Equal(got, []string{"t2"}) {
+		t.Fatalf("the key's next task should take a new pod: %v", got)
 	}
 }
 
@@ -52,65 +72,33 @@ func TestAHeldPodIsDeletedForTheBudgetWhenNoPodIsFree(t *testing.T) {
 
 	// The only pod is held for issue-1 with nothing running; issue-2 must
 	// not wait for the hold to run out.
-	if got := a.claimBatch(); len(got) != 0 {
-		t.Fatalf("the deleted pod must be reset before it runs the task: %v", got)
-	}
-	if inv := h.inventory(); inv.Resetting != 1 {
-		t.Fatalf("the held pod should be reset for the other key's task: %+v", inv)
-	}
-	var evicted bool
-	for _, r := range h.auditRecords() {
-		if r.Action == manager.AuditReset && r.PodID == a.id && strings.Contains(r.Reason, "the pod budget is full") {
-			evicted = true
-		}
-	}
-	if !evicted {
+	h.dispatch()
+	if !deletedFor(h, a.id, "the pod budget is full") {
 		t.Fatalf("the deletion is not in the audit log: %+v", h.auditRecords())
 	}
-	a.completeReset()
-	if got := a.claimBatch(); !slices.Equal(got, []string{"t2"}) {
-		t.Fatalf("the task should run on the evicted pod: %v", got)
+	b := h.newPod("pool-1")
+	b.start()
+	if got := b.claimBatch(); !slices.Equal(got, []string{"t2"}) {
+		t.Fatalf("the task should run on the pod created in its place: %v", got)
 	}
 }
 
-// A pod lost in hold leaves the audit log saying so, and is reset before it is
-// lent again.
-func TestLostHeldPodIsAuditedAndResetWhenItReturns(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, 1, holding(time.Hour), func(c *manager.Config) {
-		c.HeartbeatTimeout = 300 * time.Millisecond
-	})
-	h.upstream.enqueueIn("t1", "issue-1", "")
-	a := h.newPod("pool-0")
-	a.start()
-	a.claimBatch()
-	a.report("t1", "complete")
-
-	time.Sleep(500 * time.Millisecond)
-	if inv := h.inventory(); inv.Lost != 1 {
-		t.Fatalf("the silent pod should be lost: %+v", inv)
-	}
-	var audited bool
+// deletedFor reports whether the audit log records the pod's deletion with a
+// reason containing why.
+func deletedFor(h *harness, pod, why string) bool {
 	for _, r := range h.auditRecords() {
-		if r.Action == manager.AuditReset && r.PodID == a.id && strings.HasPrefix(r.Reason, "pod lost") {
-			audited = true
+		if r.Action == "delete" && r.PodID == pod && strings.Contains(r.Reason, why) {
+			return true
 		}
 	}
-	if !audited {
-		t.Fatalf("the lost pod is not in the audit log: %+v", h.auditRecords())
-	}
-	a.pollControl() // the supervisor speaks again
-	if inv := h.inventory(); inv.Resetting != 1 {
-		t.Fatalf("a pod lost in hold must be reset before it is lent again: %+v", inv)
-	}
+	return false
 }
 
 func TestNegativeLifetimeConfigIsRejected(t *testing.T) {
 	t.Parallel()
 	for name, opt := range map[string]func(*manager.Config){
-		"hold":  func(c *manager.Config) { c.HoldTimeout = -time.Second },
-		"life":  func(c *manager.Config) { c.MaxLifetime = -time.Second },
-		"grace": func(c *manager.Config) { c.DrainGrace = -time.Second },
+		"hold": func(c *manager.Config) { c.HoldTimeout = -time.Second },
+		"idle": func(c *manager.Config) { c.PodMaxIdle = -time.Second },
 	} {
 		cfg := manager.Config{
 			MulticaURL: "http://127.0.0.1:1", PAT: harnessPAT,

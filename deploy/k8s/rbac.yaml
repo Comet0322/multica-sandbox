@@ -1,6 +1,7 @@
-# The manager's own identity in the namespace (ADR 0009), for when the
+# The manager's own identity in the namespace, for when the
 # operator stops running it with a personal kubeconfig. It may create,
-# delete, get, list and watch pods, which is all the manager does, and
+# delete, get, list, watch and patch pods, which is all the manager does (it
+# patches a pod's labels and annotations to record what the pod serves), and
 # nothing else: no Secrets, Deployments, exec or logs. Apply it in the
 # manager's namespace and run the manager's Deployment with
 # serviceAccountName: sandbox-manager and automountServiceAccountToken: true,
@@ -26,7 +27,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["pods"]
-    verbs: ["create", "delete", "get", "list", "watch"]
+    verbs: ["create", "delete", "get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

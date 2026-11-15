@@ -113,7 +113,7 @@ func TestReadyzIsOKAfterTheFirstSync(t *testing.T) {
 
 func TestInventoryReportsLeaseAgeAndUpstreamHealth(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, farHeartbeat)
+	h := newHarness(t, 1)
 	clock := h.withClock()
 	if age := h.inventory().OldestLeaseAgeSeconds; age != 0 {
 		t.Fatalf("no lease: age %d", age)

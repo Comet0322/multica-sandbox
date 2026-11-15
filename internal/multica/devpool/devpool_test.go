@@ -114,8 +114,8 @@ func TestASimulatedPodRunsItsTaskAndReportsIt(t *testing.T) {
 	}
 }
 
-func TestAHandedBackPodIsFreeAfterItsReset(t *testing.T) {
-	p := devpool.New(devpool.Config{Pods: 1, ResetTime: time.Hour}, &fakeCore{}, fakeSource{}, multica.NewClient("http://127.0.0.1:1", "x", "d", nil))
+func TestAHandedBackPodIsReplacedByANewOne(t *testing.T) {
+	p := devpool.New(devpool.Config{Pods: 1, StartTime: time.Hour}, &fakeCore{}, fakeSource{}, multica.NewClient("http://127.0.0.1:1", "x", "d", nil))
 	id, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +124,11 @@ func TestAHandedBackPodIsFreeAfterItsReset(t *testing.T) {
 		t.Fatalf("a second acquire of the only pod: %v", err)
 	}
 	_ = p.HandBack(context.Background(), id, core.HandBack{Reason: "done"})
-	if info, _ := p.Pod(id); info.State != core.PodResetting {
-		t.Fatalf("state %s, want resetting", info.State)
+	if _, ok := p.Pod(id); ok {
+		t.Fatal("the handed-back pod is still listed")
+	}
+	pods := p.Pods()
+	if len(pods) != 1 || pods[0].ID == id || pods[0].State != core.PodStarting {
+		t.Fatalf("pods %+v, want one new pod starting", pods)
 	}
 }

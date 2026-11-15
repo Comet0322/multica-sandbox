@@ -41,6 +41,7 @@ func (c *Core) applyLocked(ds []policy.Decision) (claim *policy.Claim, acquire b
 			c.closeLeaseLocked(c.leases[d.Task], d.Reason)
 		}
 	}
+	c.recordLocked()
 	return claim, acquire
 }
 
@@ -70,6 +71,7 @@ func (c *Core) takeQueuedLocked(pd *pod) *claimedTask {
 	delete(c.claimed, t.task.ID)
 	c.startLeaseLocked(pd, t.task)
 	c.policy.TaskStarted(t.task.ID)
+	c.recordLocked()
 	return t
 }
 

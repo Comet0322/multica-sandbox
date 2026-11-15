@@ -34,53 +34,48 @@ func newAdminHandler(src adminSource) http.Handler {
 
 // PodInfo is one pod's entry in the inventory.
 type PodInfo struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	State string `json:"state"`
-	// WorkspaceID is the workspace the pod is lent to; empty unless leased.
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Phase is warm, starting, running, held, idle or failed.
+	Phase string `json:"phase"`
+	// Kind, WorkspaceID and Key are what a pod that served a task serves:
+	// its runtime kind, its workspace (department) and its task's key, or
+	// the key it is held for. TaskID is the task placed or running on it.
+	Kind        string `json:"kind,omitempty"`
 	WorkspaceID string `json:"workspace_id,omitempty"`
+	Key         string `json:"key,omitempty"`
+	TaskID      string `json:"task_id,omitempty"`
 	// Initiators are the people whose tasks the pod currently holds, sorted.
-	Initiators   []string  `json:"initiators,omitempty"`
-	RegisteredAt time.Time `json:"registered_at"`
-	LastSeen     time.Time `json:"last_seen"`
-	// Phase is the policy's phase of a pod the core holds: warm, running,
-	// held or idle; Kind its runtime kind once it served a task.
-	Phase string `json:"phase,omitempty"`
-	Kind  string `json:"kind,omitempty"`
-	// Binding is the pod's binding, nil when it has none.
-	Binding *PodBinding `json:"binding,omitempty"`
+	Initiators []string  `json:"initiators,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastSeen   time.Time `json:"last_seen"`
+	// HoldUntil is when a held pod's hold ends; IdleSince when an idle pod
+	// became idle.
+	HoldUntil            *time.Time `json:"hold_until,omitempty"`
+	HoldRemainingSeconds int64      `json:"hold_remaining_seconds,omitempty"`
+	IdleSince            *time.Time `json:"idle_since,omitempty"`
+	// Reason is why a failed pod failed, or why a starting pod still waits.
+	Reason string `json:"reason,omitempty"`
 }
 
-// PodBinding is a pod's binding in the inventory: the affinity key it
-// serves, its capacity use and, in hold, its countdown.
-type PodBinding struct {
-	ID          uint64 `json:"id"`
-	AffinityKey string `json:"affinity_key"`
-	WorkspaceID string `json:"workspace_id"`
-	// Tasks is how many tasks the binding holds, running or placed.
-	Tasks         int `json:"tasks"`
-	UsedSlots     int `json:"used_slots"`
-	CapacitySlots int `json:"capacity_slots"`
-	// Hold is set while no task runs; the pod is reset at HoldUntil unless a
-	// task of its key comes first.
-	Hold      bool       `json:"hold"`
-	HoldUntil *time.Time `json:"hold_until,omitempty"`
-	// Kept is set for a binding of the workspace rule: its hold has no end,
-	// only an eviction ends it.
-	Kept                 bool  `json:"kept,omitempty"`
-	HoldRemainingSeconds int64 `json:"hold_remaining_seconds,omitempty"`
-}
-
-// Inventory is the manager's view of the pool. Name is display-only.
+// Inventory is the manager's view of the pods. Name is display-only.
 type Inventory struct {
-	ExpectedSize int `json:"expected_size"`
-	Idle         int `json:"idle"`
-	Leased       int `json:"leased"`
-	Resetting    int `json:"resetting"`
-	Lost         int `json:"lost"`
-	// PrunedTotal counts lost pods dropped from the inventory since the manager
-	// started.
+	// MaxPods is the budget (SANDBOX_MAX_PODS).
+	MaxPods int `json:"max_pods"`
+	// The pods by phase.
+	Warm     int `json:"warm"`
+	Starting int `json:"starting"`
+	Running  int `json:"running"`
+	Held     int `json:"held"`
+	Idle     int `json:"idle"`
+	Failed   int `json:"failed"`
+	// PrunedTotal counts failed pods dropped from the inventory since the
+	// manager started.
 	PrunedTotal int `json:"pruned_total"`
+	// Problem is why pods could not be created or started lately (no node
+	// capacity, an image that cannot be pulled, refused credentials), empty
+	// when none is known.
+	Problem string `json:"problem,omitempty"`
 	// Workspaces lists each served workspace with its lease count and cap.
 	Workspaces []WorkspaceInfo `json:"workspaces"`
 	// Draining lists workspaces removed by a reload that still hold leases;
@@ -96,9 +91,10 @@ type Inventory struct {
 	// PendingFailReports counts failure reports Multica has not taken yet.
 	PendingFailReports int `json:"pending_fail_reports"`
 	// OverrideProblems lists the per-workspace overrides that are not
-	// applied, and why: a bad value, an unknown slug, an unreadable file.
+	// applied, and why: a bad value, an unknown slug, an unreadable file, a
+	// setting no longer used.
 	OverrideProblems []string `json:"override_problems,omitempty"`
-	// LivePods is the number of pods that can be lent (not lost) the fair
+	// LivePods is the number of pods that are not failed, which the fair
 	// shares were last computed for.
 	LivePods int `json:"live_pods"`
 }

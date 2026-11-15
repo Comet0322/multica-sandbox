@@ -62,7 +62,6 @@ type (
 const (
 	AuditLease   = core.AuditLease
 	AuditRelease = core.AuditRelease
-	AuditReset   = core.AuditReset
 	AuditAllow   = core.AuditAllow
 	AuditDeny    = core.AuditDeny
 )
@@ -73,28 +72,31 @@ func ParseWorkspaceOverrides(raw []byte) (map[string]WorkspaceOverride, map[stri
 	return tasksource.ParseWorkspaceOverrides(raw)
 }
 
-// Pod states as the inventory lists them. The pool says whether a pod is
-// free, held, resetting or lost; a held pod is leased while it has a binding
-// or a task.
+// Pod phases as the inventory and the dispatch page list them: the sandbox
+// service says whether a pod is starting, ready (warm) or failed, and the
+// policy what a pod the core holds serves.
 const (
-	PodIdle      = "idle"
-	PodLeased    = "leased"
-	PodResetting = "resetting"
-	PodLost      = "lost"
+	PodWarm     = "warm"
+	PodStarting = "starting"
+	PodRunning  = "running"
+	PodHeld     = "held"
+	PodIdle     = "idle"
+	PodFailed   = "failed"
 )
 
 // Config configures a Manager.
 type Config struct {
 	MulticaURL string
-	// Kube, when set, has the sandbox service create pods through the
-	// Kubernetes API from a pod template (ADR 0009) instead of serving
-	// GitOps pods. Its Notify, Audit, Log and Now are the manager's.
+	// Kube configures the sandbox service, which creates the pods through
+	// the Kubernetes API from a pod template (ADR 0009). Its Notify, Audit,
+	// Log and Now are the manager's. It is required unless the pod side is
+	// simulated.
 	Kube *sandbox.KubeConfig
 	// PAT is the PAT of the bot account the manager runs as. The manager
 	// serves every workspace that account belongs to, found by Sync, and
 	// registers its runtimes in local mode like a member's own daemon.
 	PAT string
-	// Quota is the most slots each discovered workspace's running tasks may
+	// Quota is the most pods each discovered workspace's running tasks may
 	// occupy at once; 0 means no cap.
 	Quota int
 	// SyncInterval is how often Run looks for workspaces joined or left. Zero
@@ -121,30 +123,14 @@ type Config struct {
 	// UpstreamBackoff is how long a workspace is skipped after its upstream
 	// failed a claim. Zero means DefaultUpstreamBackoff.
 	UpstreamBackoff time.Duration
-	// ExpectedSize is the number of pods the deployment declares, reported next
-	// to the live counts so a shortfall is visible.
-	ExpectedSize int
 	// Providers limits which agent CLIs a pod reports become upstream
 	// runtimes. Empty exposes every reported provider.
 	Providers []string
-	// HeartbeatTimeout, ResetTimeout and LostRetention configure the sandbox
-	// service (see sandbox.Config); zero means its defaults.
-	HeartbeatTimeout time.Duration
-	ResetTimeout     time.Duration
-	LostRetention    time.Duration
 	// AuditLog receives the audit records as JSON Lines. Nil disables auditing.
 	AuditLog io.Writer
 	// Models are model list reports, by provider, that answer Multica's model
 	// picker while no pod has reported lately. Nil asks a pod.
 	Models map[string]json.RawMessage
-	// AffinityRule, Capacity, PlacementWait, MaxLifetime and DrainGrace
-	// are checked but no longer used: a pod runs one task at a time and is
-	// held for its task's key (ADR 0009). Issue 07 removes them.
-	AffinityRule  multica.AffinityRule
-	Capacity      int
-	PlacementWait time.Duration
-	MaxLifetime   time.Duration
-	DrainGrace    time.Duration
 	// Runtimes are the runtime kinds the manager registers in every
 	// workspace and claims for (SANDBOX_RUNTIMES). Empty means the pool
 	// kind. Each kind's runtimes are a machine of their own upstream: the
@@ -211,18 +197,6 @@ func (c *Config) normalize() error {
 	}
 	if c.DrainTimeout < 0 || c.DrainPoll < 0 {
 		return fmt.Errorf("drain timeout and poll interval must not be negative")
-	}
-	if c.ExpectedSize < 0 {
-		return fmt.Errorf("expected pool size must not be negative")
-	}
-	if err := multica.CheckAffinityRule(c.AffinityRule); err != nil {
-		return err
-	}
-	if c.AffinityRule == "" {
-		c.AffinityRule = multica.DefaultAffinityRule
-	}
-	if c.Capacity < 0 || c.PlacementWait < 0 || c.MaxLifetime < 0 || c.DrainGrace < 0 {
-		return fmt.Errorf("pod capacity, placement wait, pod maximum lifetime and drain grace must not be negative")
 	}
 	if c.HoldTimeout < 0 || c.PodMaxIdle < 0 {
 		return fmt.Errorf("hold timeout and pod maximum idle time must not be negative")
@@ -306,19 +280,23 @@ type Manager struct {
 	// real is the pool side when it is the real one (package pool), nil for
 	// a simulated one.
 	real *pool.Pool
-	// podRun runs the pod side's own loops (the sandbox service's liveness
-	// checks, a simulation); nil when it has none.
+	// podRun runs the pod side's own loops (the sandbox service's, a
+	// simulation); nil when it has none.
 	podRun func(context.Context)
+	// maxPods is the budget, zero when the pod side keeps none.
+	maxPods int
 }
 
 // PodSide is the pod side as the manager wires it: what the core asks of a
 // pool, what the task source tells the pods, the handler served to the pods,
-// and how many lost pods were pruned, for the inventory.
+// and, for the inventory, how many lost pods were pruned and why pods could
+// not be created or started lately.
 type PodSide interface {
 	core.Pool
 	tasksource.Pods
 	Handler() http.Handler
 	PrunedTotal() int
+	Problem() string
 }
 
 // SimulatedPods builds a pod side that stands in for the real pool, given
@@ -330,9 +308,6 @@ type SimulatedPods func(c *core.Core, s *tasksource.Source, client *multica.Clie
 // which is built after the service.
 type forwardNotifier struct{ m *Manager }
 
-func (n forwardNotifier) Interrupted(id sandbox.PodID, why string) {
-	n.m.real.Notifier().Interrupted(id, why)
-}
 func (n forwardNotifier) Lost(id sandbox.PodID, why string) { n.m.real.Notifier().Lost(id, why) }
 
 // sandboxAudit writes the sandbox service's audit records to the manager's
@@ -364,33 +339,27 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	}
 	m := &Manager{cfg: cfg, log: log, clock: core.NewClock()}
 	audit := core.NewAuditLog(cfg.AuditLog, m.clock, func(err error) { log.Error("write audit record", "error", err) })
-	var handler http.Handler
-	// maxPods is the budget the policy keeps; zero leaves it to the pool,
-	// as for the GitOps pods, whose number is fixed.
-	maxPods := 0
+	// maxPods is the budget the policy keeps; zero leaves it to the pool.
+	// podWait is how long a task that lost its pod before it started waits
+	// for another: as long as a new pod may take to start.
+	maxPods, podWait := 0, time.Duration(0)
 	if svc == nil && sim == nil {
-		gitops, err := sandbox.NewGitOps(sandbox.Config{
-			HeartbeatTimeout: cfg.HeartbeatTimeout, ResetTimeout: cfg.ResetTimeout, LostRetention: cfg.LostRetention,
-			Notify: forwardNotifier{m}, Audit: sandboxAudit{audit}, Log: log, Now: m.clock.Now,
-		})
+		if cfg.Kube == nil {
+			return nil, fmt.Errorf("the sandbox service needs a pod template (SANDBOX_POD_TEMPLATE)")
+		}
+		kc := *cfg.Kube
+		kc.Notify, kc.Audit, kc.Log, kc.Now = forwardNotifier{m}, sandboxAudit{audit}, log, m.clock.Now
+		kube, err := sandbox.NewKube(kc)
 		if err != nil {
 			return nil, err
 		}
-		svc, handler, m.podRun = gitops, gitops.Handler(), gitops.Run
-		if cfg.Kube != nil {
-			kc := *cfg.Kube
-			kc.Notify, kc.Audit, kc.Log, kc.Now = forwardNotifier{m}, sandboxAudit{audit}, log, m.clock.Now
-			kube, err := sandbox.NewKube(kc)
-			if err != nil {
-				return nil, err
-			}
-			svc, handler, m.podRun = kube, nil, kube.Run
-			maxPods = kube.MaxPods()
-		}
+		svc, m.podRun = kube, kube.Run
+		maxPods, podWait = kube.MaxPods(), kube.StartTimeout()
 	}
+	m.maxPods = maxPods
 	c, err := core.New(core.Config{
 		Log: log, Clock: m.clock, Audit: audit, RemovedReason: "workspace removed",
-		Kinds: cfg.Runtimes, HoldTimeout: cfg.HoldTimeout, MaxIdle: cfg.PodMaxIdle, MaxPods: maxPods, Backoff: cfg.UpstreamBackoff,
+		Kinds: cfg.Runtimes, HoldTimeout: cfg.HoldTimeout, MaxIdle: cfg.PodMaxIdle, MaxPods: maxPods, PodWait: podWait, Backoff: cfg.UpstreamBackoff,
 		DispatchInterval: cfg.DispatchInterval, ReconcileInterval: cfg.ReconcileInterval, LeaseMax: cfg.LeaseMax,
 		DrainTimeout: cfg.DrainTimeout, DrainPoll: cfg.DrainPoll,
 	})
@@ -408,7 +377,7 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	}
 	src := tasksource.New(tasksource.Config{
 		Log: log, Now: m.clock.Now, Client: client, Name: cfg.Name, DeviceName: cfg.DeviceName, Providers: cfg.Providers, Runtimes: sets,
-		RuntimeVisibility: cfg.RuntimeVisibility, Quota: cfg.Quota, AffinityRule: cfg.AffinityRule,
+		RuntimeVisibility: cfg.RuntimeVisibility, Quota: cfg.Quota,
 		SyncInterval: cfg.SyncInterval, HeartbeatInterval: cfg.HeartbeatInterval, ReadOverrides: cfg.ReadOverrides,
 		Models: cfg.Models,
 	})
@@ -416,7 +385,7 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	if sim != nil {
 		m.pool, m.podRun = sim(c, src, client)
 	} else {
-		pl := pool.New(pool.Config{Log: log, Now: m.clock.Now, Service: svc, Handler: handler, Client: client, Wake: cfg.DispatchInterval > 0})
+		pl := pool.New(pool.Config{Log: log, Now: m.clock.Now, Service: svc, Client: client, Wake: cfg.DispatchInterval > 0})
 		pl.Connect(c, src)
 		m.pool, m.real = pl, pl
 	}
@@ -425,7 +394,7 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	return m, nil
 }
 
-// Run runs the sandbox service's liveness checks, the dispatch tick, the
+// Run runs the sandbox service, the dispatch tick, the
 // upstream heartbeats and, with ReconcileInterval set, the lease
 // reconciliation and the retry of failure reports, until ctx ends.
 func (m *Manager) Run(ctx context.Context) {
@@ -448,6 +417,16 @@ func (m *Manager) Run(ctx context.Context) {
 		}()
 	}
 	m.core.Run(ctx)
+}
+
+// Restore takes over the pods a previous run left (see pool.Pool.Restore):
+// running tasks run on, holds resume and warm and idle pods are kept. Call it
+// once, before Sync and Run.
+func (m *Manager) Restore(ctx context.Context) error {
+	if m.real == nil {
+		return nil
+	}
+	return m.real.Restore(ctx)
 }
 
 // Sync brings the served workspaces in line with the account's memberships

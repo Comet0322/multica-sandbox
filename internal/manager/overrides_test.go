@@ -2,9 +2,7 @@ package manager_test
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -12,7 +10,9 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
-	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
+
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // overridesFile stands in for the operator's overrides file; the pool reads
@@ -45,22 +45,16 @@ func (f *overridesFile) read() ([]byte, error) {
 // workspace the fake lists, with the overrides file, after one Sync.
 func newOverrideHarness(t *testing.T, up *multiMultica, file *overridesFile, cfg manager.Config) *harness {
 	t.Helper()
-	logs, audit := &syncBuffer{}, &syncBuffer{}
-	cfg.MulticaURL, cfg.PAT, cfg.Name, cfg.AuditLog = up.URL, patPool, "Shared Pool", audit
+	cfg.MulticaURL, cfg.PAT, cfg.Name = up.URL, patPool, "Shared Pool"
 	cfg.UpstreamBackoff = time.Minute
 	cfg.ReadOverrides = file.read
-	cleanRuntimes(&cfg)
-	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
-	if err != nil {
-		t.Fatal(err)
+	if len(cfg.Runtimes) == 0 {
+		clean(&cfg)
 	}
-	h := &harness{t: t, pool: pool, logs: logs, audit: audit}
-	h.podAPI = httptest.NewServer(pool.PodHandler())
-	h.admin = httptest.NewServer(pool.AdminHandler())
-	t.Cleanup(h.podAPI.Close)
-	t.Cleanup(h.admin.Close)
-	h.sync()
-	return h
+	return startManager(t, fake.NewSimpleClientset(), cfg, botPods, botPods, func(ctx context.Context, m *manager.Manager) error {
+		_, err := m.Sync(ctx)
+		return err
+	})
 }
 
 func (h *harness) sync() manager.ReloadResult {
@@ -88,18 +82,16 @@ func TestWorkspaceWithoutAnOverrideUsesThePoolDefaults(t *testing.T) {
 	a, b := &fakeWorkspace{id: wsA, slug: "alpha"}, &fakeWorkspace{id: wsB, slug: "beta"}
 	up := newMultiMultica(t, a, b)
 	file := &overridesFile{}
-	file.set("alpha:\n  quota: 1\n  placement: task\n  hold_timeout: 5m\n  max_lifetime: 1h\n")
-	h := newOverrideHarness(t, up, file, manager.Config{
-		Quota: 4, AffinityRule: multica.RulePersonIssue, HoldTimeout: time.Hour, MaxLifetime: 3 * time.Hour,
-	})
+	file.set("alpha:\n  quota: 1\n  hold_timeout: 5m\n")
+	h := newOverrideHarness(t, up, file, manager.Config{Quota: 4, HoldTimeout: time.Hour})
 
 	inv := h.inventory()
 	got := workspaceInfo(t, inv, wsA)
-	if got.Slug != "alpha" || got.Quota != 1 || got.AffinityRule != "task" || got.HoldTimeout != "5m0s" || got.MaxLifetime != "1h0m0s" {
+	if got.Slug != "alpha" || got.Quota != 1 || got.HoldTimeout != "5m0s" {
 		t.Fatalf("alpha does not show its overrides: %+v", got)
 	}
 	got = workspaceInfo(t, inv, wsB)
-	if got.Slug != "beta" || got.Quota != 4 || got.AffinityRule != "person-issue" || got.HoldTimeout != "1h0m0s" || got.MaxLifetime != "3h0m0s" {
+	if got.Slug != "beta" || got.Quota != 4 || got.HoldTimeout != "1h0m0s" {
 		t.Fatalf("beta does not show the pool defaults: %+v", got)
 	}
 	if len(inv.OverrideProblems) != 0 {
@@ -141,7 +133,7 @@ func TestHoldOverrideAppliesToItsWorkspaceOnly(t *testing.T) {
 	up := newMultiMultica(t, a, b)
 	file := &overridesFile{}
 	file.set("alpha: {hold_timeout: 0s}\n")
-	h := newOverrideHarness(t, up, file, manager.Config{HoldTimeout: time.Hour})
+	h := newOverrideHarness(t, up, file, manager.Config{HoldTimeout: time.Hour, Runtimes: []policy.Kind{policy.KindPool}})
 	pa, pb := h.newPod("pool-0"), h.newPod("pool-1")
 	idsA, idsB := pa.startAll(), pb.startAll()
 
@@ -156,15 +148,42 @@ func TestHoldOverrideAppliesToItsWorkspaceOnly(t *testing.T) {
 	pa.report("ta1", "complete")
 	pb.report("tb1", "complete")
 
-	states := map[string]string{}
+	phases := map[string]string{}
 	for _, p := range h.inventory().Pods {
-		states[p.ID] = string(p.State)
-		if p.ID == pb.id && (p.Binding == nil || !p.Binding.Hold) {
-			t.Fatalf("beta's pod should hold for the pool's hour: %+v", p)
-		}
+		phases[p.ID] = p.Phase
 	}
-	if states[pa.id] != string(manager.PodResetting) {
-		t.Fatalf("alpha's hold timeout of 0 should reset its pod at once: %v", states)
+	if phases[pb.id] != manager.PodHeld {
+		t.Fatalf("beta's pod should hold for the pool's hour: %v", phases)
+	}
+	if phases[pa.id] != manager.PodIdle {
+		t.Fatalf("alpha's hold timeout of 0 should make its pod idle at once: %v", phases)
+	}
+}
+
+// An overrides file written for the GitOps pool still loads: each entry that
+// names a removed setting gives one warning, once, and its other settings
+// apply.
+func TestAnOldOverridesFileLoadsWithOneWarning(t *testing.T) {
+	t.Parallel()
+	a, b := &fakeWorkspace{id: wsA, slug: "alpha"}, &fakeWorkspace{id: wsB, slug: "beta"}
+	up := newMultiMultica(t, a, b)
+	file := &overridesFile{}
+	file.set("alpha: {quota: 1, rule: person-issue}\nbeta: {quota: 2}\n")
+	h := newOverrideHarness(t, up, file, manager.Config{Quota: 4})
+	h.sync()
+
+	inv := h.inventory()
+	if got := workspaceInfo(t, inv, wsA); got.Quota != 1 {
+		t.Fatalf("alpha's quota was not applied: %+v", got)
+	}
+	if got := workspaceInfo(t, inv, wsB); got.Quota != 2 {
+		t.Fatalf("beta's quota was not applied: %+v", got)
+	}
+	if len(inv.OverrideProblems) != 1 || !strings.Contains(inv.OverrideProblems[0], `"alpha": rule no longer used`) {
+		t.Fatalf("want one warning naming rule, got %q", inv.OverrideProblems)
+	}
+	if n := strings.Count(h.logs.String(), "rule no longer used"); n != 1 {
+		t.Fatalf("the warning was logged %d times over two syncs, want once:\n%s", n, h.logs.String())
 	}
 }
 
@@ -250,7 +269,7 @@ func TestReloadAppliesChangedOverridesToNewPlacementsOnly(t *testing.T) {
 		t.Fatalf("want [ta1], got %v", got)
 	}
 
-	file.set("alpha: {quota: 1, max_lifetime: 1ns}\n")
+	file.set("alpha: {quota: 1}\n")
 	res := h.sync()
 	if !slices.Equal(res.Updated, []string{wsA}) || len(res.Unapplied) != 0 {
 		t.Fatalf("the override change should apply without a restart: %+v", res)

@@ -12,7 +12,6 @@ import (
 const (
 	AuditLease   = "lease"
 	AuditRelease = "release"
-	AuditReset   = "reset"
 
 	AuditAllow = "allow"
 	AuditDeny  = "deny"

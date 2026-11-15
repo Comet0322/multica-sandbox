@@ -40,6 +40,8 @@ func (c *fakeCore) TenantBusy(id string) bool {
 	return c.busy[id]
 }
 
+func (c *fakeCore) Knows(string) bool { return false }
+
 // fakePods records what the source tells the pod side.
 type fakePods struct {
 	mu       sync.Mutex
@@ -83,7 +85,6 @@ func newSource(t *testing.T, overrides string, handle func(w http.ResponseWriter
 	t.Cleanup(srv.Close)
 	cfg := tasksource.Config{
 		Client: multica.NewClient(srv.URL, "mul_pat", "", nil), Name: "Pool", RuntimeVisibility: "private",
-		AffinityRule: multica.DefaultAffinityRule,
 	}
 	if overrides != "" {
 		cfg.ReadOverrides = func() ([]byte, error) { return []byte(overrides), nil }

@@ -14,7 +14,7 @@ case "${1:-}" in
 	;;
 esac
 prompt="$(head -n 1)"
-# Count the files an earlier task left (a reset should leave none), then leave
+# Count the files an earlier task on this pod left (a new pod has none), then leave
 # one in the task directory, the caches under HOME, Claude Code's own state
 # next to the image skills (~/.claude/projects), TMPDIR and /tmp, for the next
 # task to look for.

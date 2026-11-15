@@ -156,7 +156,7 @@ func TestDispatchClaimsForIdlePodAndWakesIt(t *testing.T) {
 		t.Fatal("task should have left the upstream queue")
 	}
 	// The task waits on its pod; the lease starts when the pod claims it.
-	if inv := h.inventory(); inv.Leased != 1 {
+	if inv := h.inventory(); inv.Running != 1 {
 		t.Fatalf("want the pod reserved, got %+v", inv)
 	}
 	if ls := h.leases(); len(ls) != 0 {
@@ -238,8 +238,8 @@ func TestDispatchWakesTheTargetPodWhenTaskIsPlacedElsewhere(t *testing.T) {
 
 func TestReconnectReplacesTheOldWakeSocket(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, withWake(time.Hour))
-	h.upstream.enqueue("t1")
+	h := newHarness(t, 1, withWake(time.Hour), holding(time.Hour))
+	h.upstream.enqueueIssue("t1", "issue-1")
 	pod := h.newPod("pool-0")
 	pod.start()
 	oldSock := pod.openWake()
@@ -262,11 +262,8 @@ func TestReconnectReplacesTheOldWakeSocket(t *testing.T) {
 	if got := pod.claimBatch(); !slices.Equal(got, []string{"t1"}) {
 		t.Fatalf("want t1, got %v", got)
 	}
-	h.upstream.enqueue("t2")
+	h.upstream.enqueueIssue("t2", "issue-1")
 	pod.report("t1", "complete")
-	cmd := pod.pollControl()
-	pod.reportControl(cmd.ID, "done")
-	pod.startRaw()
 	h.dispatch()
 	if got := newSock.next(5 * time.Second); got != wakeEvent {
 		t.Fatalf("new socket after the old one's teardown: want a frame, got %q", got)
@@ -350,7 +347,7 @@ func TestAPollWithNothingPlacedClaimsNothingUpstream(t *testing.T) {
 	if n := h.upstream.claimCount(); n != 2 {
 		t.Fatalf("want 2 claims, got %d", n)
 	}
-	if inv := h.inventory(); inv.Leased != 2 {
+	if inv := h.inventory(); inv.Running != 2 {
 		t.Fatalf("want both pods leased, got %+v", inv)
 	}
 	// Leased pods still cannot claim a second task.

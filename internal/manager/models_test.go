@@ -81,7 +81,7 @@ func TestModelListRequestIsHandedToOnePodAndItsReportRelayed(t *testing.T) {
 // restart loop.
 func TestPodOfferingANewAgentCLIGetsItsRuntimeWithoutAManagerRestart(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 2)
+	h := newHarness(t, 3)
 	oldPod := h.newPod("pool-0")
 	oldPod.start()
 	if h.upstream.registrationCount() != 1 {

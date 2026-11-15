@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/policy"
 )
 
 func (h *harness) auditRecords() []manager.AuditRecord {
@@ -26,11 +27,11 @@ func (h *harness) auditRecords() []manager.AuditRecord {
 }
 
 // A task no person authorized (an autopilot run) is no longer refused. It has
-// no issue or chat session, so no key: its clean pod is reset as soon as it
+// no issue or chat session, so no key: its clean pod is deleted as soon as it
 // ends, whatever the hold timeout.
 func TestTaskWithoutInitiatorOrKeyRunsAndIsNeverHeld(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, holding(time.Hour))
+	h := newHarness(t, 1, holding(time.Hour), clean)
 	h.upstream.enqueueNoInitiator("t1")
 	pod := h.newPod("pool-0")
 	pod.start()
@@ -53,14 +54,22 @@ func TestTaskWithoutInitiatorOrKeyRunsAndIsNeverHeld(t *testing.T) {
 	if status := pod.report("t1", "complete"); status != http.StatusOK {
 		t.Fatalf("complete: %d", status)
 	}
-	if inv := h.inventory(); inv.Resetting != 1 {
-		t.Fatalf("its pod should reset at once, not hold: %+v", inv)
+	eventually(t, "the pod deleted", func() bool {
+		for _, p := range h.inventory().Pods {
+			if p.ID == pod.id {
+				return false
+			}
+		}
+		return true
+	})
+	if inv := h.inventory(); inv.Held != 0 {
+		t.Fatalf("its pod should be deleted at once, not held: %+v", inv)
 	}
 }
 
-func TestAuditTracesLeaseAndReleaseByTaskID(t *testing.T) {
+func TestAuditTracesLeaseReleaseAndDeleteByTaskID(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1)
+	h := newHarness(t, 1, clean)
 	h.upstream.enqueue("t1")
 	pod := h.newPod("pool-0")
 	pod.start()
@@ -76,13 +85,13 @@ func TestAuditTracesLeaseAndReleaseByTaskID(t *testing.T) {
 		}
 		if r.Time.IsZero() || r.Reason == "" || r.Decision != manager.AuditAllow ||
 			r.WorkspaceID != harnessWorkspaceID || r.Initiator != "alice@example.com" ||
-			r.PodID != pod.id || r.PodName != "pool-0" {
+			r.PodID != pod.id || r.PodName != pod.id {
 			t.Fatalf("incomplete record: %+v", r)
 		}
 		seq = append(seq, r.Action)
 	}
-	if strings.Join(seq, ",") != "lease,release,reset" {
-		t.Fatalf("want lease, release, then the reset it causes for t1, got %v", seq)
+	if strings.Join(seq, ",") != "lease,release,delete" {
+		t.Fatalf("want lease, release, then the deletion it causes for t1, got %v", seq)
 	}
 }
 
@@ -95,7 +104,6 @@ func TestAuditIsJSONLinesWithoutCredentials(t *testing.T) {
 	pod.start()
 	pod.claimBatch()
 	pod.report("t1", "fail")
-	pod.completeReset()
 	pod.claimBatch()
 
 	raw := h.audit.String()
@@ -108,3 +116,7 @@ func TestAuditIsJSONLinesWithoutCredentials(t *testing.T) {
 		}
 	}
 }
+
+// clean claims for the clean kind, whose pod is deleted after a task with no
+// hold.
+func clean(c *manager.Config) { c.Runtimes = []policy.Kind{policy.KindClean} }

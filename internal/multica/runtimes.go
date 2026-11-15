@@ -332,6 +332,32 @@ func (r *Runtimes) RecoverOrphans(ctx context.Context) {
 	}
 }
 
+// Dispatched lists the tasks Multica shows dispatched to the manager's
+// runtimes in the workspace, those of its identity and its legacy one.
+func (r *Runtimes) Dispatched(ctx context.Context) ([]string, error) {
+	runtimes, err := r.conn.ListRuntimes(ctx, r.cfg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	own, legacy := r.daemonID(), r.legacyID()
+	var out []string
+	for _, rt := range runtimes {
+		if rt.DaemonID != own && (legacy == "" || rt.DaemonID != legacy) {
+			continue
+		}
+		tasks, err := r.conn.Pending(ctx, rt.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range tasks {
+			if t.Status == "dispatched" {
+				out = append(out, t.ID)
+			}
+		}
+	}
+	return out, nil
+}
+
 // EnsureVisibility makes sure the registered runtimes have the wanted
 // visibility, for a registration whose share call failed. Once they were
 // seen right they are left alone, so an owner who changes the visibility by

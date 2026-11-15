@@ -17,39 +17,38 @@ type WorkspaceInfo struct {
 	Leased int    `json:"leased"`
 	// Quota is 0 when the workspace has no cap.
 	Quota int `json:"quota"`
-	// Placement, HoldTimeout and MaxLifetime are the settings in effect, the
-	// pool defaults or the workspace's overrides. Placement and MaxLifetime
-	// are no longer used (ADR 0009).
-	AffinityRule string `json:"placement"`
-	HoldTimeout  string `json:"hold_timeout"`
-	MaxLifetime  string `json:"max_lifetime"`
+	// HoldTimeout is the setting in effect, the pool default or the
+	// workspace's override.
+	HoldTimeout string `json:"hold_timeout"`
 	// Guarantee and Weight are the workspace's fair-share settings;
 	// GuaranteeInEffect is the guarantee scaled to the live pods.
 	Guarantee         int `json:"guarantee"`
 	GuaranteeInEffect int `json:"guarantee_in_effect"`
 	Weight            int `json:"weight"`
-	// OccupiedPods are the pods the workspace occupies (running or in hold),
-	// HoldingPods those of them in hold, TargetPods its fair share of the
-	// live pods for the work there is now, and Queued its tasks waiting
-	// upstream.
+	// OccupiedPods are the pods the workspace occupies (running, held or
+	// idle), HoldingPods those of them held, IdlePods those idle,
+	// TargetPods its fair share of the live pods for the work there is now,
+	// and Queued its tasks waiting upstream.
 	OccupiedPods int `json:"occupied_pods"`
 	HoldingPods  int `json:"holding_pods"`
-	// IdlePods are its idle pool pods, also among OccupiedPods.
-	IdlePods   int `json:"idle_pods"`
-	TargetPods int `json:"target_pods"`
-	Queued     int `json:"queued"`
+	IdlePods     int `json:"idle_pods"`
+	TargetPods   int `json:"target_pods"`
+	Queued       int `json:"queued"`
 	// Upstream is the latest claim, pending read or heartbeat outcome; nil
 	// before the first.
 	Upstream *UpstreamHealth `json:"upstream,omitempty"`
 }
 
-// Inventory reports pod counts by state and the pods themselves, in
-// registration order: their state comes from the pool, their bindings and
-// leases from the core, the workspaces from the task source.
+// Inventory reports pod counts by phase and the pods themselves, in
+// creation order: their state comes from the sandbox service, what they
+// serve from the core, the workspaces from the task source.
 func (m *Manager) Inventory() Inventory {
 	view := m.core.View()
 	pods := m.pool.Pods()
-	inv := Inventory{ExpectedSize: m.cfg.ExpectedSize, PrunedTotal: m.pool.PrunedTotal(), Pods: []PodInfo{}, Workspaces: []WorkspaceInfo{}, LivePods: view.LivePods}
+	inv := Inventory{
+		MaxPods: m.maxPods, PrunedTotal: m.pool.PrunedTotal(), Problem: m.pool.Problem(),
+		Pods: []PodInfo{}, Workspaces: []WorkspaceInfo{}, LivePods: view.LivePods,
+	}
 	leased := map[string]int{}
 	for _, t := range view.Tenants {
 		leased[t.ID] = t.Leased
@@ -67,30 +66,41 @@ func (m *Manager) Inventory() Inventory {
 	}
 	inv.OverrideProblems = m.source.OverrideProblems()
 	inv.LastSync = m.source.LastSync()
+	now := m.clock.Now()
 	if !view.OldestLease.IsZero() {
-		inv.OldestLeaseAgeSeconds = int64(m.clock.Now().Sub(view.OldestLease) / time.Second)
+		inv.OldestLeaseAgeSeconds = int64(now.Sub(view.OldestLease) / time.Second)
 	}
 	inv.PendingFailReports = m.source.PendingFailReports()
-	now := m.clock.Now()
 	for _, sp := range pods {
 		pv := view.Pods[sp.ID]
-		info := PodInfo{ID: sp.ID, Name: sp.Name, State: podState(sp, pv), RegisteredAt: sp.RegisteredAt, LastSeen: sp.LastSeen}
-		switch info.State {
+		info := PodInfo{ID: sp.ID, Name: sp.Name, Phase: podPhase(sp, pv), CreatedAt: sp.CreatedAt, LastSeen: sp.LastSeen}
+		switch info.Phase {
+		case PodWarm:
+			inv.Warm++
+		case PodStarting:
+			inv.Starting++
+			info.Reason = sp.Reason
+		case PodRunning:
+			inv.Running++
+		case PodHeld:
+			inv.Held++
 		case PodIdle:
 			inv.Idle++
-		case PodLeased:
-			inv.Leased++
-		case PodResetting:
-			inv.Resetting++
-		case PodLost:
-			inv.Lost++
+		case PodFailed:
+			inv.Failed++
+			info.Reason = sp.Reason
 		}
-		if pv.Held {
-			info.WorkspaceID = pv.Tenant
+		if pi := pv.Policy; pv.Held && pi != nil && pi.Phase != policy.PhaseWarm {
+			info.WorkspaceID, info.Kind, info.Key, info.TaskID = pi.Tenant, string(pi.Kind), pi.Key, pi.Task
 			info.Initiators = pv.Initiators
-			info.Binding = podBinding(pv.Policy, now)
-			if pi := pv.Policy; pi != nil {
-				info.Phase, info.Kind = string(pi.Phase), string(pi.Kind)
+			switch pi.Phase {
+			case policy.PhaseHeld:
+				until := pi.Until
+				info.HoldUntil = &until
+				info.HoldRemainingSeconds = max(int64(until.Sub(now)/time.Second), 0)
+			case policy.PhaseIdle:
+				since := pi.Since
+				info.IdleSince = &since
 			}
 		}
 		inv.Pods = append(inv.Pods, info)
@@ -99,56 +109,40 @@ func (m *Manager) Inventory() Inventory {
 }
 
 func (m *Manager) workspaceInfo(ws tasksource.WorkspaceView, leased map[string]int, shares map[string]policy.ShareInfo) WorkspaceInfo {
-	hold, life := m.cfg.HoldTimeout, m.cfg.MaxLifetime
+	hold := m.cfg.HoldTimeout
 	if ws.Config.HoldTimeout != nil {
 		hold = *ws.Config.HoldTimeout
-	}
-	if ws.Config.MaxLifetime != nil {
-		life = *ws.Config.MaxLifetime
 	}
 	id := ws.Config.WorkspaceID
 	s := shares[id]
 	return WorkspaceInfo{
 		WorkspaceID: id, Slug: ws.Config.Slug, Name: ws.Config.RuntimeName,
-		Leased: leased[id], Quota: ws.Config.Quota, Upstream: ws.Upstream,
-		AffinityRule: string(ws.Config.AffinityRule), HoldTimeout: hold.String(), MaxLifetime: life.String(),
+		Leased: leased[id], Quota: ws.Config.Quota, Upstream: ws.Upstream, HoldTimeout: hold.String(),
 		Guarantee: ws.Config.Guarantee, GuaranteeInEffect: s.GuaranteeInEffect, Weight: max(ws.Config.Weight, 1),
 		OccupiedPods: s.Occupied, HoldingPods: s.Holding, IdlePods: s.Idle, TargetPods: s.Target, Queued: s.Queued,
 	}
 }
 
-// podState is the inventory state of a pod the pool lists: a free pod is
-// idle, a held one leased while it has a binding or a task and idle
-// otherwise.
-func podState(sp core.PodInfo, pv core.PodView) string {
+// podPhase is the phase of a pod the pool lists: starting, warm or failed
+// as the sandbox service says, and for a pod the core holds what the policy
+// says it serves.
+func podPhase(sp core.PodInfo, pv core.PodView) string {
 	switch sp.State {
-	case core.PodResetting:
-		return PodResetting
+	case core.PodStarting:
+		return PodStarting
 	case core.PodLost:
-		return PodLost
+		return PodFailed
 	case core.PodHeld:
-		if pv.Held && pv.Busy {
-			return PodLeased
+		if pi := pv.Policy; pv.Held && pi != nil {
+			switch pi.Phase {
+			case policy.PhaseRunning:
+				return PodRunning
+			case policy.PhaseHeld:
+				return PodHeld
+			case policy.PhaseIdle:
+				return PodIdle
+			}
 		}
 	}
-	return PodIdle
-}
-
-// podBinding describes what the policy knows of a pod in the shape of the
-// GitOps pool's bindings, nil for a warm pod: one task at most, held for its
-// key once the task ended. Issue 07 replaces it.
-func podBinding(pi *policy.PodInfo, now time.Time) *PodBinding {
-	if pi == nil || pi.Phase == policy.PhaseWarm {
-		return nil
-	}
-	out := &PodBinding{AffinityKey: pi.Key, WorkspaceID: pi.Tenant, CapacitySlots: 1, Hold: pi.Phase == policy.PhaseHeld}
-	if pi.Task != "" {
-		out.Tasks, out.UsedSlots = 1, 1
-	}
-	if out.Hold {
-		until := pi.Until
-		out.HoldUntil = &until
-		out.HoldRemainingSeconds = max(int64(until.Sub(now)/time.Second), 0)
-	}
-	return out
+	return PodWarm
 }

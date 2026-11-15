@@ -1,11 +1,10 @@
 #!/bin/sh
-# Entrypoint of a pod the manager creates through the Kubernetes API
-# (ADR 0009). The manager set the pod token in SANDBOX_POD_TOKEN when it
-# created the pod, so nothing is registered and no supervisor runs: this
+# Entrypoint of a pod the manager creates through the Kubernetes API. The
+# manager set the pod token in SANDBOX_POD_TOKEN when it created the pod: this
 # script writes the daemon's CLI config and becomes the stock daemon, under
-# tini as PID 1 (the image's ENTRYPOINT for this mode is
+# tini as PID 1 (the image's ENTRYPOINT is
 # "tini -- multica-pod-entrypoint-kube"). The pod is deleted after its task,
-# never reset; a daemon that exits ends the pod.
+# or after its hold or idle time; a daemon that exits ends the pod.
 set -eu
 
 : "${SANDBOX_POD_TOKEN:?the manager sets it when it creates the pod}"

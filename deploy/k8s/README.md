@@ -10,13 +10,13 @@ ADR 0009 runs everything in a single namespace:
 | `multica/` | Multica v0.6.4 with no namespace in the manifests. Apply it with `kubectl apply -k deploy/k8s/multica -n <namespace>` after creating the `multica-backend` Secret and ConfigMap (see below). |
 | `dev/` | A local kind cluster that stands in for the company's namespace. |
 | `pod.yaml` | The example pod template (`SANDBOX_POD_TEMPLATE`): `tini` and the stock daemon, requests and limits, a liveness probe on the daemon's health endpoint, the fixed hostname `sandbox`, and no secret in the environment but the pod token the manager sets. It passes Pod Security `restricted`. Set its image and manager address. |
-| `rbac.yaml` | The manager's own service account, with a Role that may only `create`, `delete`, `get`, `list` and `watch` pods, and its RoleBinding: for when the manager stops using the operator's kubeconfig. |
+| `rbac.yaml` | The manager's own service account, with a Role that may only `create`, `delete`, `get`, `list`, `watch` and `patch` pods, and its RoleBinding: for when the manager stops using the operator's kubeconfig. |
 
-The manager's Deployment is added here by a later `.scratch/k8s-executor` issue.
+A Deployment for the manager itself is not written yet.
 
 ## The pod
 
-The image is the `agents` target of `deploy/Dockerfile.pool`. A pod the manager creates runs `tini -- multica-pod-entrypoint-kube` (`deploy/pool/entrypoint-kube.sh`), which writes the daemon's config from `SANDBOX_POD_TOKEN` and `SANDBOX_MANAGER_URL`, sets the private umask and the daemon's home on the pod's volume, and execs the stock daemon. The template's `securityContext` keeps the root filesystem read-only. A pod is never reset; it is deleted after its task.
+The image is the `agents` target of `deploy/Dockerfile.pool`. A pod the manager creates runs `tini -- multica-pod-entrypoint-kube` (`deploy/pool/entrypoint-kube.sh`), which writes the daemon's config from `SANDBOX_POD_TOKEN` and `SANDBOX_MANAGER_URL`, sets the private umask and the daemon's home on the pod's volume, and execs the stock daemon. The template's `securityContext` keeps the root filesystem read-only. A pod is never reused across departments; it is deleted after its task, its hold or its idle lifetime.
 
 Without `spec.hostname` the pod's hostname is its name, which agents print into what reaches Multica. The template sets `sandbox`, and the manager sets the same when a template has none.
 
@@ -26,6 +26,21 @@ Memory measured on the `agents` image (cgroup `memory.current` and `memory.peak`
 - opencode 1.19.5 starting a task, in a plain container: a peak of about 1.2 GiB.
 
 A real task's peak, with a model and the work it builds or runs, is not measured yet.
+
+## What a pod serves, and a manager restart
+
+The manager keeps no state of its own. It records on each pod what the pod serves, by patching the pod:
+- labels `sandbox-manager/workspace` and `sandbox-manager/kind`;
+- annotations `sandbox-manager/phase` (`running`, `held` or `idle`), `sandbox-manager/key`, `sandbox-manager/task`, `sandbox-manager/task-started`, `sandbox-manager/since` and `sandbox-manager/until`.
+
+A warm pod carries none of them. When the manager starts it lists the pods labelled `app.kubernetes.io/managed-by=sandbox-manager` and takes them over:
+- a running task runs on, and its pod's daemon reports through the new manager as before (it registers again on its next heartbeat);
+- a hold resumes with its remaining time, and an idle pod ages on from when it became idle;
+- a warm pod is kept and is ready again once its daemon calls in;
+- a pod it cannot interpret (no pod token, a garbled record) is deleted;
+- a task placed on a pod that had not taken it up, and a task Multica shows dispatched to the manager that no pod has, are failed, so Multica retries them.
+
+Without the right to patch pods, nothing is recorded: the dispatch page shows the refusal, and a restarted manager deletes every pod it finds, failing the tasks that ran on them.
 
 ## The manager's own service account
 
@@ -43,7 +58,7 @@ deploy/k8s/dev/up.sh
 
 This creates the kind cluster `sandbox-dev` and the namespace `multica-sandbox`, and runs Multica in it. It writes these files to `deploy/k8s/dev/.state/`, which git ignores:
 - `backend.env`: the database password, JWT secret and the fixed sign-in code;
-- `dev-user.kubeconfig`: a kubeconfig with only the rights known for certain at the company. It may create, delete, get, list and watch pods in the namespace, which is all the manager needs, and nothing else: no service accounts, Secrets, Deployments or RBAC. Multica itself is deployed with the kind cluster's admin credentials.
+- `dev-user.kubeconfig`: a kubeconfig with only the rights the manager needs. It may create, delete, get, list, watch and patch pods in the namespace, which is all the manager needs, and nothing else: no service accounts, Secrets, Deployments or RBAC. Multica itself is deployed with the kind cluster's admin credentials.
 
 The manager uses `dev-user.kubeconfig`, as it will use the operator's own kubeconfig at the company.
 

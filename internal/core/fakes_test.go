@@ -110,14 +110,16 @@ func (s *fakeSource) snapshot() (claims, fails, closed []string) {
 	return slices.Clone(s.claims), slices.Clone(s.fails), slices.Clone(s.closed)
 }
 
-// fakePool is a pool in memory: pods are free until acquired, resetting once
-// handed back (until reset is called), and serve the tenants given.
+// fakePool is a pool in memory: pods are free until acquired, and serve the
+// tenants given. A pod handed back is deleted and a new one starts in its
+// place under the same ID, ready once ready is called.
 type fakePool struct {
 	mu      sync.Mutex
 	pods    []*fakePod
 	woken   []string
 	backs   []string // "pod reason"
 	preferd map[string]bool
+	records map[string]core.PodRecord
 }
 
 type fakePod struct {
@@ -126,7 +128,28 @@ type fakePod struct {
 	tenants []string
 }
 
-func newFakePool() *fakePool { return &fakePool{preferd: map[string]bool{}} }
+func newFakePool() *fakePool {
+	return &fakePool{preferd: map[string]bool{}, records: map[string]core.PodRecord{}}
+}
+
+// restore adds a pod a previous run left, held by the core.
+func (p *fakePool) restore(id string, tenants ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pods = append(p.pods, &fakePod{id: id, state: core.PodHeld, tenants: tenants})
+}
+
+func (p *fakePool) Record(id string, rec core.PodRecord) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.records[id] = rec
+}
+
+func (p *fakePool) record(id string) core.PodRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.records[id]
+}
 
 // add registers a free pod serving tenants.
 func (p *fakePool) add(id string, tenants ...string) {
@@ -144,11 +167,11 @@ func (p *fakePool) find(id string) *fakePod {
 	return nil
 }
 
-// reset finishes a handed-back pod's reset: it is free again.
-func (p *fakePool) reset(id string) {
+// ready makes the pod that replaced a handed-back one ready.
+func (p *fakePool) ready(id string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if pd := p.find(id); pd != nil && pd.state == core.PodResetting {
+	if pd := p.find(id); pd != nil && pd.state == core.PodStarting {
 		pd.state = core.PodFree
 	}
 }
@@ -176,7 +199,7 @@ func (p *fakePool) HandBack(_ context.Context, id string, why core.HandBack) err
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if pd := p.find(id); pd != nil && pd.state == core.PodHeld {
-		pd.state = core.PodResetting
+		pd.state = core.PodStarting
 	}
 	p.backs = append(p.backs, id+" "+why.Reason)
 	return nil

@@ -3,7 +3,6 @@ package manager_test
 import (
 	"net/http"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -94,34 +93,6 @@ func TestTwoTasksOfOneIssueNeverShareAPod(t *testing.T) {
 	}
 }
 
-func TestAHeldPodResetsWhenItsHoldRunsOut(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, 1, holding(150*time.Millisecond))
-	h.upstream.enqueueIn("t1", "issue-1", "")
-	a := h.newPod("pool-0")
-	a.start()
-	a.claimBatch()
-	if status := a.report("t1", "complete"); status != http.StatusOK {
-		t.Fatalf("complete t1: %d", status)
-	}
-	if inv := h.inventory(); inv.Leased != 1 || inv.Resetting != 0 {
-		t.Fatalf("pod should be held right after its task: %+v", inv)
-	}
-	time.Sleep(300 * time.Millisecond)
-	if inv := h.inventory(); inv.Resetting != 1 {
-		t.Fatalf("pod should reset once its hold runs out: %+v", inv)
-	}
-	var reasons []string
-	for _, r := range h.auditRecords() {
-		if r.Action == manager.AuditReset && r.PodID == a.id {
-			reasons = append(reasons, r.Reason)
-		}
-	}
-	if !slices.Contains(reasons, "reset started: hold expired") {
-		t.Fatalf("the hold's expiry should be audited: %v", reasons)
-	}
-}
-
 func TestInventoryShowsEachPodsKeyAndHold(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 2, holding(time.Hour))
@@ -135,12 +106,12 @@ func TestInventoryShowsEachPodsKeyAndHold(t *testing.T) {
 	for _, pd := range h.inventory().Pods {
 		pods[pd.ID] = pd
 	}
-	if pods[b.id].Binding != nil {
-		t.Fatalf("a pod that served no one has no binding: %+v", pods[b.id].Binding)
+	if got := pods[b.id]; got.Phase != manager.PodWarm || got.Key != "" || got.Kind != "" || got.WorkspaceID != "" {
+		t.Fatalf("a pod that served no one: %+v", got)
 	}
 	got := pods[a.id]
-	if got.Binding == nil || got.Binding.AffinityKey != "issue:issue-1" || got.Binding.Hold || got.Binding.Tasks != 1 || got.Phase != "running" || got.Kind != "clean" {
-		t.Fatalf("running pod: %+v %+v", got, got.Binding)
+	if got.Phase != manager.PodRunning || got.Key != "issue:issue-1" || got.TaskID != "t1" || got.Kind != "pool" || got.WorkspaceID != harnessWorkspaceID || got.HoldUntil != nil {
+		t.Fatalf("running pod: %+v", got)
 	}
 
 	a.report("t1", "complete")
@@ -149,11 +120,14 @@ func TestInventoryShowsEachPodsKeyAndHold(t *testing.T) {
 			got = pd
 		}
 	}
-	if b := got.Binding; b == nil || !b.Hold || b.HoldUntil == nil || b.HoldRemainingSeconds < 3590 || b.HoldRemainingSeconds > 3600 || b.Tasks != 0 || got.Phase != "held" {
-		t.Fatalf("held pod: %+v %+v", got, b)
+	if got.Phase != manager.PodHeld || got.Key != "issue:issue-1" || got.TaskID != "" || got.HoldUntil == nil || got.HoldRemainingSeconds < 3590 || got.HoldRemainingSeconds > 3600 {
+		t.Fatalf("held pod: %+v", got)
 	}
 }
 
+// With the budget full and its only pod running, a task stays queued in
+// Multica; once that pod is held, it is deleted for the task, and the pod
+// created in its place takes it.
 func TestTaskNoPodCanTakeStaysQueuedUpstream(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 1, holding(time.Hour))
@@ -164,34 +138,18 @@ func TestTaskNoPodCanTakeStaysQueuedUpstream(t *testing.T) {
 	a.claimBatch()
 
 	if got := a.claimBatch(); len(got) != 0 {
-		t.Fatalf("pod bound to issue-1 was handed an issue-2 task: %v", got)
+		t.Fatalf("the running pod was handed another task: %v", got)
 	}
 	if h.upstream.queued() != 1 {
 		t.Fatal("the issue-2 task should stay queued in Multica")
 	}
+	if status := a.report("t1", "complete"); status != http.StatusOK {
+		t.Fatalf("complete t1: %d", status)
+	}
+	h.dispatch() // the held pod is deleted for the budget
 	b := h.newPod("pool-1")
 	b.start()
 	if got := b.claimBatch(); !slices.Equal(got, []string{"t2"}) {
-		t.Fatalf("new idle pod should get the queued task: %v", got)
-	}
-}
-
-func TestInvalidPlacementConfigIsRejected(t *testing.T) {
-	t.Parallel()
-	for name, opt := range map[string]func(*manager.Config){
-		"unknown rule":     func(c *manager.Config) { c.AffinityRule = "agent" },
-		"old issue rule":   func(c *manager.Config) { c.AffinityRule = "issue" },
-		"old chat rule":    func(c *manager.Config) { c.AffinityRule = "chat" },
-		"negative size":    func(c *manager.Config) { c.Capacity = -1 },
-		"negative waiting": func(c *manager.Config) { c.PlacementWait = -time.Second },
-		"negative hold":    func(c *manager.Config) { c.HoldTimeout = -time.Second },
-	} {
-		cfg := manager.Config{
-			MulticaURL: "http://127.0.0.1:1", PAT: harnessPAT,
-		}
-		opt(&cfg)
-		if _, err := manager.New(cfg, nil); err == nil || (strings.HasPrefix(name, "old") && !strings.Contains(err.Error(), "affinity rule")) {
-			t.Errorf("%s: want an error naming the affinity rule, got %v", name, err)
-		}
+		t.Fatalf("the new pod should get the queued task: %v", got)
 	}
 }
