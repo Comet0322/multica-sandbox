@@ -128,8 +128,8 @@ func TestLoadSettingsReadsTheDaemonIdentity(t *testing.T) {
 	if err != nil || s.config.DaemonID != "" {
 		t.Fatalf("unset: %q, %v; want it left to derivation", s.config.DaemonID, err)
 	}
-	env["SANDBOX_MANAGER_DAEMON_ID"] = " company-sandbox-prod "
-	if s, err = loadSettings(envLookup(env)); err != nil || s.config.DaemonID != "company-sandbox-prod" {
+	env["SANDBOX_MANAGER_DAEMON_ID"] = " example-sandbox-prod "
+	if s, err = loadSettings(envLookup(env)); err != nil || s.config.DaemonID != "example-sandbox-prod" {
 		t.Fatalf("set: %q, %v", s.config.DaemonID, err)
 	}
 }

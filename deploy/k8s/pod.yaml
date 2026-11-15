@@ -1,4 +1,4 @@
-# Example pod template for the company's namespace (SANDBOX_POD_TEMPLATE).
+# Example pod template for your namespace (SANDBOX_POD_TEMPLATE).
 # The manager creates every pod from it and fills in only the
 # pod's name, labels, annotations, restart policy and pod token
 # (SANDBOX_POD_TOKEN, the only secret in the pod's environment). Everything
@@ -17,10 +17,10 @@
 # no capabilities, no privilege escalation, RuntimeDefault seccomp, no
 # service account token). Checked with `kubectl apply --dry-run=server` in
 # the kind namespace (deploy/k8s/dev). Not checked: Kyverno or Gatekeeper
-# policies and Istio injection at the company. If Istio injects a sidecar,
+# policies and Istio injection in your cluster. If Istio injects a sidecar,
 # keep the daemon's container named "daemon" (the pod token goes to it) and
 # allow its egress to the manager; or disable injection for these pods with
-# the label sidecar.istio.io/inject: "false" if the company permits it.
+# the label sidecar.istio.io/inject: "false" if your cluster permits it.
 apiVersion: v1
 kind: Pod
 metadata:

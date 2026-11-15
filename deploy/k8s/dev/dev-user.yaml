@@ -1,4 +1,4 @@
-# Stands in for the operator's own credentials at the company, with only the
+# Stands in for the operator's own credentials, with only the
 # rights the manager needs on pods in the namespace: creating, deleting and
 # watching them, and patching them to record what each serves, which a
 # restarted manager rebuilds from. Whether the operator may create service

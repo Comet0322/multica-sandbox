@@ -274,7 +274,7 @@ full and a pod is needed, the manager deletes an idle pool pod first, then a
 held pool pod, then a held clean pod, from the department furthest over its
 share, and never one within another department's guarantee. A handoff across
 pods (agent A hands an issue to agent B, and B lands on another pod) sees only
-what A pushed, through the company's git MCP for example; anything A left
+what A pushed, through a git MCP server for example; anything A left
 unpushed stays on A's pod.
 
 A **warm pod** is new and ready and belongs to no department or kind until its
@@ -558,7 +558,7 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
 
 ## Local kind namespace
 
-`deploy/k8s/dev` stands in for the company's namespace on a workstation:
+`deploy/k8s/dev` stands in for your namespace on a workstation:
 
 ```bash
 deploy/k8s/dev/up.sh

@@ -101,10 +101,10 @@ func TestDerivedDaemonIdentityDependsOnTheAccount(t *testing.T) {
 func TestDaemonIdentityOverride(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
-	serveTwoWorkspaces(t, up, func(c *manager.Config) { c.DaemonID = "company-sandbox-prod" })
+	serveTwoWorkspaces(t, up, func(c *manager.Config) { c.DaemonID = "example-sandbox-prod" })
 
 	registered, claimed := daemonIDsSent(up)
-	if id := singleValue(t, "registration and claim", append(registered, claimed...)); id != "company-sandbox-prod" {
+	if id := singleValue(t, "registration and claim", append(registered, claimed...)); id != "example-sandbox-prod" {
 		t.Fatalf("daemon_id %q, want the configured one", id)
 	}
 	if up.pathCount("GET /api/me") != 0 {
@@ -196,7 +196,7 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA, wsB)
 	serveTwoWorkspaces(t, up, func(c *manager.Config) {
-		c.Name = "Company Sandbox"
+		c.Name = "Example Sandbox"
 		c.DeviceName = "GPU pool, us-east"
 		c.Providers = []string{"claude"}
 	})
@@ -210,7 +210,7 @@ func TestRuntimeNameIsTheConfiguredName(t *testing.T) {
 		}
 		for _, item := range runtimes {
 			rt, _ := item.(map[string]any)
-			if name, _ := rt["name"].(string); name != "Claude (Company Sandbox)" {
+			if name, _ := rt["name"].(string); name != "Claude (Example Sandbox)" {
 				t.Fatalf("runtime name %q, want the configured name", name)
 			}
 		}
