@@ -1,8 +1,8 @@
 // Package sandbox is the sandbox service: it owns the pods themselves. It
 // creates them through the Kubernetes API from the operator's pod template,
 // issues their pod tokens, watches them, records on each what it serves, and
-// deletes them (ADR 0009). Callers reach pods only through Service (see
-// docs/adr/0004-pods-behind-a-sandbox-service.md).
+// deletes them. Callers reach pods only through Service, so the pods could
+// come from elsewhere without the callers changing.
 //
 // Create returns a ready pod no one holds and Delete deletes it: a pod is
 // never reset. PutFiles, GetFiles and Exec return ErrUnsupported.

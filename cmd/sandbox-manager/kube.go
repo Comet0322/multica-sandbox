@@ -19,7 +19,7 @@ import (
 const inClusterNamespace = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 // kubeSettings reads the settings of the sandbox service, which creates the
-// pods through the Kubernetes API from SANDBOX_POD_TEMPLATE (ADR 0009).
+// pods through the Kubernetes API from SANDBOX_POD_TEMPLATE.
 //
 // The credentials come from KUBECONFIG when it is set (the operator's own,
 // for now), else from the pod's service account. The namespace is

@@ -47,7 +47,7 @@ type RuntimesConfig struct {
 	DeviceName string
 	// DaemonIDSuffix follows the manager's identity in the daemon_id these
 	// runtimes are registered and claimed under, so each runtime kind is a
-	// machine of its own (ADR 0009). Empty is the identity itself, which
+	// machine of its own. Empty is the identity itself, which
 	// alone takes over the legacy daemon_id's runtimes.
 	DaemonIDSuffix string
 	// Providers limits which agent CLIs a pod reports become runtimes. Empty

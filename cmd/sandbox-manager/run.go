@@ -34,7 +34,8 @@ type managerSettings struct {
 	warnings []string
 }
 
-// removedSettings are the settings of the GitOps pool that ADR 0009 removed.
+// removedSettings are the settings of the GitOps pool, which pods created
+// through the Kubernetes API replaced.
 // One still set is ignored with a warning, so an old deployment starts.
 var removedSettings = []string{
 	"SANDBOX_POOL_SIZE",
@@ -154,7 +155,7 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	}
 	for _, name := range removedSettings {
 		if getenv(name) != "" {
-			s.warnings = append(s.warnings, name+" is no longer used (ADR 0009) and is ignored")
+			s.warnings = append(s.warnings, multica.NoLongerUsed(name))
 		}
 	}
 	switch s.config.RuntimeVisibility {
@@ -184,7 +185,7 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		s.config.ReadOverrides = func() ([]byte, error) { return readConfigFile(path) }
 	}
 
-	// Pods are created through the Kubernetes API (ADR 0009); two warm pods
+	// Pods are created through the Kubernetes API; two warm pods
 	// unless set. At least one: a workspace's runtimes are learnt from a
 	// pod's daemon registering them, so with no pod at all nothing would
 	// ever be claimed.

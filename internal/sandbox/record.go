@@ -16,7 +16,7 @@ import (
 )
 
 // What a pod serves is recorded on the pod itself, so a manager that
-// restarts finds it again (ADR 0009: Kubernetes holds the state). The
+// restarts finds it again: Kubernetes holds the state. The
 // workspace and kind are labels, the rest annotations.
 const (
 	WorkspaceLabel        = "sandbox-manager/workspace"

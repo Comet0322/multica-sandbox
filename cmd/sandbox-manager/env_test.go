@@ -67,7 +67,7 @@ func TestLoadSettingsWarnsOfRemovedSettings(t *testing.T) {
 		t.Fatalf("warnings %q, want one per removed setting", s.warnings)
 	}
 	for i, name := range removedSettings {
-		if !strings.HasPrefix(s.warnings[i], name+" is no longer used") {
+		if s.warnings[i] != name+" is no longer used and is ignored" {
 			t.Errorf("warning %q does not name %s", s.warnings[i], name)
 		}
 	}
@@ -134,7 +134,7 @@ func TestLoadSettingsReadsTheDaemonIdentity(t *testing.T) {
 	}
 }
 
-// The manager handles no git or LLM credentials (ADR 0002), so every setting
+// The manager handles no git or LLM credentials, so every setting
 // it still reads must be enough to start it.
 func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 	up := newFakeMultica(t, testWorkspaceA)

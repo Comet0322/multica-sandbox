@@ -9,7 +9,8 @@ import (
 
 // The core keeps what each held pod serves on the pod, through its Pool
 // (Record), and a core that starts takes over the pods a previous run left
-// from those records (Restore). Kubernetes holds the state (ADR 0009).
+// from those records (Restore). Kubernetes holds the state; the manager
+// keeps no database.
 
 // PodRecord is what a held pod serves: the policy's view of it, and when its
 // task started.

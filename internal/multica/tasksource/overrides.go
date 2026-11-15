@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"sandbox-manager/internal/multica"
 )
 
 // WorkspaceOverride replaces pool defaults for one workspace. A field left out
@@ -27,8 +29,8 @@ type WorkspaceOverride struct {
 	// Weight shares out the pods beyond the guarantees between workspaces
 	// with work; 1 by default.
 	Weight *int `yaml:"weight"`
-	// Ignored are the settings the entry names that ADR 0009 removed: they
-	// are read with a warning and ignored.
+	// Ignored are the removed settings the entry names: they are read with
+	// a warning and ignored.
 	Ignored []string `yaml:"-"`
 }
 
@@ -96,8 +98,7 @@ func decodeOverride(node *yaml.Node) (WorkspaceOverride, error) {
 	return o, o.check()
 }
 
-// dropRemoved takes the settings ADR 0009 removed out of an entry and names
-// them.
+// dropRemoved takes the removed settings out of an entry and names them.
 func dropRemoved(node *yaml.Node) []string {
 	if node.Kind != yaml.MappingNode {
 		return nil
@@ -185,7 +186,7 @@ func (s *Source) resolveWorkspaceSettings(ctx context.Context, list []WorkspaceC
 			continue
 		}
 		if len(o.Ignored) > 0 {
-			problems = append(problems, fmt.Sprintf("override %q: %s no longer used (ADR 0009); ignored", wc.Slug, strings.Join(o.Ignored, ", ")))
+			problems = append(problems, fmt.Sprintf("override %q: %s", wc.Slug, multica.NoLongerUsed(o.Ignored...)))
 		}
 		if o.Quota != nil {
 			wc.Quota = *o.Quota

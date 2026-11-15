@@ -88,7 +88,7 @@ const (
 type Config struct {
 	MulticaURL string
 	// Kube configures the sandbox service, which creates the pods through
-	// the Kubernetes API from a pod template (ADR 0009). Its Notify, Audit,
+	// the Kubernetes API from a pod template. Its Notify, Audit,
 	// Log and Now are the manager's. It is required unless the pod side is
 	// simulated.
 	Kube *sandbox.KubeConfig

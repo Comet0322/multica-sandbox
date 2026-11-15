@@ -230,7 +230,7 @@ passes to the agent unchanged.
 These belonged to the pool of pods that were started outside the manager and
 reset between tasks, before pods were created through the Kubernetes API.
 Each one still set is ignored, with a warning at start
-(`<NAME> is no longer used (ADR 0009) and is ignored`):
+(`<NAME> is no longer used and is ignored`):
 
 | Variable | What it was |
 | --- | --- |

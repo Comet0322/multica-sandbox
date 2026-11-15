@@ -1,4 +1,4 @@
-// Package policy is the pure part of the core's decisions (ADR 0009): which
+// Package policy is the pure part of the core's decisions: which
 // tenant claims next and for which runtime kind, where a claimed task goes,
 // whether a claim may have a pod, which pod is deleted when the budget is
 // full, and when held and idle pods end.
