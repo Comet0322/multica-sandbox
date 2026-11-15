@@ -6,14 +6,14 @@ import (
 	"errors"
 	"time"
 
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
-// Task is a claimed task as the core sees it: the lending policy's view of
+// Task is a claimed task as the core sees it: the policy's view of
 // it, the person behind it for the audit trail, and the body the pod gets,
 // which the core hands over unread.
 type Task struct {
-	lending.Task
+	policy.Task
 	// Email is the email of the person the task runs for, for the audit
 	// trail; empty when no person triggered it.
 	Email string
@@ -22,10 +22,10 @@ type Task struct {
 	Payload json.RawMessage
 }
 
-// Tenant is one tenant the source serves, with its lending settings.
+// Tenant is one tenant the source serves, with its policy settings.
 type Tenant struct {
 	ID       string
-	Settings lending.TenantSettings
+	Settings policy.TenantSettings
 }
 
 // TaskSource is where tasks come from. Every method may call out over the
@@ -34,12 +34,13 @@ type TaskSource interface {
 	// Claimable lists the tenants that may be claimed from now, in rotation
 	// order.
 	Claimable() []string
-	// Pending reads a tenant's pending list.
-	Pending(ctx context.Context, tenant string) ([]lending.Pending, error)
-	// Claim claims at most one task from a tenant; nil and no error when
-	// nothing is claimable. The task's Tenant is the one it belongs to, which
-	// the core checks against the tenant asked.
-	Claim(ctx context.Context, tenant string) (*Task, error)
+	// Pending reads the pending list of a tenant's runtimes of one kind.
+	Pending(ctx context.Context, tenant string, kind policy.Kind) ([]policy.Pending, error)
+	// Claim claims at most one task from a tenant's runtimes of one kind;
+	// nil and no error when nothing is claimable. The task's Tenant is the
+	// one it belongs to, which the core checks against the tenant asked;
+	// its Kind is the kind claimed for.
+	Claim(ctx context.Context, tenant string, kind policy.Kind) (*Task, error)
 	// Fail reports a claimed task as failed. A report that does not get
 	// through is the source's to send again.
 	Fail(ctx context.Context, tenant, taskID, reason string)

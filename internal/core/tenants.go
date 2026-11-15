@@ -53,7 +53,7 @@ func (c *Core) SetTenants(ctx context.Context, list []Tenant) TenantChanges {
 		}
 		if err := c.policy.SetTenant(t.ID, t.Settings); err != nil {
 			// The source refuses such settings before they get here.
-			c.log.Error("lending policy refused workspace settings", "workspace_id", t.ID, "error", err)
+			c.log.Error("policy refused workspace settings", "workspace_id", t.ID, "error", err)
 		}
 	}
 	var dropped []*tenant

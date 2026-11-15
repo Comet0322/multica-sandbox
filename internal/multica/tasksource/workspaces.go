@@ -120,7 +120,7 @@ func (s *workspaceSet) finishDrain(id string) *workspace {
 // runtime ID.
 func (s *workspaceSet) byRuntime(id string) *workspace {
 	for _, ws := range append(s.served(), s.drainingList()...) {
-		if ws.rt.Owns(id) {
+		if ws.owning(id) != nil {
 			return ws
 		}
 	}

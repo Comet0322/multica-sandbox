@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sandbox-manager/internal/policy"
 	"slices"
 	"strings"
 	"sync"
@@ -195,13 +196,14 @@ func (f *fakeMultica) enqueue(id string) {
 	})
 }
 
-// enqueueNoInitiator adds a task that no human triggered.
+// enqueueNoInitiator adds a task that no human triggered, an autopilot run
+// with no issue or chat session, so no key.
 func (f *fakeMultica) enqueueNoInitiator(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queue = append(f.queue, map[string]any{
 		"id": id, "agent_id": "agent-1", "runtime_id": "runtime-a",
-		"workspace_id": harnessWorkspaceID, "issue_id": "issue-" + id,
+		"workspace_id": harnessWorkspaceID,
 	})
 }
 
@@ -284,6 +286,15 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
+// cleanRuntimes claims for the clean kind unless the test chose: the GitOps
+// pods these tests run are reset after every task, as a clean task with no
+// hold has its pod deleted.
+func cleanRuntimes(cfg *manager.Config) {
+	if len(cfg.Runtimes) == 0 {
+		cfg.Runtimes = []policy.Kind{policy.KindClean}
+	}
+}
+
 func newHarness(t *testing.T, expectedSize int, opts ...func(*manager.Config)) *harness {
 	t.Helper()
 	up := newFakeMultica(t)
@@ -293,6 +304,7 @@ func newHarness(t *testing.T, expectedSize int, opts ...func(*manager.Config)) *
 		Name:         "Test Pool",
 		ExpectedSize: expectedSize,
 	}
+	cleanRuntimes(&cfg)
 	for _, opt := range opts {
 		opt(&cfg)
 	}

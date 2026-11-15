@@ -3,7 +3,7 @@
 // account's workspaces and turns each into a tenant for the core, registers
 // and keeps the runtimes in each, heartbeats them, reads the pending lists,
 // claims and fails tasks when the core says so, and answers the pod side's
-// questions about registrations directly, since they do not touch lending.
+// questions about registrations directly, since they do not touch the policy.
 package tasksource
 
 import (
@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 )
 
 // DefaultSyncInterval is how often the source looks for workspaces its
@@ -55,9 +55,13 @@ type Config struct {
 	// RuntimeVisibility is set on every runtime registered: "public" or
 	// "private".
 	RuntimeVisibility string
+	// Runtimes are the runtime kinds registered in every workspace, each
+	// under its own daemon_id (see DaemonIDSuffix), name and device name.
+	// Empty registers the pool kind alone, under Name and DeviceName.
+	Runtimes []RuntimeSet
 	// Quota and AffinityRule are the defaults of every workspace.
 	Quota        int
-	AffinityRule lending.AffinityRule
+	AffinityRule multica.AffinityRule
 	// SyncInterval is how often SyncLoop lists the workspaces. Zero means
 	// DefaultSyncInterval.
 	SyncInterval time.Duration
@@ -72,6 +76,27 @@ type Config struct {
 	ReadOverrides func() ([]byte, error)
 }
 
+// RuntimeSet is the runtimes of one kind the source registers in every
+// workspace.
+type RuntimeSet struct {
+	Kind policy.Kind
+	// Name is the machine name members see for these runtimes. For the pool
+	// kind a workspace's own runtime name, when it has one, comes first.
+	Name string
+	// DeviceName is shown under the machine name; empty shows Name.
+	DeviceName string
+}
+
+// DaemonIDSuffix follows the manager's identity in the daemon_id of a
+// kind's runtimes: none for the pool kind, which keeps the identity the
+// manager always had, "-<kind>" for any other.
+func DaemonIDSuffix(kind policy.Kind) string {
+	if kind == policy.KindPool {
+		return ""
+	}
+	return "-" + string(kind)
+}
+
 // Core is what the source tells the core.
 type Core interface {
 	SetTenants(ctx context.Context, list []core.Tenant) core.TenantChanges
@@ -79,7 +104,7 @@ type Core interface {
 }
 
 // Pods is what the source tells the pod side directly: nothing of it touches
-// lending.
+// the policy.
 type Pods interface {
 	// NotifyWorkspacesChanged makes the pods' daemons read their workspace
 	// list again: at once, or rate-limited.
@@ -139,6 +164,9 @@ func New(cfg Config) *Source {
 	}
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = DefaultHeartbeatInterval
+	}
+	if len(cfg.Runtimes) == 0 {
+		cfg.Runtimes = []RuntimeSet{{Kind: policy.KindPool, Name: cfg.Name, DeviceName: cfg.DeviceName}}
 	}
 	models := multica.NewModelCatalog(cfg.Now, 0)
 	for provider, report := range cfg.Models {
@@ -282,10 +310,18 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	res := s.ws.apply(next, func(wc WorkspaceConfig) *workspace {
-		return &workspace{cfg: wc, rt: s.up.Runtimes(multica.RuntimesConfig{
-			WorkspaceID: wc.WorkspaceID, Name: wc.RuntimeName, DeviceName: s.cfg.DeviceName, Providers: s.cfg.Providers,
-			Visibility: s.cfg.RuntimeVisibility, Log: s.log, Now: s.now,
-		})}
+		ws := &workspace{cfg: wc}
+		for _, set := range s.cfg.Runtimes {
+			name := set.Name
+			if set.Kind == policy.KindPool && wc.RuntimeName != "" {
+				name = wc.RuntimeName
+			}
+			ws.sets = append(ws.sets, kindSet{kind: set.Kind, rt: s.up.Runtimes(multica.RuntimesConfig{
+				WorkspaceID: wc.WorkspaceID, Name: name, DeviceName: set.DeviceName, DaemonIDSuffix: DaemonIDSuffix(set.Kind),
+				Providers: s.cfg.Providers, Visibility: s.cfg.RuntimeVisibility, Log: s.log, Now: s.now,
+			})})
+		}
+		return ws
 	})
 	tenants := make([]core.Tenant, 0, len(next))
 	for _, ws := range s.ws.served() {
@@ -306,7 +342,7 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 // Close forgets a removed workspace whose drain ended, and disconnects it.
 func (s *Source) Close(tenant string) {
 	if ws := s.ws.finishDrain(tenant); ws != nil {
-		ws.rt.Conn().Close()
+		ws.close()
 	}
 }
 
@@ -327,7 +363,9 @@ func (s *Source) recoverOrphansOnce(ctx context.Context) {
 	s.mu.Unlock()
 	for _, ws := range s.ws.served() {
 		if !s.core.TenantBusy(ws.cfg.WorkspaceID) {
-			ws.rt.RecoverOrphans(ctx)
+			for _, set := range ws.sets {
+				set.rt.RecoverOrphans(ctx)
+			}
 		}
 	}
 }
@@ -339,8 +377,10 @@ func (s *Source) unregisteredWithPods() bool {
 		return false
 	}
 	for _, ws := range s.ws.served() {
-		if !ws.rt.Registered() {
-			return true
+		for _, set := range ws.sets {
+			if !set.rt.Registered() {
+				return true
+			}
 		}
 	}
 	return false
@@ -350,7 +390,9 @@ func (s *Source) unregisteredWithPods() bool {
 // have the wanted visibility (see multica.Runtimes.EnsureVisibility).
 func (s *Source) reconcileVisibility(ctx context.Context) {
 	for _, ws := range s.ws.served() {
-		ws.rt.EnsureVisibility(ctx)
+		for _, set := range ws.sets {
+			set.rt.EnsureVisibility(ctx)
+		}
 	}
 }
 
@@ -361,8 +403,11 @@ func (s *Source) reconcileVisibility(ctx context.Context) {
 func (s *Source) Claimable() []string {
 	var out []string
 	for _, ws := range s.ws.served() {
-		if len(ws.rt.IDs()) > 0 {
-			out = append(out, ws.cfg.WorkspaceID)
+		for _, set := range ws.sets {
+			if len(set.rt.IDs()) > 0 {
+				out = append(out, ws.cfg.WorkspaceID)
+				break
+			}
 		}
 	}
 	return out
@@ -371,30 +416,42 @@ func (s *Source) Claimable() []string {
 // Pending reads a workspace's pending list. The server keeps one per runtime,
 // so a workspace costs one read per manager runtime there; the lists are
 // merged.
-func (s *Source) Pending(ctx context.Context, tenant string) ([]lending.Pending, error) {
+func (s *Source) Pending(ctx context.Context, tenant string, kind policy.Kind) ([]policy.Pending, error) {
 	ws := s.ws.get(tenant)
 	if ws == nil {
 		return nil, fmt.Errorf("workspace %s is not served", tenant)
 	}
-	tasks, err := ws.rt.Pending(ctx, ws.rt.IDs())
+	rt := ws.of(kind)
+	if rt == nil {
+		return nil, fmt.Errorf("workspace %s has no %s runtimes", tenant, kind)
+	}
+	tasks, err := rt.Pending(ctx, rt.IDs())
 	if err != nil {
 		return nil, err
 	}
-	list := make([]lending.Pending, 0, len(tasks))
+	list := make([]policy.Pending, 0, len(tasks))
 	for _, t := range tasks {
-		list = append(list, lending.Pending{ID: t.ID, Priority: t.Priority, CreatedAt: t.Created(), Status: t.Status})
+		list = append(list, policy.Pending{ID: t.ID, Priority: t.Priority, CreatedAt: t.Created(), Status: t.Status})
 	}
 	return list, nil
 }
 
 // Claim claims at most one task from a workspace's runtimes. A task the
 // server returns without an ID is left for the server to hand out again.
-func (s *Source) Claim(ctx context.Context, tenant string) (*core.Task, error) {
+func (s *Source) Claim(ctx context.Context, tenant string, kind policy.Kind) (*core.Task, error) {
 	ws := s.ws.get(tenant)
 	if ws == nil {
 		return nil, fmt.Errorf("workspace %s is not served", tenant)
 	}
-	raw, err := ws.rt.Claim(ctx, ws.rt.IDs())
+	rt := ws.of(kind)
+	if rt == nil {
+		return nil, fmt.Errorf("workspace %s has no %s runtimes", tenant, kind)
+	}
+	ids := rt.IDs()
+	if len(ids) == 0 {
+		return nil, nil // not registered yet
+	}
+	raw, err := rt.Claim(ctx, ids)
 	if err != nil || raw == nil {
 		return nil, err
 	}
@@ -404,7 +461,7 @@ func (s *Source) Claim(ctx context.Context, tenant string) (*core.Task, error) {
 		return nil, nil
 	}
 	owner := strings.ToLower(claimed.WorkspaceID)
-	return &core.Task{Task: claimed.LendingTask(owner), Email: claimed.Email(), Payload: claimed.Raw}, nil
+	return &core.Task{Task: claimed.PolicyTask(owner, kind), Email: claimed.Email(), Payload: claimed.Raw}, nil
 }
 
 // Fail reports a claimed task as failed. One that does not get through for a
@@ -415,7 +472,7 @@ func (s *Source) Fail(ctx context.Context, tenant, taskID, reason string) {
 	if ws == nil {
 		return
 	}
-	err := ws.rt.Conn().Fail(ctx, taskID, reason)
+	err := ws.conn().Fail(ctx, taskID, reason)
 	if err == nil {
 		return
 	}
@@ -448,7 +505,7 @@ func (s *Source) RetryFailures(ctx context.Context) {
 			s.log.Error("gave up failing task upstream; it stays open in Multica until its own timeout", "task_id", f.id, "workspace_id", f.ws.cfg.WorkspaceID, "since", f.since)
 			continue
 		}
-		err := f.ws.rt.Conn().Fail(ctx, f.id, f.reason)
+		err := f.ws.conn().Fail(ctx, f.id, f.reason)
 		switch {
 		case err == nil:
 			s.log.Info("failed task upstream after retry", "task_id", f.id, "workspace_id", f.ws.cfg.WorkspaceID)
@@ -483,7 +540,7 @@ func (s *Source) TaskEnded(ctx context.Context, tenant, taskID string) (string, 
 	if ws == nil {
 		return "", false
 	}
-	status, err := ws.rt.Conn().TaskStatus(ctx, taskID)
+	status, err := ws.conn().TaskStatus(ctx, taskID)
 	switch code := multica.StatusOf(err); {
 	case err == nil && multica.TerminalTaskStatus(status):
 		return "upstream task ended: " + status, true
@@ -520,16 +577,18 @@ func (s *Source) HeartbeatLoop(ctx context.Context) {
 // drops its workspace's registration.
 func (s *Source) HeartbeatOnce(ctx context.Context) {
 	for _, ws := range append(s.ws.served(), s.ws.drainingList()...) {
-		for _, id := range ws.rt.IDs() {
-			modelRequest, err := ws.rt.Heartbeat(ctx, id)
-			if modelRequest != "" {
-				s.answerModels(ctx, ws, id, modelRequest)
-			}
-			if err != nil {
-				s.log.Warn("heartbeat runtime upstream", "workspace_id", ws.cfg.WorkspaceID, "runtime_id", id, "error", err)
-			}
-			if multica.IsRuntimeNotFound(err) {
-				s.dropRegistration(ws, id)
+		for _, set := range ws.sets {
+			for _, id := range set.rt.IDs() {
+				modelRequest, err := set.rt.Heartbeat(ctx, id)
+				if modelRequest != "" {
+					s.answerModels(ctx, set.rt, id, modelRequest)
+				}
+				if err != nil {
+					s.log.Warn("heartbeat runtime upstream", "workspace_id", ws.cfg.WorkspaceID, "runtime_id", id, "error", err)
+				}
+				if multica.IsRuntimeNotFound(err) {
+					s.dropRegistration(ws, set.rt, id)
+				}
 			}
 		}
 	}
@@ -539,9 +598,9 @@ func (s *Source) HeartbeatOnce(ctx context.Context) {
 // the runtime's provider. The pods run one image, so any pod's report is
 // every runtime's. Without one, or when Multica does not take it, a pod is
 // asked.
-func (s *Source) answerModels(ctx context.Context, ws *workspace, runtimeID, requestID string) {
-	if report, ok := s.models.Report(ws.rt.Provider(runtimeID)); ok {
-		err := ws.rt.Conn().Post(ctx, multica.ModelReportPath(runtimeID, requestID), report, nil)
+func (s *Source) answerModels(ctx context.Context, rt *multica.Runtimes, runtimeID, requestID string) {
+	if report, ok := s.models.Report(rt.Provider(runtimeID)); ok {
+		err := rt.Conn().Post(ctx, multica.ModelReportPath(runtimeID, requestID), report, nil)
 		if err == nil {
 			s.log.Debug("model list request answered from the catalog", "runtime_id", runtimeID, "request_id", requestID)
 			return
@@ -558,7 +617,7 @@ func (s *Source) ModelsReported(runtimeID string, report []byte) {
 	if ws == nil {
 		return
 	}
-	if provider := ws.rt.Provider(runtimeID); s.models.Remember(provider, report) {
+	if provider := ws.owning(runtimeID).Provider(runtimeID); s.models.Remember(provider, report) {
 		s.log.Info("model list kept for the provider's runtimes", "provider", provider, "runtime_id", runtimeID)
 	}
 }
@@ -566,8 +625,8 @@ func (s *Source) ModelsReported(runtimeID string, report []byte) {
 // dropRegistration forgets a workspace's registration after Multica answered
 // that one of its runtimes is gone, and hints the pods to register the
 // workspace again (see multica.Runtimes.Drop).
-func (s *Source) dropRegistration(ws *workspace, runtimeID string) {
-	if !ws.rt.Drop(runtimeID) {
+func (s *Source) dropRegistration(ws *workspace, rt *multica.Runtimes, runtimeID string) {
+	if !rt.Drop(runtimeID) {
 		return
 	}
 	s.log.Warn("runtime gone upstream; the workspace registers again with the next pod", "workspace_id", ws.cfg.WorkspaceID, "runtime_id", runtimeID)
@@ -611,22 +670,37 @@ func (s *Source) Register(ctx context.Context, podID string, req multica.Registr
 		return nil, "", multica.Refuse("workspace is not served by this sandbox manager")
 	}
 	id := ws.cfg.WorkspaceID
-	registration, err := ws.rt.Register(ctx, req.Raw, req.Headers, func() bool { return s.core.TenantBusy(id) })
-	if err != nil {
-		s.log.Warn("register the workspace's runtimes from a pod", "pod_id", podID, "workspace_id", id, "error", err)
-		return nil, "", unavailable
+	// The pod's daemon hosts the runtimes of every kind: it runs a task only
+	// for a runtime it hosts, and the pod may be given a task of any kind.
+	var resp map[string]json.RawMessage
+	var runtimes []json.RawMessage
+	for _, set := range ws.sets {
+		registration, err := set.rt.Register(ctx, req.Raw, req.Headers, func() bool { return s.core.TenantBusy(id) })
+		if err != nil {
+			s.log.Warn("register the workspace's runtimes from a pod", "pod_id", podID, "workspace_id", id, "kind", set.kind, "error", err)
+			return nil, "", unavailable
+		}
+		answer, ok := multica.AnswerForPod(registration, req.Offered)
+		var these []json.RawMessage
+		if !ok || json.Unmarshal(answer["runtimes"], &these) != nil {
+			return nil, "", unavailable
+		}
+		if resp == nil {
+			resp = answer
+		}
+		runtimes = append(runtimes, these...)
 	}
-	resp, ok := multica.AnswerForPod(registration, req.Offered)
-	if !ok {
-		return nil, "", unavailable
+	if runtimes == nil {
+		runtimes = []json.RawMessage{}
 	}
+	resp["runtimes"], _ = json.Marshal(runtimes)
 	return resp, id, nil
 }
 
 // RuntimeServed reports whether a served workspace owns the runtime.
 func (s *Source) RuntimeServed(runtimeID string) bool {
 	for _, ws := range s.ws.served() {
-		if ws.rt.Owns(runtimeID) {
+		if ws.owning(runtimeID) != nil {
 			return true
 		}
 	}
@@ -636,8 +710,10 @@ func (s *Source) RuntimeServed(runtimeID string) bool {
 // RuntimeGone reports whether Multica said the runtime no longer exists.
 func (s *Source) RuntimeGone(runtimeID string) bool {
 	for _, ws := range s.ws.served() {
-		if ws.rt.Gone(runtimeID) {
-			return true
+		for _, set := range ws.sets {
+			if set.rt.Gone(runtimeID) {
+				return true
+			}
 		}
 	}
 	return false
@@ -655,10 +731,10 @@ type WorkspaceView struct {
 // ones still draining.
 func (s *Source) Workspaces() (served, draining []WorkspaceView) {
 	for _, ws := range s.ws.served() {
-		served = append(served, WorkspaceView{Config: ws.cfg, Upstream: ws.rt.Health()})
+		served = append(served, WorkspaceView{Config: ws.cfg, Upstream: ws.health()})
 	}
 	for _, ws := range s.ws.drainingList() {
-		draining = append(draining, WorkspaceView{Config: ws.cfg, Upstream: ws.rt.Health()})
+		draining = append(draining, WorkspaceView{Config: ws.cfg, Upstream: ws.health()})
 	}
 	return served, draining
 }

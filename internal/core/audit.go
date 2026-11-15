@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Audit actions and decisions. Every lending decision of the manager is
+// Audit actions and decisions. Every decision of the manager is
 // one JSON line, so a task ID leads to the person and pod behind it.
 const (
 	AuditLease   = "lease"

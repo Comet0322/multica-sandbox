@@ -91,7 +91,7 @@ func (c *Core) startLeaseLocked(pd *pod, t *Task) *lease {
 	return l
 }
 
-// closeLeaseLocked records a lease's end, on the lending policy's decision.
+// closeLeaseLocked records a lease's end, on the policy's decision.
 // What happens to its pod is the policy's decision too. Callers hold c.mu. A
 // nil or already closed lease is ignored.
 func (c *Core) closeLeaseLocked(l *lease, reason string) {

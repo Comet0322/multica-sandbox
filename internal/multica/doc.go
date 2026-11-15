@@ -5,6 +5,6 @@
 // becomes the manager's own, and the affinity rules that read what a Multica
 // task is about.
 //
-// It knows nothing of pods, leases or the lending policy's state; the manager
+// It knows nothing of pods, leases or the policy's state; the manager
 // decides what to call and acts on the answers.
 package multica

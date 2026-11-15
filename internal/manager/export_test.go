@@ -44,6 +44,6 @@ func (m *Manager) Reload(ctx context.Context, workspaces []WorkspaceConfig) (Rel
 	return m.source.Reload(ctx, workspaces)
 }
 
-// Touch lets time pass for the lending policy and the leases, as every
+// Touch lets time pass for the policy and the leases, as every
 // request does.
 func (m *Manager) Touch() { m.core.Touch() }

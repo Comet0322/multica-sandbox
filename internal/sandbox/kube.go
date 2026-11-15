@@ -217,6 +217,9 @@ func NewKube(cfg KubeConfig) (*KubeService, error) {
 
 func (k *KubeService) now() time.Time { return k.cfg.Now() }
 
+// MaxPods is the most pods the service has at once: the budget.
+func (k *KubeService) MaxPods() int { return k.cfg.MaxPods }
+
 func (k *KubeService) unlock() {
 	notes := k.notes
 	k.notes = nil

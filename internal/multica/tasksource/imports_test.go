@@ -16,7 +16,7 @@ func TestTheSourceImportsNeitherThePoolNorTheSandboxService(t *testing.T) {
 		t.Fatalf("go list: %v\n%s", err, out)
 	}
 	allowed := map[string]bool{
-		self: true, "sandbox-manager/internal/core": true, "sandbox-manager/internal/lending": true,
+		self: true, "sandbox-manager/internal/core": true, "sandbox-manager/internal/policy": true,
 		"sandbox-manager/internal/multica": true, "sandbox-manager/internal/multica/daemonwire": true,
 	}
 	for _, dep := range strings.Fields(string(out)) {

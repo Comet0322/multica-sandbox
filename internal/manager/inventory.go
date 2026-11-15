@@ -4,8 +4,8 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica/tasksource"
+	"sandbox-manager/internal/policy"
 )
 
 // WorkspaceInfo is one workspace's entry in the inventory.
@@ -18,8 +18,8 @@ type WorkspaceInfo struct {
 	// Quota is 0 when the workspace has no cap.
 	Quota int `json:"quota"`
 	// Placement, HoldTimeout and MaxLifetime are the settings in effect, the
-	// pool defaults or the workspace's overrides. A maximum lifetime of "0s"
-	// means none.
+	// pool defaults or the workspace's overrides. Placement and MaxLifetime
+	// are no longer used (ADR 0009).
 	AffinityRule string `json:"placement"`
 	HoldTimeout  string `json:"hold_timeout"`
 	MaxLifetime  string `json:"max_lifetime"`
@@ -34,8 +34,10 @@ type WorkspaceInfo struct {
 	// upstream.
 	OccupiedPods int `json:"occupied_pods"`
 	HoldingPods  int `json:"holding_pods"`
-	TargetPods   int `json:"target_pods"`
-	Queued       int `json:"queued"`
+	// IdlePods are its idle pool pods, also among OccupiedPods.
+	IdlePods   int `json:"idle_pods"`
+	TargetPods int `json:"target_pods"`
+	Queued     int `json:"queued"`
 	// Upstream is the latest claim, pending read or heartbeat outcome; nil
 	// before the first.
 	Upstream *UpstreamHealth `json:"upstream,omitempty"`
@@ -52,7 +54,7 @@ func (m *Manager) Inventory() Inventory {
 	for _, t := range view.Tenants {
 		leased[t.ID] = t.Leased
 	}
-	shares := map[string]lending.ShareInfo{}
+	shares := map[string]policy.ShareInfo{}
 	for _, s := range view.Shares {
 		shares[s.Tenant] = s
 	}
@@ -86,14 +88,17 @@ func (m *Manager) Inventory() Inventory {
 		if pv.Held {
 			info.WorkspaceID = pv.Tenant
 			info.Initiators = pv.Initiators
-			info.Binding = m.podBinding(pv.Binding, now)
+			info.Binding = podBinding(pv.Policy, now)
+			if pi := pv.Policy; pi != nil {
+				info.Phase, info.Kind = string(pi.Phase), string(pi.Kind)
+			}
 		}
 		inv.Pods = append(inv.Pods, info)
 	}
 	return inv
 }
 
-func (m *Manager) workspaceInfo(ws tasksource.WorkspaceView, leased map[string]int, shares map[string]lending.ShareInfo) WorkspaceInfo {
+func (m *Manager) workspaceInfo(ws tasksource.WorkspaceView, leased map[string]int, shares map[string]policy.ShareInfo) WorkspaceInfo {
 	hold, life := m.cfg.HoldTimeout, m.cfg.MaxLifetime
 	if ws.Config.HoldTimeout != nil {
 		hold = *ws.Config.HoldTimeout
@@ -108,7 +113,7 @@ func (m *Manager) workspaceInfo(ws tasksource.WorkspaceView, leased map[string]i
 		Leased: leased[id], Quota: ws.Config.Quota, Upstream: ws.Upstream,
 		AffinityRule: string(ws.Config.AffinityRule), HoldTimeout: hold.String(), MaxLifetime: life.String(),
 		Guarantee: ws.Config.Guarantee, GuaranteeInEffect: s.GuaranteeInEffect, Weight: max(ws.Config.Weight, 1),
-		OccupiedPods: s.Occupied, HoldingPods: s.Holding, TargetPods: s.Target, Queued: s.Queued,
+		OccupiedPods: s.Occupied, HoldingPods: s.Holding, IdlePods: s.Idle, TargetPods: s.Target, Queued: s.Queued,
 	}
 }
 
@@ -129,18 +134,19 @@ func podState(sp core.PodInfo, pv core.PodView) string {
 	return PodIdle
 }
 
-// podBinding describes a pod's binding for the inventory, nil when it has
-// none.
-func (m *Manager) podBinding(b *lending.BindingInfo, now time.Time) *PodBinding {
-	if b == nil {
+// podBinding describes what the policy knows of a pod in the shape of the
+// GitOps pool's bindings, nil for a warm pod: one task at most, held for its
+// key once the task ended. Issue 07 replaces it.
+func podBinding(pi *policy.PodInfo, now time.Time) *PodBinding {
+	if pi == nil || pi.Phase == policy.PhaseWarm {
 		return nil
 	}
-	out := &PodBinding{
-		ID: uint64(b.ID), AffinityKey: b.Key, WorkspaceID: b.Tenant, Tasks: b.Tasks,
-		UsedSlots: b.Used.Slots, CapacitySlots: m.cfg.Capacity, Hold: b.Hold, Kept: b.Kept,
+	out := &PodBinding{AffinityKey: pi.Key, WorkspaceID: pi.Tenant, CapacitySlots: 1, Hold: pi.Phase == policy.PhaseHeld}
+	if pi.Task != "" {
+		out.Tasks, out.UsedSlots = 1, 1
 	}
-	if b.Hold && !b.Kept {
-		until := b.HoldUntil
+	if out.Hold {
+		until := pi.Until
 		out.HoldUntil = &until
 		out.HoldRemainingSeconds = max(int64(until.Sub(now)/time.Second), 0)
 	}

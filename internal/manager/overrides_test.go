@@ -49,6 +49,7 @@ func newOverrideHarness(t *testing.T, up *multiMultica, file *overridesFile, cfg
 	cfg.MulticaURL, cfg.PAT, cfg.Name, cfg.AuditLog = up.URL, patPool, "Shared Pool", audit
 	cfg.UpstreamBackoff = time.Minute
 	cfg.ReadOverrides = file.read
+	cleanRuntimes(&cfg)
 	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)

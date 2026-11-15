@@ -25,12 +25,12 @@ func (h *harness) auditRecords() []manager.AuditRecord {
 	return out
 }
 
-// A task no person authorized (an autopilot run) is no longer refused: it runs
-// in a binding of its own, which nothing can renew, so its pod is reset as
-// soon as it ends, whatever the hold timeout.
-func TestTaskWithoutInitiatorRunsInABindingOfItsOwn(t *testing.T) {
+// A task no person authorized (an autopilot run) is no longer refused. It has
+// no issue or chat session, so no key: its clean pod is reset as soon as it
+// ends, whatever the hold timeout.
+func TestTaskWithoutInitiatorOrKeyRunsAndIsNeverHeld(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, sharedPods(4, time.Hour))
+	h := newHarness(t, 1, holding(time.Hour))
 	h.upstream.enqueueNoInitiator("t1")
 	pod := h.newPod("pool-0")
 	pod.start()

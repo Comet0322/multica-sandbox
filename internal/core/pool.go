@@ -1,6 +1,10 @@
 package core
 
-import "context"
+import (
+	"context"
+
+	"sandbox-manager/internal/policy"
+)
 
 // What the Pool asks the core about the pods it serves. The core answers from
 // its dispatch record: it is the only record of which task runs where.
@@ -30,8 +34,8 @@ func (c *Core) TaskEnded(podID, taskID, reason string) {
 
 // MayServe reports whether a pod may act for a tenant, as far as the core
 // knows: a pod it holds may when it holds a task of the tenant (leased or
-// placed on it), and may not while it works for another tenant or is bound.
-// A held pod that runs nothing and has no binding is as clean as a free one;
+// placed on it), and may not while it works for another tenant or once it
+// served anyone. A held pod that is still warm is as clean as a free one;
 // for it, and for a pod the core does not hold, the Pool decides.
 func (c *Core) MayServe(podID, tenant string) Verdict {
 	c.mu.Lock()
@@ -50,7 +54,7 @@ func (c *Core) MayServe(podID, tenant string) Verdict {
 			return Allowed
 		}
 	}
-	if _, bound := c.policy.Binding(podID); bound || len(pd.leases) > 0 || len(pd.queue) > 0 {
+	if info, ok := c.policy.Pod(podID); (ok && info.Phase != policy.PhaseWarm) || len(pd.leases) > 0 || len(pd.queue) > 0 {
 		return Denied
 	}
 	return Clean

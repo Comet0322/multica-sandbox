@@ -6,10 +6,10 @@ import (
 	"slices"
 	"sort"
 
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
-// The core takes a pod from its Pool (Acquire) when the lending policy asks
+// The core takes a pod from its Pool (Acquire) when the policy asks
 // for one, keeps it while it lends it or until the policy hands it back, and
 // returns it with HandBack. The Pool tells it when a pod it holds is
 // interrupted or lost.
@@ -22,7 +22,7 @@ type pod struct {
 	// seq orders the held pods by acquisition.
 	seq uint64
 	// leases are the tasks the pod runs, by task ID, and queue the claimed
-	// tasks the lending policy placed on it that it has not picked up yet.
+	// tasks the policy placed on it that it has not picked up yet.
 	leases map[string]*lease
 	queue  []*claimedTask
 }
@@ -37,7 +37,7 @@ type handBack struct {
 // PodInterrupted tells the core a pod it holds restarted by itself: its
 // started tasks are gone.
 func (c *Core) PodInterrupted(id, why string) {
-	c.podGone(id, why, func(pol *lending.Policy) []lending.Decision {
+	c.podGone(id, why, func(pol *policy.Policy) []policy.Decision {
 		return pol.PodInterrupted(id, "the pod's daemon restarted", why)
 	})
 }
@@ -51,26 +51,26 @@ func (c *Core) PodLost(id, why string) {
 // the pool no longer lends. why, when the pool knows it (such as the pod
 // running out of memory), is added to the task's failure reason, so members
 // see it in Multica.
-func podLost(id, why string) func(*lending.Policy) []lending.Decision {
+func podLost(id, why string) func(*policy.Policy) []policy.Decision {
 	reason := "the pod running this task was lost"
 	if why != "" && why != "pod lost" {
 		reason += ": " + why
 	}
-	return func(pol *lending.Policy) []lending.Decision {
+	return func(pol *policy.Policy) []policy.Decision {
 		return pol.PodLost(id, reason, "pod lost")
 	}
 }
 
 // podGone forgets a held pod the pool no longer lends: the policy fails its
 // started tasks and places the others elsewhere.
-func (c *Core) podGone(id, why string, tell func(*lending.Policy) []lending.Decision) {
+func (c *Core) podGone(id, why string, tell func(*policy.Policy) []policy.Decision) {
 	c.mu.Lock()
 	c.podGoneLocked(id, why, tell)
 	c.mu.Unlock()
 	c.settle(context.Background())
 }
 
-func (c *Core) podGoneLocked(id, why string, tell func(*lending.Policy) []lending.Decision) {
+func (c *Core) podGoneLocked(id, why string, tell func(*policy.Policy) []policy.Decision) {
 	pd := c.held[id]
 	if pd == nil {
 		return
@@ -121,10 +121,10 @@ func (c *Core) acquire(ctx context.Context) bool {
 	return true
 }
 
-// handBackLocked forgets a held pod the policy decided to reset and queues it
-// to be handed back, with the lease that caused the reset as its audit label.
+// handBackLocked forgets a held pod the policy decided to delete and queues
+// it to be handed back, with the lease that caused it as its audit label.
 // Callers hold c.mu, and settle once they release it.
-func (c *Core) handBackLocked(d lending.Reset) {
+func (c *Core) handBackLocked(d policy.Delete) {
 	pd := c.held[d.Pod]
 	if pd == nil {
 		return
@@ -134,7 +134,7 @@ func (c *Core) handBackLocked(d lending.Reset) {
 	if l := c.leaseOfLocked(d.Task); l != nil {
 		why.TaskID, why.Tenant, why.Initiator = l.TaskID, l.Tenant, l.Initiator
 	}
-	c.log.Info("pod handed back to be reset", "pod_id", pd.ID, "reason", d.Reason)
+	c.log.Info("pod handed back", "pod_id", pd.ID, "reason", d.Reason)
 	c.handBacks = append(c.handBacks, handBack{id: pd.ID, why: why})
 }
 
@@ -194,15 +194,19 @@ func (c *Core) heldOrderLocked() []string {
 }
 
 // livePods counts the pods the pool can lend: every pod it knows but the
-// lost ones. The lending policy scales the guarantees to it.
-func (c *Core) livePods() int {
-	n := 0
+// lost ones, and those of them on their way to ready (resetting or
+// starting). The policy weighs the budget with them.
+func (c *Core) livePods() (live, starting int) {
 	for _, p := range c.pool.Pods() {
-		if p.State != PodLost {
-			n++
+		switch p.State {
+		case PodLost:
+			continue
+		case PodResetting:
+			starting++
 		}
+		live++
 	}
-	return n
+	return live, starting
 }
 
 // initiatorsOf lists the distinct initiators of the tasks the pod holds, sorted.

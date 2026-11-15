@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
 // fakeSource is a task source in memory: each tenant has a queue of tasks a
@@ -24,22 +24,28 @@ type fakeSource struct {
 	ended   map[string]string // task -> reason, for TaskEnded
 	claims  []string          // tenants claimed from, in order
 	pending map[string]error  // tenant -> error from Pending
+	created map[string]time.Time
 }
 
 func newFakeSource(tenants ...string) *fakeSource {
-	return &fakeSource{queues: map[string][]core.Task{}, order: tenants, ended: map[string]string{}, pending: map[string]error{}}
+	return &fakeSource{queues: map[string][]core.Task{}, order: tenants, ended: map[string]string{}, pending: map[string]error{}, created: map[string]time.Time{}}
 }
 
-// add queues a task of a tenant for a person, created at t0+age.
+// add queues a pool task of a tenant for a person, created at t0+age.
 func (s *fakeSource) add(tenant, id, person string, age time.Duration) {
+	s.addTask(tenant, policy.KindPool, id, "issue:"+id, person, age)
+}
+
+// addTask queues a task of a tenant's runtimes of kind, with key.
+func (s *fakeSource) addTask(tenant string, kind policy.Kind, id, key, person string, age time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := core.Task{
-		Task:    lending.Task{ID: id, Tenant: tenant, Initiator: person, Labels: map[string]string{"issue": "is-" + id}},
+		Task:    policy.Task{ID: id, Tenant: tenant, Kind: kind, Key: key},
 		Email:   person + "@example.com",
 		Payload: json.RawMessage(fmt.Sprintf(`{"id":%q}`, id)),
 	}
-	t.Labels["created"] = t0.Add(age).Format(time.RFC3339)
+	s.created[id] = t0.Add(age)
 	s.queues[tenant] = append(s.queues[tenant], t)
 }
 
@@ -49,30 +55,33 @@ func (s *fakeSource) Claimable() []string {
 	return slices.Clone(s.order)
 }
 
-func (s *fakeSource) Pending(_ context.Context, tenant string) ([]lending.Pending, error) {
+func (s *fakeSource) Pending(_ context.Context, tenant string, kind policy.Kind) ([]policy.Pending, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.pending[tenant]; err != nil {
 		return nil, err
 	}
-	var out []lending.Pending
+	var out []policy.Pending
 	for _, t := range s.queues[tenant] {
-		created, _ := time.Parse(time.RFC3339, t.Labels["created"])
-		out = append(out, lending.Pending{ID: t.ID, Priority: 1, CreatedAt: created, Status: lending.StatusQueued})
+		if t.Kind != kind {
+			continue
+		}
+		out = append(out, policy.Pending{ID: t.ID, Priority: 1, CreatedAt: s.created[t.ID], Status: policy.StatusQueued})
 	}
 	return out, nil
 }
 
-func (s *fakeSource) Claim(_ context.Context, tenant string) (*core.Task, error) {
+func (s *fakeSource) Claim(_ context.Context, tenant string, kind policy.Kind) (*core.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.claims = append(s.claims, tenant)
 	q := s.queues[tenant]
-	if len(q) == 0 {
+	i := slices.IndexFunc(q, func(t core.Task) bool { return t.Kind == kind })
+	if i < 0 {
 		return nil, nil
 	}
-	t := q[0]
-	s.queues[tenant] = q[1:]
+	t := q[i]
+	s.queues[tenant] = slices.Delete(slices.Clone(q), i, i+1)
 	return &t, nil
 }
 
@@ -243,13 +252,6 @@ func newRig(t *testing.T, cfg core.Config, tenants ...core.Tenant) *rig {
 	clk := core.NewClock()
 	clk.Set(func() time.Time { r.mu.Lock(); defer r.mu.Unlock(); return r.now })
 	cfg.Clock = clk
-	if cfg.Rules == nil {
-		cfg.Rules = lending.Registry{"person-issue": func(t lending.Task) string { return t.Initiator + "/" + t.Labels["issue"] }}
-		cfg.Rule = "person-issue"
-	}
-	if cfg.Capacity == 0 {
-		cfg.Capacity = 1
-	}
 	if cfg.DrainPoll == 0 {
 		cfg.DrainPoll = 5 * time.Millisecond
 	}
@@ -284,7 +286,7 @@ func (r *rig) next(pod string) string {
 	return t.ID
 }
 
-func tenant(id string, s lending.TenantSettings) core.Tenant { return core.Tenant{ID: id, Settings: s} }
+func tenant(id string, s policy.TenantSettings) core.Tenant { return core.Tenant{ID: id, Settings: s} }
 
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()

@@ -43,6 +43,10 @@ type PodInfo struct {
 	Initiators   []string  `json:"initiators,omitempty"`
 	RegisteredAt time.Time `json:"registered_at"`
 	LastSeen     time.Time `json:"last_seen"`
+	// Phase is the policy's phase of a pod the core holds: warm, running,
+	// held or idle; Kind its runtime kind once it served a task.
+	Phase string `json:"phase,omitempty"`
+	Kind  string `json:"kind,omitempty"`
 	// Binding is the pod's binding, nil when it has none.
 	Binding *PodBinding `json:"binding,omitempty"`
 }

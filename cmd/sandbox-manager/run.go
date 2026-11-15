@@ -10,14 +10,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 )
 
 // managerSettings is the manager's command-line environment. Every variable
@@ -79,8 +80,8 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		}
 		return duration("SANDBOX_POOL_RECONCILE_INTERVAL")
 	}
-	// A binding holds its pod for 15 minutes by default; "0" resets the pod as
-	// soon as its last task ends.
+	// A pod is held for its task's key for 10 minutes by default; "0" holds
+	// nothing.
 	holdTimeout := func() time.Duration {
 		if getenv("SANDBOX_HOLD_TIMEOUT") == "" {
 			return manager.DefaultHoldTimeout
@@ -128,6 +129,8 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 			RuntimeVisibility: getenv("SANDBOX_POOL_RUNTIME_VISIBILITY"),
 			Name:              getenv("SANDBOX_MANAGER_NAME"),
 			DeviceName:        getenv("SANDBOX_MANAGER_DEVICE_NAME"),
+			CleanName:         getenv("SANDBOX_MANAGER_CLEAN_NAME"),
+			CleanDeviceName:   getenv("SANDBOX_MANAGER_CLEAN_DEVICE_NAME"),
 			DaemonID:          strings.TrimSpace(getenv("SANDBOX_MANAGER_DAEMON_ID")),
 			ExpectedSize:      whole("SANDBOX_POOL_SIZE"),
 			Providers:         list("SANDBOX_PROVIDERS"),
@@ -135,13 +138,14 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 			HeartbeatTimeout:  duration("SANDBOX_POOL_HEARTBEAT_TIMEOUT"),
 			ResetTimeout:      duration("SANDBOX_POOL_RESET_TIMEOUT"),
 			LostRetention:     duration("SANDBOX_POOL_LOST_RETENTION"),
-			AffinityRule:      lending.AffinityRule(getenv("SANDBOX_PLACEMENT")),
+			AffinityRule:      multica.AffinityRule(getenv("SANDBOX_PLACEMENT")),
 			Capacity:          whole("SANDBOX_POD_CAPACITY"),
 			PlacementWait:     duration("SANDBOX_PLACEMENT_WAIT"),
 			DispatchInterval:  wakeInterval(),
 			HoldTimeout:       holdTimeout(),
 			MaxLifetime:       duration("SANDBOX_POD_MAX_LIFETIME"),
 			DrainGrace:        duration("SANDBOX_POD_DRAIN_GRACE"),
+			PodMaxIdle:        duration("SANDBOX_POD_MAX_IDLE"),
 			ReconcileInterval: reconcileInterval(),
 			LeaseMax:          duration("SANDBOX_POOL_LEASE_MAX"),
 		},
@@ -159,6 +163,11 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		fail("SANDBOX_MODELS: %v", err)
 	}
 	s.config.Models = models
+	kinds, err := runtimeKinds(getenv("SANDBOX_RUNTIMES"))
+	if err != nil {
+		fail("SANDBOX_RUNTIMES: %v", err)
+	}
+	s.config.Runtimes = kinds
 	if err := multica.CheckAffinityRule(s.config.AffinityRule); err != nil {
 		fail("SANDBOX_PLACEMENT: %v", err)
 	}
@@ -325,4 +334,26 @@ func openAppendFile(path string) (*os.File, error) {
 	}
 	defer root.Close()
 	return root.OpenFile(name, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+}
+
+// runtimeKinds reads SANDBOX_RUNTIMES: pool, clean or both, comma
+// separated. Empty means pool.
+func runtimeKinds(v string) ([]policy.Kind, error) {
+	var out []policy.Kind
+	for _, item := range strings.Split(v, ",") {
+		k := policy.Kind(strings.ToLower(strings.TrimSpace(item)))
+		switch {
+		case k == "":
+			continue
+		case k != policy.KindPool && k != policy.KindClean:
+			return nil, fmt.Errorf("unknown runtime kind %q (want pool, clean or pool,clean)", item)
+		case slices.Contains(out, k):
+			return nil, fmt.Errorf("%s is listed twice", k)
+		}
+		out = append(out, k)
+	}
+	if len(out) == 0 {
+		out = []policy.Kind{policy.KindPool}
+	}
+	return out, nil
 }
