@@ -6,10 +6,10 @@ import (
 	"slices"
 	"strings"
 
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
-// The core asks the lending policy for every placement, claim-selection and
+// The core asks the policy for every placement, claim-selection and
 // lifetime decision, and carries the decisions out here. The policy is
 // called only under c.mu.
 
@@ -17,26 +17,26 @@ import (
 // claim among them, nil when there is none, and whether the policy asked for
 // a pod to be acquired. A task placed on a pod is announced to that pod.
 // Callers hold c.mu, and settle once they release it.
-func (c *Core) applyLocked(ds []lending.Decision) (claim *lending.Claim, acquire bool) {
+func (c *Core) applyLocked(ds []policy.Decision) (claim *policy.Claim, acquire bool) {
 	for _, d := range ds {
 		switch d := d.(type) {
-		case lending.Claim:
+		case policy.Claim:
 			claim = &d
-		case lending.Acquire:
+		case policy.Acquire:
 			acquire = true
-		case lending.Release:
+		case policy.Release:
 			// The reservation held nothing on the pool's side.
-		case lending.Place:
+		case policy.Place:
 			c.placeLocked(d)
-		case lending.Reset:
+		case policy.Delete:
 			c.handBackLocked(d)
-		case lending.Fail:
+		case policy.Fail:
 			c.forced = append(c.forced, forcedTask{tenant: d.Tenant, id: d.Task, reason: d.Reason})
 			if t := c.claimed[d.Task]; t != nil {
 				c.auditDenied(d.Tenant, t.task, d.Reason)
 			}
 			c.dropClaimedLocked(d.Task)
-		case lending.EndLease:
+		case policy.EndLease:
 			c.dropClaimedLocked(d.Task)
 			c.closeLeaseLocked(c.leases[d.Task], d.Reason)
 		}
@@ -46,11 +46,11 @@ func (c *Core) applyLocked(ds []lending.Decision) (claim *lending.Claim, acquire
 
 // placeLocked queues a claimed task on the pod the policy chose and wakes the
 // pod; it picks the task up with its next claim.
-func (c *Core) placeLocked(d lending.Place) {
+func (c *Core) placeLocked(d policy.Place) {
 	t := c.claimed[d.Task]
 	target := c.held[d.Pod]
 	if t == nil || target == nil {
-		c.log.Error("lending policy placed a task the core does not hold", "task_id", d.Task, "pod_id", d.Pod)
+		c.log.Error("policy placed a task the core does not hold", "task_id", d.Task, "pod_id", d.Pod)
 		return
 	}
 	c.unqueueLocked(d.Task)
@@ -124,18 +124,20 @@ func (c *Core) DispatchOnce(ctx context.Context) {
 // claimed from as if no list were read.
 func (c *Core) readPending(ctx context.Context) {
 	for _, id := range c.source.Claimable() {
-		list, err := c.source.Pending(ctx, id)
-		c.mu.Lock()
-		if t := c.tenants[id]; t != nil && !t.removed {
-			if err != nil {
-				c.policy.PendingUnknown(id)
-			} else {
-				c.policy.PendingChanged(id, list)
+		for _, kind := range c.cfg.Kinds {
+			list, err := c.source.Pending(ctx, id, kind)
+			c.mu.Lock()
+			if t := c.tenants[id]; t != nil && !t.removed {
+				if err != nil {
+					c.policy.PendingUnknown(id, kind)
+				} else {
+					c.policy.PendingChanged(id, kind, list)
+				}
 			}
-		}
-		c.mu.Unlock()
-		if err != nil {
-			c.log.Warn("read pending tasks", "workspace_id", id, "error", err)
+			c.mu.Unlock()
+			if err != nil {
+				c.log.Warn("read pending tasks", "workspace_id", id, "kind", kind, "error", err)
+			}
 		}
 	}
 }
@@ -148,11 +150,11 @@ func (c *Core) readPending(ctx context.Context) {
 // made against a held pod, so every claimed task has somewhere to run (ADR
 // 0001).
 func (c *Core) claimRound(ctx context.Context) {
-	var tried []string
+	var tried []policy.Target
 	noCapacity := false
 	for {
 		claimable := c.source.Claimable()
-		live := c.livePods()
+		live, starting := c.livePods()
 		c.mu.Lock()
 		order := make([]string, 0, len(claimable))
 		for _, id := range claimable {
@@ -160,8 +162,9 @@ func (c *Core) claimRound(ctx context.Context) {
 				order = append(order, id)
 			}
 		}
-		claim, acquire := c.applyLocked(c.policy.RequestClaim(lending.ClaimRequest{
-			Pods: c.heldOrderLocked(), Tenants: order, Exclude: tried, NoCapacity: noCapacity, LivePods: live,
+		claim, acquire := c.applyLocked(c.policy.RequestClaim(policy.ClaimRequest{
+			Tenants: order, Kinds: c.cfg.Kinds, Exclude: tried, NoCapacity: noCapacity,
+			LivePods: live, Starting: starting,
 		}))
 		c.mu.Unlock()
 		c.settle(ctx)
@@ -174,8 +177,8 @@ func (c *Core) claimRound(ctx context.Context) {
 			}
 			continue
 		}
-		tried = append(tried, claim.Tenant)
-		task, err := c.source.Claim(ctx, claim.Tenant)
+		tried = append(tried, policy.Target{Tenant: claim.Tenant, Kind: claim.Kind})
+		task, err := c.source.Claim(ctx, claim.Tenant, claim.Kind)
 		if err != nil {
 			// One tenant's upstream failing must not hold back the others.
 			c.log.Warn("claim task", "pod_id", claim.Pod, "workspace_id", claim.Tenant, "error", err)
@@ -197,7 +200,7 @@ func (c *Core) claimRound(ctx context.Context) {
 
 // placeClaimed hands a claimed task to the policy, which places it, or fails
 // the task when it cannot run here.
-func (c *Core) placeClaimed(ctx context.Context, claim lending.Claim, task *Task) {
+func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task) {
 	if !strings.EqualFold(task.Tenant, claim.Tenant) {
 		why := "the managed runtime does not serve this task's workspace"
 		c.mu.Lock()
@@ -207,7 +210,7 @@ func (c *Core) placeClaimed(ctx context.Context, claim lending.Claim, task *Task
 		c.fail(ctx, claim.Tenant, task.ID, why)
 		return
 	}
-	task.Tenant = claim.Tenant
+	task.Tenant, task.Kind = claim.Tenant, claim.Kind
 	c.mu.Lock()
 	c.claimed[task.ID] = &claimedTask{task: task, claimedAt: c.now()}
 	c.applyLocked(c.policy.ClaimReturned(claim.Reservation, &task.Task, false))

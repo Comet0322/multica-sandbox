@@ -3,7 +3,7 @@
 // account's workspaces and turns each into a tenant for the core, registers
 // and keeps the runtimes in each, heartbeats them, reads the pending lists,
 // claims and fails tasks when the core says so, and answers the pod side's
-// questions about registrations directly, since they do not touch lending.
+// questions about registrations directly, since they do not touch the policy.
 package tasksource
 
 import (
@@ -18,8 +18,8 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
+	"sandbox-manager/internal/policy"
 )
 
 // DefaultSyncInterval is how often the source looks for workspaces its
@@ -57,7 +57,7 @@ type Config struct {
 	RuntimeVisibility string
 	// Quota and AffinityRule are the defaults of every workspace.
 	Quota        int
-	AffinityRule lending.AffinityRule
+	AffinityRule multica.AffinityRule
 	// SyncInterval is how often SyncLoop lists the workspaces. Zero means
 	// DefaultSyncInterval.
 	SyncInterval time.Duration
@@ -79,7 +79,7 @@ type Core interface {
 }
 
 // Pods is what the source tells the pod side directly: nothing of it touches
-// lending.
+// the policy.
 type Pods interface {
 	// NotifyWorkspacesChanged makes the pods' daemons read their workspace
 	// list again: at once, or rate-limited.
@@ -371,7 +371,7 @@ func (s *Source) Claimable() []string {
 // Pending reads a workspace's pending list. The server keeps one per runtime,
 // so a workspace costs one read per manager runtime there; the lists are
 // merged.
-func (s *Source) Pending(ctx context.Context, tenant string) ([]lending.Pending, error) {
+func (s *Source) Pending(ctx context.Context, tenant string, kind policy.Kind) ([]policy.Pending, error) {
 	ws := s.ws.get(tenant)
 	if ws == nil {
 		return nil, fmt.Errorf("workspace %s is not served", tenant)
@@ -380,16 +380,16 @@ func (s *Source) Pending(ctx context.Context, tenant string) ([]lending.Pending,
 	if err != nil {
 		return nil, err
 	}
-	list := make([]lending.Pending, 0, len(tasks))
+	list := make([]policy.Pending, 0, len(tasks))
 	for _, t := range tasks {
-		list = append(list, lending.Pending{ID: t.ID, Priority: t.Priority, CreatedAt: t.Created(), Status: t.Status})
+		list = append(list, policy.Pending{ID: t.ID, Priority: t.Priority, CreatedAt: t.Created(), Status: t.Status})
 	}
 	return list, nil
 }
 
 // Claim claims at most one task from a workspace's runtimes. A task the
 // server returns without an ID is left for the server to hand out again.
-func (s *Source) Claim(ctx context.Context, tenant string) (*core.Task, error) {
+func (s *Source) Claim(ctx context.Context, tenant string, kind policy.Kind) (*core.Task, error) {
 	ws := s.ws.get(tenant)
 	if ws == nil {
 		return nil, fmt.Errorf("workspace %s is not served", tenant)
@@ -404,7 +404,7 @@ func (s *Source) Claim(ctx context.Context, tenant string) (*core.Task, error) {
 		return nil, nil
 	}
 	owner := strings.ToLower(claimed.WorkspaceID)
-	return &core.Task{Task: claimed.LendingTask(owner), Email: claimed.Email(), Payload: claimed.Raw}, nil
+	return &core.Task{Task: claimed.PolicyTask(owner, kind), Email: claimed.Email(), Payload: claimed.Raw}, nil
 }
 
 // Fail reports a claimed task as failed. One that does not get through for a

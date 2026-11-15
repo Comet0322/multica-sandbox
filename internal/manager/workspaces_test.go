@@ -277,6 +277,7 @@ func newBotHarness(t *testing.T, up *multiMultica, workspaces []manager.Workspac
 	t.Helper()
 	logs, audit := &syncBuffer{}, &syncBuffer{}
 	cfg.MulticaURL, cfg.PAT, cfg.Name, cfg.AuditLog = up.URL, patPool, "Shared Pool", audit
+	cleanRuntimes(&cfg)
 	pool, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)

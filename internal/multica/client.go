@@ -17,7 +17,7 @@ import (
 
 // Client is the manager's account on the Multica server: everything the
 // manager says to Multica goes through it or through a Conn it opened. It
-// knows nothing of pods, leases or the lending policy; the manager decides
+// knows nothing of pods, leases or the policy; the manager decides
 // what to call and acts on the answers.
 //
 // It keeps two pieces of state under its own lock: the daemon identity the

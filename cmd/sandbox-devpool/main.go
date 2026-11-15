@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/multica/devpool"
@@ -71,7 +70,7 @@ func run() error {
 	cfg := manager.Config{
 		MulticaURL: *url, PAT: pat, Name: os.Getenv("SANDBOX_MANAGER_NAME"),
 		DeviceName: os.Getenv("SANDBOX_MANAGER_DEVICE_NAME"), ExpectedSize: *pods,
-		Capacity: *capacity, AffinityRule: lending.AffinityRule(*placement),
+		Capacity: *capacity, AffinityRule: multica.AffinityRule(*placement),
 		HoldTimeout: *hold, MaxLifetime: *lifetime, SyncInterval: *syncEvery,
 		DispatchInterval: *dispatchEv, ReconcileInterval: 30 * time.Second, Providers: []string{"claude"},
 	}

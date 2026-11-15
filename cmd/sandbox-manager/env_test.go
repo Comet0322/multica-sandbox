@@ -34,6 +34,7 @@ func TestLoadSettingsReadsPlacementLifetimeAndAudit(t *testing.T) {
 	env["SANDBOX_HOLD_TIMEOUT"] = "5m"
 	env["SANDBOX_POD_MAX_LIFETIME"] = "1h"
 	env["SANDBOX_POD_DRAIN_GRACE"] = "2m"
+	env["SANDBOX_POD_MAX_IDLE"] = "6h"
 	env["SANDBOX_AUDIT_FILE"] = "/var/log/audit.jsonl"
 	s, err := loadSettings(envLookup(env))
 	if err != nil {
@@ -42,7 +43,7 @@ func TestLoadSettingsReadsPlacementLifetimeAndAudit(t *testing.T) {
 	c := s.config
 	if c.HeartbeatTimeout != 30*time.Second || c.ResetTimeout != 3*time.Minute || c.LostRetention != 7*time.Minute || c.AffinityRule != multica.RulePersonAgent ||
 		c.Capacity != 8 || c.PlacementWait != 20*time.Second || c.HoldTimeout != 5*time.Minute ||
-		c.MaxLifetime != time.Hour || c.DrainGrace != 2*time.Minute || s.auditFile != "/var/log/audit.jsonl" {
+		c.MaxLifetime != time.Hour || c.DrainGrace != 2*time.Minute || c.PodMaxIdle != 6*time.Hour || s.auditFile != "/var/log/audit.jsonl" {
 		t.Fatalf("unexpected settings: %+v", s)
 	}
 }

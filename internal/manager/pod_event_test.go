@@ -90,38 +90,30 @@ func issueTask(h *harness, id, issue string) {
 	})
 }
 
-func TestEventOnASharedPodEndsEveryLeaseAndResetsIt(t *testing.T) {
+func TestEventOnAPodEndsItsLeaseAndResetsIt(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 2, sharedPods(4, time.Hour))
-	pod, spare := h.newPod("pool-0"), h.newPod("pool-1")
+	h := newHarness(t, 1, holding(time.Hour))
+	pod := h.newPod("pool-0")
 	pod.start()
-	spare.start()
 	issueTask(h, "t1", "issue-1")
-	issueTask(h, "t2", "issue-1")
-	got := pod.claimBatch()
-	spare.claimBatch() // claims t2, which joins the pod's binding
-	got = append(got, pod.claimBatch()...)
-	if !slices.Equal(got, []string{"t1", "t2"}) {
-		t.Fatalf("want both tasks, got %v", got)
+	if got := pod.claimBatch(); !slices.Equal(got, []string{"t1"}) {
+		t.Fatalf("want t1, got %v", got)
 	}
 
 	pod.event("daemon-exited")
 
 	h.wantEnded("t1", "pod daemon restarted")
-	h.wantEnded("t2", "pod daemon restarted")
 	if inv := h.inventory(); inv.Resetting != 1 || inv.Leased != 0 {
-		t.Fatalf("a shared pod must be reset, not kept bound: %+v", inv)
+		t.Fatalf("the pod must be reset, not kept: %+v", inv)
 	}
-	for _, id := range []string{"t1", "t2"} {
-		if msg, ok := h.upstream.failureOf(id); !ok || msg != "the pod's daemon restarted" {
-			t.Fatalf("%s failure = %q, %v", id, msg, ok)
-		}
+	if msg, ok := h.upstream.failureOf("t1"); !ok || msg != "the pod's daemon restarted" {
+		t.Fatalf("t1 failure = %q, %v", msg, ok)
 	}
 }
 
 func TestEventOnAHeldPodResetsIt(t *testing.T) {
 	t.Parallel()
-	h := newHarness(t, 1, sharedPods(4, time.Hour))
+	h := newHarness(t, 1, holding(time.Hour))
 	pod := h.newPod("pool-0")
 	pod.start()
 	issueTask(h, "t1", "issue-1")

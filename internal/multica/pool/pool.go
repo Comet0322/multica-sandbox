@@ -48,7 +48,7 @@ type Core interface {
 }
 
 // Source is what the pool asks the task source directly: the registrations,
-// which do not touch lending.
+// which do not touch the policy.
 type Source interface {
 	NotReady() string
 	Tenants() []multica.WorkspaceRef

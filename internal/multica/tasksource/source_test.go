@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/multica/tasksource"
+	"sandbox-manager/internal/policy"
 )
 
 const (
@@ -110,7 +110,7 @@ func TestSyncTellsTheCoreEachWorkspaceWithItsShareSettings(t *testing.T) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	got := map[string]lending.TenantSettings{}
+	got := map[string]policy.TenantSettings{}
 	for _, tn := range c.tenants {
 		got[tn.ID] = tn.Settings
 	}
@@ -158,11 +158,11 @@ func TestAWorkspaceIsClaimableOnlyOnceAPodRegisteredIt(t *testing.T) {
 	if got := s.Claimable(); len(got) != 1 || got[0] != wsA {
 		t.Fatalf("claimable after registration: %v", got)
 	}
-	task, err := s.Claim(context.Background(), wsA)
+	task, err := s.Claim(context.Background(), wsA, policy.KindPool)
 	if err != nil || task == nil {
 		t.Fatalf("claim: %v %v", task, err)
 	}
-	if task.ID != "t1" || task.Tenant != wsA || task.Email != "alice@example.com" || !strings.Contains(string(task.Payload), `"t1"`) {
+	if task.ID != "t1" || task.Tenant != wsA || task.Kind != policy.KindPool || task.Email != "alice@example.com" || !strings.Contains(string(task.Payload), `"t1"`) {
 		t.Fatalf("claimed task %+v", task)
 	}
 }

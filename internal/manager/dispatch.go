@@ -7,7 +7,7 @@ import (
 )
 
 // The dispatch view: how the live pods are shared between the workspaces, as
-// the lending policy aims to share them (the target) and as they are (the
+// the policy aims to share them (the target) and as they are (the
 // occupancy). GET /v1/dispatch returns it as JSON, and GET /dispatch serves a
 // page that shows it and reads it again every ten seconds.
 
@@ -75,10 +75,11 @@ type DispatchWorkspace struct {
 	// there is now.
 	TargetPods int `json:"target_pods"`
 	// OccupiedPods are the pods it occupies: RunningPods with a task (or a
-	// claim in flight) and HoldingPods in hold.
+	// claim in flight), HoldingPods in hold and IdlePods idle.
 	OccupiedPods int `json:"occupied_pods"`
 	RunningPods  int `json:"running_pods"`
 	HoldingPods  int `json:"holding_pods"`
+	IdlePods     int `json:"idle_pods"`
 	// Leased counts its running tasks; Queued its tasks waiting upstream.
 	Leased int `json:"leased"`
 	Queued int `json:"queued"`
@@ -199,8 +200,8 @@ func dispatchView(inv Inventory, tasks map[string][]DispatchTask, now time.Time)
 		w := DispatchWorkspace{
 			WorkspaceID: ws.WorkspaceID, Slug: ws.Slug, Name: ws.Name, Draining: draining,
 			Guarantee: ws.Guarantee, GuaranteeInEffect: ws.GuaranteeInEffect, Weight: ws.Weight, Quota: ws.Quota,
-			TargetPods: ws.TargetPods, OccupiedPods: ws.OccupiedPods, HoldingPods: ws.HoldingPods,
-			RunningPods: max(ws.OccupiedPods-ws.HoldingPods, 0), Leased: ws.Leased, Queued: ws.Queued,
+			TargetPods: ws.TargetPods, OccupiedPods: ws.OccupiedPods, HoldingPods: ws.HoldingPods, IdlePods: ws.IdlePods,
+			RunningPods: max(ws.OccupiedPods-ws.HoldingPods-ws.IdlePods, 0), Leased: ws.Leased, Queued: ws.Queued,
 			Tasks: []DispatchTask{},
 		}
 		for _, t := range tasks[ws.WorkspaceID] {

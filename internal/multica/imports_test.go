@@ -7,7 +7,7 @@ import (
 )
 
 // Package multica is what the manager knows of Multica, and nothing else: it
-// may use the lending policy's types, never the manager or the sandbox
+// may use the policy's types, never the manager or the sandbox
 // service.
 func TestThePackageImportsOnlyTheLendingPolicy(t *testing.T) {
 	const self = "sandbox-manager/internal/multica"
@@ -15,7 +15,7 @@ func TestThePackageImportsOnlyTheLendingPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list: %v\n%s", err, out)
 	}
-	allowed := map[string]bool{self: true, self + "/daemonwire": true, "sandbox-manager/internal/lending": true}
+	allowed := map[string]bool{self: true, self + "/daemonwire": true, "sandbox-manager/internal/policy": true}
 	for _, dep := range strings.Fields(string(out)) {
 		if strings.HasPrefix(dep, "sandbox-manager/") && !allowed[dep] {
 			t.Errorf("package multica depends on %s", dep)

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
 
 	"gopkg.in/yaml.v3"
@@ -20,7 +19,7 @@ import (
 // keeps the pool default. Pod capacity is pool-wide and cannot be overridden.
 type WorkspaceOverride struct {
 	// Placement is the workspace's affinity rule (SANDBOX_PLACEMENT).
-	AffinityRule lending.AffinityRule `yaml:"placement"`
+	AffinityRule multica.AffinityRule `yaml:"placement"`
 	// HoldTimeout is the hold timeout of the bindings its tasks open
 	// (SANDBOX_HOLD_TIMEOUT); 0 resets a pod as soon as its last task ends.
 	HoldTimeout *time.Duration `yaml:"hold_timeout"`

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
 // Defaults the core applies to a zero Config field.
@@ -20,23 +20,22 @@ const (
 	DefaultDrainTimeout = 10 * time.Minute
 )
 
-// Config configures a Core. The lending settings are passed to the lending
-// policy (see lending.Config).
+// Config configures a Core. The policy settings are passed to the policy
+// (see policy.Config).
 type Config struct {
 	Log   *slog.Logger
 	Clock *Clock
 	// Audit receives the audit records; nil writes none.
 	Audit *AuditLog
 
-	Capacity      int
-	Rules         lending.Registry
-	Rule          lending.AffinityRule
+	// Kinds are the runtime kinds claimed for. Empty means the pool kind.
+	Kinds         []policy.Kind
 	RemovedReason string
 	HoldTimeout   time.Duration
-	MaxLifetime   time.Duration
-	DrainGrace    time.Duration
+	MaxIdle       time.Duration
+	MaxPods       int
 	Backoff       time.Duration
-	PlacementWait time.Duration
+	PodWait       time.Duration
 
 	// DispatchInterval is the dispatch tick, the only place tasks are
 	// claimed. Zero means DefaultDispatchInterval.
@@ -52,7 +51,7 @@ type Config struct {
 	DrainPoll    time.Duration
 }
 
-// Core lends pods to tasks. It owns the lending state (the lending policy,
+// Core lends pods to tasks. It owns the dispatch state (the policy,
 // the held pods, the dispatch record of every task, the tenants) under mu,
 // and calls the TaskSource and the Pool only without it, except for the
 // Pool's methods that answer from its own state.
@@ -64,9 +63,9 @@ type Core struct {
 	pool   Pool
 
 	mu sync.Mutex
-	// policy is the lending policy; every placement, claim-selection and
+	// policy is the policy; every placement, claim-selection and
 	// lifetime decision comes from it.
-	policy *lending.Policy
+	policy *policy.Policy
 	// held are the pods acquired from the pool and not handed back, by pod
 	// ID; heldSeq numbers their acquisitions.
 	held    map[string]*pod
@@ -101,6 +100,9 @@ func New(cfg Config) (*Core, error) {
 	if cfg.DispatchInterval == 0 {
 		cfg.DispatchInterval = DefaultDispatchInterval
 	}
+	if len(cfg.Kinds) == 0 {
+		cfg.Kinds = []policy.Kind{policy.KindPool}
+	}
 	if cfg.LeaseMax == 0 {
 		cfg.LeaseMax = DefaultLeaseMax
 	}
@@ -112,17 +114,14 @@ func New(cfg Config) (*Core, error) {
 	}
 	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, held: map[string]*pod{},
 		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}, tenants: map[string]*tenant{}}
-	pol, err := lending.New(lending.Config{
+	pol, err := policy.New(policy.Config{
 		Now:           c.now,
-		Capacity:      lending.Resources{Slots: cfg.Capacity},
-		Rules:         cfg.Rules,
-		Rule:          cfg.Rule,
 		RemovedReason: cfg.RemovedReason,
 		HoldTimeout:   cfg.HoldTimeout,
-		MaxLifetime:   cfg.MaxLifetime,
-		DrainGrace:    cfg.DrainGrace,
+		MaxIdle:       cfg.MaxIdle,
+		MaxPods:       cfg.MaxPods,
 		Backoff:       cfg.Backoff,
-		PlacementWait: cfg.PlacementWait,
+		PodWait:       cfg.PodWait,
 	})
 	if err != nil {
 		return nil, err
@@ -138,15 +137,15 @@ func (c *Core) Connect(source TaskSource, pool Pool) {
 
 func (c *Core) now() time.Time { return c.clock.Now() }
 
-// tickLocked lets time pass for the lending policy (holds, lifetimes,
-// placement waits) and ends leases past the maximum lease time. Callers hold
+// tickLocked lets time pass for the policy (holds, idle lifetimes,
+// tasks waiting for a pod) and ends leases past the maximum lease time. Callers hold
 // c.mu, and settle once they release it.
 func (c *Core) tickLocked() {
 	c.applyLocked(c.policy.Tick())
 	c.expireLeasesLocked()
 }
 
-// Touch lets time pass for the lending policy and the leases.
+// Touch lets time pass for the policy and the leases.
 func (c *Core) Touch() {
 	c.mu.Lock()
 	c.tickLocked()

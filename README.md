@@ -12,7 +12,7 @@ Lends a pool of long-lived sandbox pods to Multica tasks. The pods run Multica's
 | `internal/multica/pool` | The pod side: the sandbox service plus the daemon protocol, wake sockets and pod registrations |
 | `internal/multica/devpool`, `cmd/sandbox-devpool` | Development only: a simulated pod side, to run the core and the task source against a real Multica without pods (`deploy/devpool/run.sh`) |
 | `internal/multica/daemonwire` | The daemon protocol types we exchange with Multica, pinned to v0.6.4 |
-| `internal/lending` | The lending policy: fair sharing, quota, bindings, holds, lifetime; knows no Multica |
+| `internal/policy` | The policy: fair sharing, quota, placement by kind and key, holds, idle lifetime, budget deletion; knows no Kubernetes or Multica |
 | `internal/sandbox` | The sandbox service: registers, resets and loses pods |
 | `internal/podsupervisor` | PID 1 in a pod: runs the daemon, resets the pod's home |
 | `deploy/` | Dockerfiles, compose and k8s manifests, operator docs (`POOL.md`, `SANDBOX.md`, `GITOPS.md`) |

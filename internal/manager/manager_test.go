@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http/httptest"
+	"sandbox-manager/internal/policy"
 	"slices"
 	"strings"
 	"sync"
@@ -136,7 +137,7 @@ func (f *fakeSandbox) Pod(id sandbox.PodID) (sandbox.PodInfo, bool) {
 func newFakeSandboxHarness(t *testing.T, opts ...func(*manager.Config)) (*harness, *fakeSandbox) {
 	t.Helper()
 	up := newFakeMultica(t)
-	cfg := manager.Config{MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool"}
+	cfg := manager.Config{MulticaURL: up.URL, PAT: harnessPAT, Name: "Test Pool", Runtimes: []policy.Kind{policy.KindClean}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -276,7 +277,7 @@ func leaseFake(t *testing.T, h *harness, pod *simPod, id string) {
 	}
 }
 
-func TestEveryBindingEndHandsThePodBackOnce(t *testing.T) {
+func TestEveryHoldEndHandsThePodBackOnce(t *testing.T) {
 	t.Parallel()
 	hold := func(c *manager.Config) {
 		c.HoldTimeout, c.HeartbeatTimeout = 10*time.Minute, 1000*time.Hour
@@ -296,23 +297,7 @@ func TestEveryBindingEndHandsThePodBackOnce(t *testing.T) {
 		h.dispatch()
 		wantCalls(t, svc, "delete", "delete p1 (hold expired)")
 	})
-	t.Run("maximum lifetime", func(t *testing.T) {
-		t.Parallel()
-		h, svc := newFakeSandboxHarness(t, hold, func(c *manager.Config) {
-			c.HoldTimeout, c.MaxLifetime = 2*time.Hour, time.Hour
-		})
-		clk := h.withClock()
-		pod := h.fakePod(svc, "p1")
-		pod.startRaw()
-		issueTask(h, "t1", "issue-1")
-		leaseFake(t, h, pod, "t1")
-		pod.report("t1", "complete")
-		clk.advance(time.Hour + time.Second)
-		h.dispatch()
-		h.dispatch()
-		wantCalls(t, svc, "delete", "delete p1 (maximum lifetime reached)")
-	})
-	t.Run("unique key", func(t *testing.T) {
+	t.Run("no key", func(t *testing.T) {
 		t.Parallel()
 		h, svc := newFakeSandboxHarness(t, hold)
 		pod := h.fakePod(svc, "p1")
@@ -338,7 +323,7 @@ func TestEveryBindingEndHandsThePodBackOnce(t *testing.T) {
 		h.dispatch()
 		wantCalls(t, svc, "delete", "delete p1 (workspace removed)")
 	})
-	t.Run("eviction", func(t *testing.T) {
+	t.Run("budget", func(t *testing.T) {
 		t.Parallel()
 		h, svc := newFakeSandboxHarness(t, hold)
 		pod := h.fakePod(svc, "p1")
@@ -346,15 +331,17 @@ func TestEveryBindingEndHandsThePodBackOnce(t *testing.T) {
 		issueTask(h, "t1", "issue-1")
 		leaseFake(t, h, pod, "t1")
 		pod.report("t1", "complete")
-		personTask(h, "t2", "issue-2", "u-bob") // another person, another key
+		personTask(h, "t2", "issue-2", "u-bob") // another key
 		h.dispatch()
-		wantCalls(t, svc, "delete", "delete p1 (evicted for task t2 of another affinity key)")
+		wantCalls(t, svc, "delete", "delete p1 (the pod budget is full)")
 		h.dispatch()
-		wantCalls(t, svc, "delete", "delete p1 (evicted for task t2 of another affinity key)")
+		wantCalls(t, svc, "delete", "delete p1 (the pod budget is full)")
 	})
 }
 
-func TestAnEvictedForTaskRunsOnTheNextPodAcquiredBeforeAnyNewClaim(t *testing.T) {
+// A pod deleted for the budget comes back ready before anything is claimed
+// for the task that needed it.
+func TestNothingIsClaimedUntilThePodDeletedForTheBudgetIsReady(t *testing.T) {
 	t.Parallel()
 	h, svc := newFakeSandboxHarness(t, func(c *manager.Config) { c.HoldTimeout = time.Hour })
 	pod := h.fakePod(svc, "p1")
@@ -362,24 +349,19 @@ func TestAnEvictedForTaskRunsOnTheNextPodAcquiredBeforeAnyNewClaim(t *testing.T)
 	issueTask(h, "t1", "issue-1")
 	leaseFake(t, h, pod, "t1")
 	pod.report("t1", "complete")
-	personTask(h, "t2", "issue-2", "u-bob")
-	h.dispatch() // the hold of p1 is reserved, t2 claimed and p1 handed back
 	claims := h.upstream.claimCount()
-
-	personTask(h, "t3", "issue-3", "u-carol")
-	h.dispatch()
+	personTask(h, "t2", "issue-2", "u-bob")
+	h.dispatch() // p1, held for issue-1, is handed back
 	h.dispatch()
 	if n := h.upstream.claimCount(); n != claims {
-		t.Fatalf("a claim was made while t2 waited: %d -> %d", claims, n)
+		t.Fatalf("a claim was made before a pod was ready: %d -> %d", claims, n)
 	}
+	wantCalls(t, svc, "delete", "delete p1 (the pod budget is full)")
 
 	svc.set("p1", sandbox.PodFree) // its reset is done
 	h.dispatch()
 	if got := pod.pollBatch(); !slices.Equal(got, []string{"t2"}) {
-		t.Fatalf("want t2 on the pod acquired next, got %v", got)
-	}
-	if n := h.upstream.claimCount(); n != claims {
-		t.Fatalf("the tick that placed t2 claimed too: %d -> %d", claims, n)
+		t.Fatalf("want t2 on the pod once it is ready, got %v", got)
 	}
 }
 
@@ -395,17 +377,21 @@ func TestAnInterruptedOrLostPodFailsItsStartedTasksAndReplacesTheOthers(t *testi
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			h, svc := newFakeSandboxHarness(t, sharedPods(4, time.Hour))
-			a, b := h.fakePod(svc, "pa"), h.fakePod(svc, "pb")
+			h, svc := newFakeSandboxHarness(t, holding(time.Hour))
+			a, b, other := h.fakePod(svc, "pa"), h.fakePod(svc, "pb"), h.fakePod(svc, "pc")
 			a.startRaw()
 			b.startRaw()
 			issueTask(h, "t1", "issue-1")
 			leaseFake(t, h, a, "t1")
 			issueTask(h, "t2", "issue-1")
-			h.dispatch() // t2 joins t1's binding on pa, not picked up yet
+			h.dispatch() // t2 is placed on pb, not picked up yet
+			other.startRaw()
+			h.dispatch() // pc is acquired
 
 			svc.set("pa", sandbox.PodResetting)
 			c.tell(h.pool.Notifier(), "pa")
+			svc.set("pb", sandbox.PodResetting)
+			c.tell(h.pool.Notifier(), "pb")
 
 			eventually(t, "t1 failed upstream", func() bool {
 				msg, ok := h.upstream.failureOf("t1")
@@ -414,8 +400,8 @@ func TestAnInterruptedOrLostPodFailsItsStartedTasksAndReplacesTheOthers(t *testi
 			if _, ok := h.upstream.failureOf("t2"); ok {
 				t.Fatal("the unstarted task was failed")
 			}
-			if got := b.pollBatch(); !slices.Equal(got, []string{"t2"}) {
-				t.Fatalf("want t2 placed on pb, got %v", got)
+			if got := other.pollBatch(); !slices.Equal(got, []string{"t2"}) {
+				t.Fatalf("want t2 placed on pc, got %v", got)
 			}
 			wantCalls(t, svc, "delete")
 		})

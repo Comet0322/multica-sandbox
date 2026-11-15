@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
-func TestATaskRunsOnAPodAndThePodGoesBack(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+func TestATaskRunsOnAPodWhichIsIdleAfterIt(t *testing.T) {
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 
@@ -36,8 +36,11 @@ func TestATaskRunsOnAPodAndThePodGoesBack(t *testing.T) {
 	if r.core.Owns("p1", "t1") {
 		t.Fatal("t1 is over")
 	}
-	if _, backs := r.pool.snapshot(); !slices.Equal(backs, []string{"p1 task ended: pod reported complete"}) {
-		t.Fatalf("hand-backs %v", backs)
+	if _, backs := r.pool.snapshot(); len(backs) != 0 {
+		t.Fatalf("hand-backs %v: a pool pod with no hold is idle", backs)
+	}
+	if pv := r.core.View().Pods["p1"]; pv.Policy == nil || pv.Policy.Phase != policy.PhaseIdle {
+		t.Fatalf("p1 after its task: %+v", pv.Policy)
 	}
 	leases := r.core.Leases()
 	if len(leases) != 1 || leases[0].EndedAt == nil || leases[0].WorkspaceID != "A" || leases[0].Initiator != "alice@example.com" {
@@ -46,7 +49,7 @@ func TestATaskRunsOnAPodAndThePodGoesBack(t *testing.T) {
 }
 
 func TestNothingIsClaimedWithoutAPod(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
 	if claims, _, _ := r.source.snapshot(); len(claims) != 0 {
@@ -55,7 +58,7 @@ func TestNothingIsClaimedWithoutAPod(t *testing.T) {
 }
 
 func TestAnotherPodsTaskIsNotItsOwn(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.pool.add("p2", "A")
 	r.source.add("A", "t1", "alice", 0)
@@ -71,7 +74,7 @@ func TestAnotherPodsTaskIsNotItsOwn(t *testing.T) {
 }
 
 func TestMayServe(t *testing.T) {
-	r := newRig(t, core.Config{HoldTimeout: time.Hour}, tenant("A", lending.TenantSettings{}), tenant("B", lending.TenantSettings{}))
+	r := newRig(t, core.Config{HoldTimeout: time.Hour}, tenant("A", policy.TenantSettings{}), tenant("B", policy.TenantSettings{}))
 	r.pool.add("p1", "A", "B")
 	if v := r.core.MayServe("p1", "A"); v != core.NotHeld {
 		t.Fatalf("a pod the core does not hold: %v", v)
@@ -92,7 +95,7 @@ func TestMayServe(t *testing.T) {
 }
 
 func TestALostPodFailsItsTask(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
@@ -108,7 +111,7 @@ func TestALostPodFailsItsTask(t *testing.T) {
 }
 
 func TestReconciliationEndsALeaseTheSourceSaysIsOver(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
@@ -127,7 +130,7 @@ func TestReconciliationEndsALeaseTheSourceSaysIsOver(t *testing.T) {
 }
 
 func TestALeasePastItsMaximumIsFailed(t *testing.T) {
-	r := newRig(t, core.Config{LeaseMax: time.Hour}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{LeaseMax: time.Hour}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
@@ -140,14 +143,14 @@ func TestALeasePastItsMaximumIsFailed(t *testing.T) {
 }
 
 func TestARemovedTenantDrainsAndIsClosed(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}), tenant("B", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}), tenant("B", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
 	r.next("p1")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := r.core.SetTenants(ctx, []core.Tenant{tenant("B", lending.TenantSettings{})})
+	ch := r.core.SetTenants(ctx, []core.Tenant{tenant("B", policy.TenantSettings{})})
 	if !slices.Equal(ch.Removed, []string{"A"}) {
 		t.Fatalf("changes %+v", ch)
 	}
@@ -163,7 +166,7 @@ func TestARemovedTenantDrainsAndIsClosed(t *testing.T) {
 }
 
 func TestATenantBackBeforeItsDrainEndedIsNotClosed(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
@@ -171,7 +174,7 @@ func TestATenantBackBeforeItsDrainEndedIsNotClosed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.core.SetTenants(ctx, nil)
-	ch := r.core.SetTenants(ctx, []core.Tenant{tenant("A", lending.TenantSettings{})})
+	ch := r.core.SetTenants(ctx, []core.Tenant{tenant("A", policy.TenantSettings{})})
 	if !slices.Equal(ch.Added, []string{"A"}) {
 		t.Fatalf("changes %+v", ch)
 	}
@@ -183,7 +186,7 @@ func TestATenantBackBeforeItsDrainEndedIsNotClosed(t *testing.T) {
 }
 
 func TestAClaimForAnotherTenantIsFailed(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.source.mu.Lock()
@@ -199,7 +202,7 @@ func TestAClaimForAnotherTenantIsFailed(t *testing.T) {
 // live, and the policy's choice decides which tenant is claimed from.
 
 func TestTheEmptierTenantIsClaimedFromFirst(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}), tenant("B", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}), tenant("B", policy.TenantSettings{}))
 	r.pool.add("p1", "A", "B")
 	r.pool.add("p2", "A", "B")
 	r.source.add("A", "a1", "alice", 0)
@@ -213,7 +216,7 @@ func TestTheEmptierTenantIsClaimedFromFirst(t *testing.T) {
 }
 
 func TestAGuaranteeKeepsAPodForItsTenant(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{}), tenant("B", lending.TenantSettings{Guarantee: 1}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}), tenant("B", policy.TenantSettings{Guarantee: 1}))
 	r.pool.add("p1", "A", "B")
 	r.pool.add("p2", "A", "B")
 	r.source.add("A", "a1", "alice", 0)
@@ -233,7 +236,7 @@ func TestAGuaranteeKeepsAPodForItsTenant(t *testing.T) {
 }
 
 func TestTheViewReportsShares(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", lending.TenantSettings{Weight: 2}), tenant("B", lending.TenantSettings{}))
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{Weight: 2}), tenant("B", policy.TenantSettings{}))
 	for _, id := range []string{"p1", "p2", "p3"} {
 		r.pool.add(id, "A", "B")
 	}
@@ -259,7 +262,7 @@ func TestAuditLogRecordsTheLeaseIdentity(t *testing.T) {
 	var buf syncBuffer
 	clk := core.NewClock()
 	log := core.NewAuditLog(&buf, clk, nil)
-	r := newRig(t, core.Config{Audit: log}, tenant("A", lending.TenantSettings{}))
+	r := newRig(t, core.Config{Audit: log}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()

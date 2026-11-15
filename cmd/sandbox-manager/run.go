@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
 )
@@ -135,13 +134,14 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 			HeartbeatTimeout:  duration("SANDBOX_POOL_HEARTBEAT_TIMEOUT"),
 			ResetTimeout:      duration("SANDBOX_POOL_RESET_TIMEOUT"),
 			LostRetention:     duration("SANDBOX_POOL_LOST_RETENTION"),
-			AffinityRule:      lending.AffinityRule(getenv("SANDBOX_PLACEMENT")),
+			AffinityRule:      multica.AffinityRule(getenv("SANDBOX_PLACEMENT")),
 			Capacity:          whole("SANDBOX_POD_CAPACITY"),
 			PlacementWait:     duration("SANDBOX_PLACEMENT_WAIT"),
 			DispatchInterval:  wakeInterval(),
 			HoldTimeout:       holdTimeout(),
 			MaxLifetime:       duration("SANDBOX_POD_MAX_LIFETIME"),
 			DrainGrace:        duration("SANDBOX_POD_DRAIN_GRACE"),
+			PodMaxIdle:        duration("SANDBOX_POD_MAX_IDLE"),
 			ReconcileInterval: reconcileInterval(),
 			LeaseMax:          duration("SANDBOX_POOL_LEASE_MAX"),
 		},

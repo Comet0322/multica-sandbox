@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"sandbox-manager/internal/core"
-	"sandbox-manager/internal/lending"
 	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/multica/pool"
 	"sandbox-manager/internal/multica/tasksource"
+	"sandbox-manager/internal/policy"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -41,16 +41,9 @@ const (
 	// DefaultHoldTimeout is the hold timeout the command line applies when
 	// none is configured.
 	DefaultHoldTimeout = 15 * time.Minute
-	// DefaultCapacity is the pod capacity in slots when none is configured:
-	// the daemon's own concurrency limit.
-	DefaultCapacity = 20
-	// DefaultPlacementWait stays well under the 90 seconds after which the
-	// server hands a claimed but unstarted task to the next claimer.
-	DefaultPlacementWait = 30 * time.Second
-	// DefaultMaxLifetime and DefaultDrainGrace are a binding's maximum
-	// lifetime and drain grace when none is configured.
-	DefaultMaxLifetime = 2 * time.Hour
-	DefaultDrainGrace  = 10 * time.Minute
+	// DefaultPodMaxIdle is how long an idle pool pod is kept when none is
+	// configured.
+	DefaultPodMaxIdle = 24 * time.Hour
 )
 
 // Names the manager's packages share, kept here so callers need only this
@@ -144,33 +137,30 @@ type Config struct {
 	// Models are model list reports, by provider, that answer Multica's model
 	// picker while no pod has reported lately. Nil asks a pod.
 	Models map[string]json.RawMessage
-	// AffinityRule is the affinity rule that decides which tasks share a pod.
-	// Empty means multica.DefaultAffinityRule.
-	AffinityRule lending.AffinityRule
-	// Capacity is each pod's capacity in slots: how many tasks of one
-	// binding run on it at once. Zero means DefaultCapacity.
-	Capacity int
-	// PlacementWait bounds how long a claimed task waits in the manager for a
-	// pod that can take it. Zero means DefaultPlacementWait.
+	// AffinityRule, Capacity, PlacementWait, MaxLifetime and DrainGrace
+	// are checked but no longer used: a pod runs one task at a time and is
+	// held for its task's key (ADR 0009). Issue 07 removes them.
+	AffinityRule  multica.AffinityRule
+	Capacity      int
 	PlacementWait time.Duration
+	MaxLifetime   time.Duration
+	DrainGrace    time.Duration
+	// Runtimes are the runtime kinds the manager claims for. Empty means
+	// the pool kind.
+	Runtimes []policy.Kind
+	// PodMaxIdle is how long an idle pool pod is kept before it is deleted.
+	// Zero means DefaultPodMaxIdle.
+	PodMaxIdle time.Duration
 	// DispatchInterval is the dispatch tick, the only place tasks are claimed:
 	// every interval the manager claims a task upstream for a pod it holds or
 	// acquires, and tells the pod over its wake socket to pick it up instead
 	// of waiting for its next poll. Zero serves no wake socket, so pods pick
 	// their tasks up by polling, and ticks every DefaultDispatchInterval.
 	DispatchInterval time.Duration
-	// HoldTimeout is how long a binding with no running task keeps its pod
-	// for its affinity key before the pod is reset. Zero resets the pod as
-	// soon as its last task ends; the command line defaults to
+	// HoldTimeout is how long a pod is held for its task's key once the
+	// task ended. Zero holds nothing; the command line defaults to
 	// DefaultHoldTimeout.
 	HoldTimeout time.Duration
-	// MaxLifetime stops a shared pod from taking new tasks this long after
-	// it was bound. Zero means DefaultMaxLifetime.
-	MaxLifetime time.Duration
-	// DrainGrace is how long the tasks still running at that point may
-	// finish before the pod is released and they are failed. Zero means
-	// DefaultDrainGrace.
-	DrainGrace time.Duration
 	// DrainTimeout is how long a workspace the account left may keep its
 	// leases before they are ended. Zero means DefaultDrainTimeout.
 	DrainTimeout time.Duration
@@ -224,26 +214,14 @@ func (c *Config) normalize() error {
 	if c.AffinityRule == "" {
 		c.AffinityRule = multica.DefaultAffinityRule
 	}
-	if c.Capacity < 0 {
-		return fmt.Errorf("pod capacity must not be negative")
+	if c.Capacity < 0 || c.PlacementWait < 0 || c.MaxLifetime < 0 || c.DrainGrace < 0 {
+		return fmt.Errorf("pod capacity, placement wait, pod maximum lifetime and drain grace must not be negative")
 	}
-	if c.Capacity == 0 {
-		c.Capacity = DefaultCapacity
+	if c.HoldTimeout < 0 || c.PodMaxIdle < 0 {
+		return fmt.Errorf("hold timeout and pod maximum idle time must not be negative")
 	}
-	if c.PlacementWait < 0 {
-		return fmt.Errorf("placement wait must not be negative")
-	}
-	if c.PlacementWait == 0 {
-		c.PlacementWait = DefaultPlacementWait
-	}
-	if c.HoldTimeout < 0 || c.MaxLifetime < 0 || c.DrainGrace < 0 {
-		return fmt.Errorf("hold timeout, pod maximum lifetime and drain grace must not be negative")
-	}
-	if c.MaxLifetime == 0 {
-		c.MaxLifetime = DefaultMaxLifetime
-	}
-	if c.DrainGrace == 0 {
-		c.DrainGrace = DefaultDrainGrace
+	if c.PodMaxIdle == 0 {
+		c.PodMaxIdle = DefaultPodMaxIdle
 	}
 	if c.Name == "" {
 		c.Name = "Managed Sandbox"
@@ -361,6 +339,9 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	m := &Manager{cfg: cfg, log: log, clock: core.NewClock()}
 	audit := core.NewAuditLog(cfg.AuditLog, m.clock, func(err error) { log.Error("write audit record", "error", err) })
 	var handler http.Handler
+	// maxPods is the budget the policy keeps; zero leaves it to the pool,
+	// as for the GitOps pods, whose number is fixed.
+	maxPods := 0
 	if svc == nil && sim == nil {
 		gitops, err := sandbox.NewGitOps(sandbox.Config{
 			HeartbeatTimeout: cfg.HeartbeatTimeout, ResetTimeout: cfg.ResetTimeout, LostRetention: cfg.LostRetention,
@@ -378,13 +359,12 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 				return nil, err
 			}
 			svc, handler, m.podRun = kube, nil, kube.Run
+			maxPods = kube.MaxPods()
 		}
 	}
 	c, err := core.New(core.Config{
-		Log: log, Clock: m.clock, Audit: audit,
-		Capacity: cfg.Capacity, Rules: multica.AffinityRules(), Rule: multica.LendingRule(cfg.AffinityRule), RemovedReason: "workspace removed",
-		HoldTimeout: cfg.HoldTimeout, MaxLifetime: cfg.MaxLifetime, DrainGrace: cfg.DrainGrace,
-		Backoff: cfg.UpstreamBackoff, PlacementWait: cfg.PlacementWait,
+		Log: log, Clock: m.clock, Audit: audit, RemovedReason: "workspace removed",
+		Kinds: cfg.Runtimes, HoldTimeout: cfg.HoldTimeout, MaxIdle: cfg.PodMaxIdle, MaxPods: maxPods, Backoff: cfg.UpstreamBackoff,
 		DispatchInterval: cfg.DispatchInterval, ReconcileInterval: cfg.ReconcileInterval, LeaseMax: cfg.LeaseMax,
 		DrainTimeout: cfg.DrainTimeout, DrainPoll: cfg.DrainPoll,
 	})

@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"sandbox-manager/internal/lending"
+	"sandbox-manager/internal/policy"
 )
 
 // What the core reports for the inventory. The manager joins it with what the
@@ -13,15 +13,15 @@ import (
 
 // PodView is what the core knows of one pod.
 type PodView struct {
-	// Held is set while the core holds the pod; Busy while it is bound or
-	// holds a task.
+	// Held is set while the core holds the pod; Busy once it served anyone.
 	Held, Busy bool
 	// Tenant is the tenant of the pod's longest-held lease, empty with none.
 	Tenant string
 	// Initiators are the people whose tasks the pod holds, sorted.
 	Initiators []string
-	// Binding is the pod's binding, nil when it has none.
-	Binding *lending.BindingInfo
+	// Policy is what the policy knows of the pod: its phase, tenant, kind
+	// and key. Nil when the core does not hold it.
+	Policy *policy.PodInfo
 }
 
 // TenantView is what the core knows of one tenant.
@@ -38,15 +38,15 @@ type TenantView struct {
 type View struct {
 	Pods    map[string]PodView
 	Tenants []TenantView
-	// Shares are the tenants' fair shares (see lending.Policy.Shares).
-	Shares []lending.ShareInfo
+	// Shares are the tenants' fair shares (see policy.Policy.Shares).
+	Shares []policy.ShareInfo
 	// LivePods is the number of live pods the shares were computed for.
 	LivePods int
 	// OldestLease is when the oldest active lease started, zero with none.
 	OldestLease time.Time
 	// Queued are each tenant's tasks waiting upstream, in claim order; a
 	// tenant whose pending list is unknown has none.
-	Queued map[string][]lending.Pending
+	Queued map[string][]policy.Pending
 	// Claimed are the tasks claimed upstream that no pod has picked up yet,
 	// oldest first.
 	Claimed []ClaimedView
@@ -65,20 +65,20 @@ type ClaimedView struct {
 // core's state.
 func (c *Core) View() View {
 	c.Touch()
-	live := c.livePods()
+	live, _ := c.livePods()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	v := View{Pods: map[string]PodView{}, Shares: c.policy.Shares(), LivePods: live, Queued: map[string][]lending.Pending{}}
+	v := View{Pods: map[string]PodView{}, Shares: c.policy.Shares(), LivePods: live, Queued: map[string][]policy.Pending{}}
 	placed := map[string]string{}
 	for id, pd := range c.held {
 		pv := PodView{Held: true, Initiators: initiatorsOf(pd)}
 		if l := firstLease(pd); l != nil {
 			pv.Tenant = l.Tenant
 		}
-		if b, ok := c.policy.Binding(id); ok {
-			pv.Binding = &b
+		if info, ok := c.policy.Pod(id); ok {
+			pv.Policy = &info
 		}
-		pv.Busy = pv.Binding != nil || len(pd.leases) > 0 || len(pd.queue) > 0
+		pv.Busy = (pv.Policy != nil && pv.Policy.Phase != policy.PhaseWarm) || len(pd.leases) > 0 || len(pd.queue) > 0
 		v.Pods[id] = pv
 		for _, t := range pd.queue {
 			placed[t.task.ID] = id
