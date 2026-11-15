@@ -67,8 +67,7 @@ type RestoredPod struct {
 // pod is updated in the background, always to the latest record. A pod the
 // service does not hold is left alone.
 func (k *KubeService) Record(id PodID, r PodRecord) {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	pd := k.pods[id]
 	if pd == nil || pd.state != PodHeld || pd.record == r {
 		return
@@ -157,14 +156,14 @@ func (k *KubeService) writeRecords(ctx context.Context) bool {
 		// The pod runs on; a restart would not find what it serves until
 		// the record is written.
 		why := k.failed("record what pod "+string(id)+" serves (a restart would not keep it)", err)
-		k.mu.Lock()
+		unlock := k.lock()
 		if cur := k.pods[id]; cur == pd && pd.state != PodLost {
 			k.dirty[id] = true
 		}
 		if refused(err) {
 			k.recordRefused = why
 		}
-		k.unlock()
+		unlock()
 		return false
 	}
 }
@@ -172,9 +171,9 @@ func (k *KubeService) writeRecords(ctx context.Context) bool {
 // recordWritten notes that a record was written: records are no longer
 // refused.
 func (k *KubeService) recordWritten() {
-	k.mu.Lock()
+	unlock := k.lock()
 	k.recordRefused = ""
-	k.unlock()
+	unlock()
 }
 
 func refused(err error) bool { return apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) }
@@ -263,9 +262,9 @@ func (k *KubeService) mayRecord(ctx context.Context, name string) bool {
 		metav1.PatchOptions{DryRun: []string{metav1.DryRunAll}})
 	if refused(err) {
 		why := k.failed("patch pods to record what they serve", err)
-		k.mu.Lock()
+		unlock := k.lock()
 		k.recordRefused = why
-		k.unlock()
+		unlock()
 		return false
 	}
 	if err == nil || isNotFound(err) {
@@ -278,8 +277,7 @@ func (k *KubeService) mayRecord(ctx context.Context, name string) bool {
 // Kubernetes refuses the pods' records, a restart would fail every running
 // task, so no pod is given out either.
 func (k *KubeService) Halted() string {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	return k.recordRefused
 }
 
@@ -345,14 +343,14 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 			k.log.Warn("deleting a pod a previous run left: what it served is not recorded", "pod", it.Name)
 			k.deleteAPI(ctx, it.Name)
 		}
-		k.mu.Lock()
+		unlock := k.lock()
 		k.restored = true
-		k.unlock()
+		unlock()
 		return nil, nil
 	}
 	var out []RestoredPod
 	var drop []string
-	k.mu.Lock()
+	unlock := k.lock()
 	k.restored = true
 	now := k.now()
 	for i := range items {
@@ -392,7 +390,7 @@ func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
 		}
 		k.pods[id], k.tokens[token] = pd, id
 	}
-	k.unlock()
+	unlock()
 	for _, name := range drop {
 		k.deleteAPI(ctx, name)
 	}

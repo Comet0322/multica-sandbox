@@ -236,12 +236,17 @@ func (k *KubeService) MaxPods() int { return k.cfg.MaxPods }
 // StartTimeout is how long a new pod may take to get ready.
 func (k *KubeService) StartTimeout() time.Duration { return k.cfg.StartTimeout }
 
-func (k *KubeService) unlock() {
-	notes := k.notes
-	k.notes = nil
-	k.mu.Unlock()
-	for _, n := range notes {
-		n()
+// lock locks the service and returns the call that unlocks it and then runs
+// the notes made meanwhile, outside the lock.
+func (k *KubeService) lock() (unlock func()) {
+	k.mu.Lock()
+	return func() {
+		notes := k.notes
+		k.notes = nil
+		k.mu.Unlock()
+		for _, n := range notes {
+			n()
+		}
 	}
 }
 
@@ -282,8 +287,7 @@ func (k *KubeService) Run(ctx context.Context) {
 }
 
 func (k *KubeService) tick() {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	k.sweepLocked()
 	k.topUpLocked()
 }
@@ -363,8 +367,7 @@ func (k *KubeService) createLocked() {
 			return
 		}
 		k.failed("create pod "+string(pd.id), err)
-		k.mu.Lock()
-		defer k.unlock()
+		defer k.lock()()
 		k.backOffLocked()
 		if cur := k.pods[pd.id]; cur == pd {
 			delete(k.pods, pd.id)
@@ -414,9 +417,9 @@ func (k *KubeService) failed(what string, err error) string {
 		why = "Kubernetes refused the manager's credentials: " + why
 	}
 	k.log.Error("kubernetes", "error", why)
-	k.mu.Lock()
+	unlock := k.lock()
 	k.setProblemLocked(why)
-	k.unlock()
+	unlock()
 	return why
 }
 
@@ -468,8 +471,7 @@ func (k *KubeService) deleteAPI(ctx context.Context, name string) {
 // Authenticate returns the pod that holds the pod token. The first call
 // makes a starting pod ready: its daemon is up and reaches the manager.
 func (k *KubeService) Authenticate(token string) (PodID, bool) {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	id, ok := k.tokens[token]
 	if !ok {
 		return "", false
@@ -492,8 +494,7 @@ func (k *KubeService) Authenticate(token string) (PodID, bool) {
 // none it returns ErrNoCapacity, with the reason pods are not starting when
 // one is known, and has one more pod created.
 func (k *KubeService) Create(ctx context.Context) (PodID, error) {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	k.sweepLocked()
 	if k.recordRefused != "" {
 		return "", fmt.Errorf("%w: %s", ErrNoCapacity, k.recordRefused)
@@ -519,8 +520,7 @@ func (k *KubeService) Create(ctx context.Context) (PodID, error) {
 
 // Delete deletes a pod. A lost or unknown pod is left alone.
 func (k *KubeService) Delete(ctx context.Context, id PodID, label AuditLabel) error {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	pd := k.pods[id]
 	if pd == nil || pd.state == PodLost {
 		return nil
@@ -583,8 +583,7 @@ func (k *KubeService) resync(ctx context.Context) {
 		seen[PodID(list.Items[i].Name)] = true
 		k.observe(&list.Items[i], false)
 	}
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	cutoff := k.now().Add(-apiTimeout)
 	for _, pd := range k.pods {
 		// A pod created moments ago may not be listed yet.
@@ -596,8 +595,7 @@ func (k *KubeService) resync(ctx context.Context) {
 
 // observe takes one pod's status from Kubernetes.
 func (k *KubeService) observe(obj *corev1.Pod, deleted bool) {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	pd := k.pods[PodID(obj.Name)]
 	if pd == nil || pd.state == PodLost {
 		return
@@ -704,8 +702,7 @@ func podWaiting(pd *corev1.Pod) string {
 
 // Pod reports one pod; false when the service does not know it.
 func (k *KubeService) Pod(id PodID) (PodInfo, bool) {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	pd := k.pods[id]
 	if pd == nil {
 		return PodInfo{}, false
@@ -716,8 +713,7 @@ func (k *KubeService) Pod(id PodID) (PodInfo, bool) {
 // Inventory lists the pods in creation order, with the last reason pods
 // could not be created or started.
 func (k *KubeService) Inventory() Inventory {
-	k.mu.Lock()
-	defer k.unlock()
+	defer k.lock()()
 	list := make([]*kubePod, 0, len(k.pods))
 	for _, pd := range k.pods {
 		list = append(list, pd)
