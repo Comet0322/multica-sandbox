@@ -1,0 +1,10 @@
+# A one-node kind cluster for developing the manager against a real
+# Kubernetes API. The backend and the web app are reachable from the host
+# through fixed node ports (see kustomization.yaml).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - {containerPort: 30080, hostPort: 18080, listenAddress: 127.0.0.1}
+      - {containerPort: 30300, hostPort: 13001, listenAddress: 127.0.0.1}

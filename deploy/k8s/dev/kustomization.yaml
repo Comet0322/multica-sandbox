@@ -1,0 +1,15 @@
+# Multica in the dev namespace, with the backend and web app on fixed node
+# ports so the host reaches them at 127.0.0.1:18080 and 127.0.0.1:13001.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../multica
+patches:
+  - target: {kind: Service, name: multica-backend}
+    patch: |
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30080}
+  - target: {kind: Service, name: multica-web}
+    patch: |
+      - {op: replace, path: /spec/type, value: NodePort}
+      - {op: add, path: /spec/ports/0/nodePort, value: 30300}

@@ -44,14 +44,20 @@ func (c *Core) PodInterrupted(id, why string) {
 
 // PodLost tells the core a pod it holds went silent.
 func (c *Core) PodLost(id, why string) {
-	c.podGone(id, why, podLost(id))
+	c.podGone(id, why, podLost(id, why))
 }
 
 // podLost is the policy's decision for a held pod that went silent or that
-// the pool no longer lends.
-func podLost(id string) func(*lending.Policy) []lending.Decision {
+// the pool no longer lends. why, when the pool knows it (such as the pod
+// running out of memory), is added to the task's failure reason, so members
+// see it in Multica.
+func podLost(id, why string) func(*lending.Policy) []lending.Decision {
+	reason := "the pod running this task was lost"
+	if why != "" && why != "pod lost" {
+		reason += ": " + why
+	}
 	return func(pol *lending.Policy) []lending.Decision {
-		return pol.PodLost(id, "the pod running this task was lost", "pod lost")
+		return pol.PodLost(id, reason, "pod lost")
 	}
 }
 
@@ -158,7 +164,7 @@ func (c *Core) settle(ctx context.Context) {
 func (c *Core) healHeldLocked() {
 	for _, id := range c.heldOrderLocked() {
 		if info, ok := c.pool.Pod(id); !ok || info.State != PodHeld {
-			c.podGoneLocked(id, "the pool no longer lends the pod", podLost(id))
+			c.podGoneLocked(id, "the pool no longer lends the pod", podLost(id, ""))
 		}
 	}
 }

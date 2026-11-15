@@ -171,6 +171,20 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 		s.config.ReadOverrides = func() ([]byte, error) { return readConfigFile(path) }
 	}
 
+	if getenv("SANDBOX_POD_TEMPLATE") != "" {
+		// Pods are created through the Kubernetes API (ADR 0009); two warm
+		// pods unless set.
+		warm := 2
+		if getenv("SANDBOX_WARM_PODS") != "" {
+			warm = whole("SANDBOX_WARM_PODS")
+		}
+		kc, err := kubeSettings(getenv, whole("SANDBOX_MAX_PODS"), warm, duration("SANDBOX_POD_START_TIMEOUT"))
+		if err != nil {
+			fail("%v", err)
+		}
+		s.config.Kube = kc
+	}
+
 	if s.podListen == "" {
 		s.podListen = ":8790"
 	}

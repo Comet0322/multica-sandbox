@@ -93,6 +93,10 @@ const (
 // Config configures a Manager.
 type Config struct {
 	MulticaURL string
+	// Kube, when set, has the sandbox service create pods through the
+	// Kubernetes API from a pod template (ADR 0009) instead of serving
+	// GitOps pods. Its Notify, Audit, Log and Now are the manager's.
+	Kube *sandbox.KubeConfig
 	// PAT is the PAT of the bot account the manager runs as. The manager
 	// serves every workspace that account belongs to, found by Sync, and
 	// registers its runtimes in local mode like a member's own daemon.
@@ -366,6 +370,15 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 			return nil, err
 		}
 		svc, handler, m.podRun = gitops, gitops.Handler(), gitops.Run
+		if cfg.Kube != nil {
+			kc := *cfg.Kube
+			kc.Notify, kc.Audit, kc.Log, kc.Now = forwardNotifier{m}, sandboxAudit{audit}, log, m.clock.Now
+			kube, err := sandbox.NewKube(kc)
+			if err != nil {
+				return nil, err
+			}
+			svc, handler, m.podRun = kube, nil, kube.Run
+		}
 	}
 	c, err := core.New(core.Config{
 		Log: log, Clock: m.clock, Audit: audit,

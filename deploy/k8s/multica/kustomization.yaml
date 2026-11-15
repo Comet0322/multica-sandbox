@@ -1,0 +1,15 @@
+# Multica v0.6.4 for one namespace: Postgres, the backend and the web app.
+# The manifests name no namespace; apply them with -n, for example
+#   kubectl apply -k deploy/k8s/multica -n <namespace>
+# The Secret multica-backend (DATABASE_URL, POSTGRES_PASSWORD, JWT_SECRET and,
+# for a test backend, MULTICA_DEV_VERIFICATION_CODE) must exist first; see
+# deploy/k8s/dev/up.sh for one way to create it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - postgres.yaml
+  - backend.yaml
+  - web.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: multica

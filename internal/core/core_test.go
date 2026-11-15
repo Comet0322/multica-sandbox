@@ -98,8 +98,8 @@ func TestALostPodFailsItsTask(t *testing.T) {
 	r.dispatch()
 	r.next("p1")
 	r.pool.lose("p1")
-	r.core.PodLost("p1", "silent")
-	if _, fails, _ := r.source.snapshot(); !slices.Equal(fails, []string{"A t1 the pod running this task was lost"}) {
+	r.core.PodLost("p1", "the pod ran out of memory (limit 4Gi)")
+	if _, fails, _ := r.source.snapshot(); !slices.Equal(fails, []string{"A t1 the pod running this task was lost: the pod ran out of memory (limit 4Gi)"}) {
 		t.Fatalf("fails %v", fails)
 	}
 	if r.core.Owns("p1", "t1") {

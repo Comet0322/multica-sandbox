@@ -4,7 +4,8 @@ import "time"
 
 // Audit actions and decisions, as the manager's audit log spells them.
 const (
-	AuditReset = "reset"
+	AuditReset  = "reset"
+	AuditDelete = "delete"
 
 	AuditAllow = "allow"
 	AuditDeny  = "deny"

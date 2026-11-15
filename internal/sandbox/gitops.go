@@ -368,6 +368,9 @@ type Inventory struct {
 	Pods []PodInfo
 	// PrunedTotal counts the lost pods pruned since the service started.
 	PrunedTotal int
+	// Problem is why pods could not be created or started lately, empty
+	// when none is known.
+	Problem string
 }
 
 // Inventory reports every pod and how many were pruned.

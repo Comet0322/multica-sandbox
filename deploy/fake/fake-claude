@@ -5,6 +5,8 @@
 # agent's custom environment, is echoed in the comment to show that the
 # environment reached the agent. SANDBOX_FAKE_SLEEP (seconds) keeps the task
 # running that long after the comment, so a trial can fill the pool.
+# SANDBOX_FAKE_MEMORY (MiB) makes the task hold that much memory for a few
+# seconds, so a trial can run a pod out of memory.
 case "${1:-}" in
 --version | -v)
 	echo "2.1.0 (Claude Code)"
@@ -33,6 +35,9 @@ if [ -n "$issue" ]; then
 	fi
 fi
 case "${SANDBOX_FAKE_SLEEP:-}" in '' | *[!0-9]*) ;; *) sleep "$SANDBOX_FAKE_SLEEP" ;; esac
+case "${SANDBOX_FAKE_MEMORY:-}" in '' | *[!0-9]*) ;; *)
+	python3 -c 'import sys, time; b = bytearray(int(sys.argv[1]) << 20); b[::4096] = b"x" * len(b[::4096]); time.sleep(5)' "$SANDBOX_FAKE_MEMORY" ;;
+esac
 sid="sandbox-fake-$$"
 printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
 printf '{"type":"result","subtype":"success","is_error":false,"result":"sandbox-fake done: %s","session_id":"%s"}\n' "$note" "$sid"
