@@ -103,8 +103,10 @@ applies to pods created from then on.
 ## Permissions
 
 The manager needs, in its namespace, exactly these verbs on `pods`: `create`,
-`delete`, `get`, `list`, `watch` and `patch`. It needs nothing else: no
-Secrets, Deployments, `pods/exec`, `pods/log` or cluster-wide rights. `patch`
+`delete`, `get`, `list`, `watch` and `patch`; and, only with
+`SANDBOX_POD_OWNER`, `get` on that one Deployment (a Role rule with
+`resourceNames`). It needs nothing else: no Secrets, `pods/exec`, `pods/log`
+or cluster-wide rights. `patch`
 records on each pod what it serves; without it the manager runs, shows the
 refusal on the dispatch page, and a restarted manager deletes every pod it
 finds ([restart](#what-a-pod-serves-and-a-manager-restart)).
@@ -126,6 +128,7 @@ The manager authenticates in one of two ways:
 
   ```bash
   for v in create delete get list watch patch; do kubectl auth can-i $v pods -n <namespace>; done
+  kubectl auth can-i get deployments/sandbox-manager -n <namespace>   # only with SANDBOX_POD_OWNER
   kubectl config view --minify    # how it authenticates
   ```
 
@@ -206,6 +209,7 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `SANDBOX_MAX_PODS` | `10` | The budget: the most pods at once, warm, starting, running, held and idle. |
 | `SANDBOX_WARM_PODS` | `2` | Ready pods kept that have served no one. At least `1`, since the manager learns each workspace's runtimes from a pod's daemon (`0` is refused), and at most `SANDBOX_MAX_PODS`. |
 | `SANDBOX_POD_START_TIMEOUT` | `3m` | How long a new pod may take until its daemon calls the manager. Past it the pod is deleted, and pod creation backs off (10s, doubling up to 5m). Nothing was claimed for it, so no task fails. |
+| `SANDBOX_POD_OWNER` | none | `deployment/<name>`: the Deployment in the namespace that owns every pod created from then on (see [Pod owner and Argo CD](#pod-owner-and-argo-cd)), normally the manager's own. Needs `get` on that Deployment; the manager does not start when it cannot read it. Unset, pods have no owner. |
 | `SANDBOX_POD_START_FAILURES` | `3` | How many pods in a row may fail to start for a passing reason (no node, the start timeout) before the pods count as [broken](#when-no-pod-starts). A failure that recurs on every pod (an image that cannot be pulled, refused credentials, a rejected template) breaks them at once. |
 | `SANDBOX_HOLD_TIMEOUT` | `10m` | How long a pod whose task ended is held for the task's key. `0` holds nothing. Overridable per workspace. |
 | `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool runtime pod is kept before it is deleted. |
@@ -347,6 +351,44 @@ The manager records on each pod what it serves (patching its labels and
 annotations), and a restarted manager rebuilds its state from them: see
 [What a pod serves, and a manager restart](#what-a-pod-serves-and-a-manager-restart).
 Recording needs the `patch` verb on pods.
+
+## Pod owner and Argo CD
+
+With `SANDBOX_POD_OWNER=deployment/sandbox-manager` (set in
+`deploy/k8s/manager.yaml`), every pod the manager creates carries an owner
+reference to the manager's Deployment, read once at start:
+
+- `kubectl` and Argo CD show the pods under the Deployment, with their
+  health and events.
+- Deleting the Deployment has Kubernetes delete every pod it owns, running
+  tasks included; no pod is left behind once the manager is gone.
+- The reference neither blocks the Deployment's deletion nor makes it the
+  pods' controller, so it needs no right beyond `get` on the Deployment.
+- Pods a previous run created without an owner keep running without one,
+  until their hold or idle time ends.
+
+Owning the pods by the manager's own pod or its ReplicaSet would not work:
+both are replaced on every restart or rollout, and Kubernetes would delete
+the pods with them.
+
+**With Argo CD**, deploy the manager's Deployment, Service, ConfigMap and
+Role from Git as usual; the pods it creates are not in Git and Argo CD does
+not manage them:
+
+- The Application stays Synced while pods come and go, and auto-sync with
+  prune does not delete them: Argo CD prunes only resources carrying its
+  tracking label or annotation, never their owned children. Keep Argo CD's
+  tracking label (`app.kubernetes.io/instance` by default) and
+  `argocd.argoproj.io/` annotations out of the pod template, which the
+  manager copies onto every pod.
+- The pods show in the Application's resource tree under the Deployment.
+- When no pod starts ([broken](#when-no-pod-starts)) or Multica cannot be
+  reached, `/readyz` fails, the manager's Deployment is not available and
+  the Application turns Progressing, then Degraded past the Deployment's
+  progress deadline.
+- The template is read at start: changing the ConfigMap takes a manager
+  restart, for instance by changing an annotation on the Deployment's pod
+  template in the same commit.
 
 ## What a pod serves, and a manager restart
 
@@ -615,7 +657,12 @@ which git ignores:
 - `backend.env`: the database password, the JWT secret and the fixed sign-in
   code;
 - `dev-user.kubeconfig`: a kubeconfig with only the manager's rights (the six
-  verbs on pods in the namespace), standing in for an operator's own.
+  verbs on pods in the namespace, and `get` on the Deployment
+  `sandbox-e2e-owner`), standing in for an operator's own.
+
+It also creates `sandbox-e2e-owner`, a Deployment with no replicas that
+stands in for the manager's own Deployment as the pods' owner while the
+manager runs on the host (`deploy/k8s/dev/owner.yaml`).
 
 The namespace enforces Pod Security `baseline` and warns about `restricted`.
 Running `up.sh` again keeps the database and secrets; `down.sh` deletes the

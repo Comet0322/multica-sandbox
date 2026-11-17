@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Run the manager on the host against the dev namespace (up.sh first): it
 # creates its pods in the namespace with the dev-user kubeconfig, which may
-# only create, delete, watch and patch pods, and serves Multica at 127.0.0.1:18080.
+# only create, delete, watch and patch pods and read the stand-in owner
+# Deployment sandbox-e2e-owner, and serves Multica at 127.0.0.1:18080.
 #
 #   deploy/k8s/dev/manager.sh       sign in the bot, create a workspace, run
 #
 # The bot is pool-bot@dev.test; its PAT and workspace stay in .state, so a
 # rerun serves the same workspace. Settings: PODS (SANDBOX_MAX_PODS, default
 # 4), WARM (SANDBOX_WARM_PODS, default 1), SANDBOX_RUNTIMES (default
-# pool,clean), and any SANDBOX_* variable.
+# pool,clean), SANDBOX_POD_OWNER (default deployment/sandbox-e2e-owner; empty
+# for none), and any SANDBOX_* variable.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -43,6 +45,7 @@ export MULTICA_SERVER_URL=$api \
 	SANDBOX_MANAGER_LISTEN=${SANDBOX_MANAGER_LISTEN:-0.0.0.0:$port} \
 	SANDBOX_POOL_ADMIN_LISTEN=${SANDBOX_POOL_ADMIN_LISTEN:-127.0.0.1:8793} \
 	SANDBOX_RUNTIMES=${SANDBOX_RUNTIMES:-pool,clean} \
+	SANDBOX_POD_OWNER=${SANDBOX_POD_OWNER-deployment/sandbox-e2e-owner} \
 	SANDBOX_AUDIT_FILE=${SANDBOX_AUDIT_FILE:-$state/audit.jsonl}
 echo "manager: pods :$port (reached at $gw), admin http://127.0.0.1:8793/dispatch, workspace $(cat "$state/workspace")" >&2
 exec "$state/sandbox-manager"

@@ -60,7 +60,7 @@ k -n "$ns" create configmap multica-backend \
 	--dry-run=client -o yaml | k apply -f -
 
 k -n "$ns" apply -k "$here"
-k -n "$ns" apply -f "$here/dev-user.yaml"
+k -n "$ns" apply -f "$here/dev-user.yaml" -f "$here/owner.yaml"
 
 k -n "$ns" rollout status statefulset/multica-pg --timeout=180s
 k -n "$ns" rollout status deployment/multica-backend --timeout=180s

@@ -109,3 +109,26 @@ func TestLoadSettingsRefusesABadPodTemplate(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSettingsReadsThePodOwner(t *testing.T) {
+	dir := t.TempDir()
+	env := baseEnv()
+	env["SANDBOX_POD_TEMPLATE"] = writeFile(t, dir, "pod.yaml", "kind: Pod\nspec:\n  containers:\n    - {name: daemon, image: pod:1}\n")
+	env["KUBECONFIG"] = writeFile(t, dir, "kubeconfig", testKubeconfig)
+	for v, want := range map[string]string{"": "", "deployment/sandbox-manager": "sandbox-manager", "deploy/m-1": "m-1", " Deployments/x ": "x"} {
+		env["SANDBOX_POD_OWNER"] = v
+		s, err := loadSettings(envLookup(env))
+		if err != nil {
+			t.Fatalf("%q: %v", v, err)
+		}
+		if got := s.config.Kube.OwnerDeployment; got != want {
+			t.Fatalf("%q: owner %q, want %q", v, got, want)
+		}
+	}
+	for _, v := range []string{"sandbox-manager", "statefulset/x", "deployment/", "deployment/Not_A_Name"} {
+		env["SANDBOX_POD_OWNER"] = v
+		if _, err := loadSettings(envLookup(env)); err == nil || !strings.Contains(err.Error(), "SANDBOX_POD_OWNER") {
+			t.Fatalf("%q: err = %v, want SANDBOX_POD_OWNER refused", v, err)
+		}
+	}
+}

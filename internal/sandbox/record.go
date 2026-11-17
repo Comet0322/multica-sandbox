@@ -314,9 +314,13 @@ func neverStarted(obj *corev1.Pod) bool {
 // with no record whose containers never started is kept as warm once its
 // daemon calls in; any other pod with no record may run a task whose record
 // was never written, and is deleted, as is a pod it cannot interpret (no pod
-// token, or a garbled record). Call it once, before Run. A restored pod that ended meanwhile is
+// token, or a garbled record). It first reads the owner deployment, when one
+// is set, and fails when it cannot. Call it once, before Run. A restored pod that ended meanwhile is
 // reported lost once Run watches it.
 func (k *KubeService) Restore(ctx context.Context) ([]RestoredPod, error) {
+	if err := k.resolveOwner(ctx); err != nil {
+		return nil, err
+	}
 	c, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 	list, err := k.cfg.Client.CoreV1().Pods(k.cfg.Namespace).List(c, metav1.ListOptions{LabelSelector: k.selector()})

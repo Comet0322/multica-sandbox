@@ -119,6 +119,10 @@ _Avoid_: Limit, max leases
 A pod that could not be created, did not start, or was lost once ready, classified by phase (create, start, run) and kind (oom, evicted, image, refused...). A permanent failure recurs on every pod until an operator acts.
 _Avoid_: Error, crash
 
+**Pod owner**:
+The Deployment, normally the manager's own, that every new pod carries an owner reference to (`SANDBOX_POD_OWNER`): tools such as Argo CD show the pods under it, and deleting it deletes them.
+_Avoid_: Parent, controller (the reference is not a controller one)
+
 **Broken**:
 The pods' state once a permanent failure happened or `SANDBOX_POD_START_FAILURES` pods in a row failed to start: one pod at a time tries until one gets ready, which clears it.
 _Avoid_: Degraded, down, halted (halted is when Kubernetes refuses the pods' records)

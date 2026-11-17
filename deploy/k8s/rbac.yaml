@@ -2,7 +2,8 @@
 # operator stops running it with a personal kubeconfig. It may create,
 # delete, get, list, watch and patch pods, which is all the manager does (it
 # patches a pod's labels and annotations to record what the pod serves), and
-# nothing else: no Secrets, Deployments, exec or logs. Apply it in the
+# get its own Deployment, which owns the pods it creates when
+# SANDBOX_POD_OWNER names it. Nothing else: no Secrets, exec or logs. Apply it in the
 # manager's namespace and run the manager's Deployment with
 # serviceAccountName: sandbox-manager and automountServiceAccountToken: true,
 # without KUBECONFIG, so it uses the in-cluster service account:
@@ -28,6 +29,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  # Only for SANDBOX_POD_OWNER=deployment/sandbox-manager: the manager reads
+  # its Deployment's UID once at start. Drop this rule without that setting.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["sandbox-manager"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

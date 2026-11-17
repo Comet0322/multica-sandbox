@@ -18,6 +18,9 @@
 #   budget               a full budget deletes an idle pool runtime pod
 #                        before a held one, and never a pod within another
 #                        department's guarantee
+#   owner                every pod is owned by the owner Deployment, and
+#                        deleting it has Kubernetes delete the pods (kind
+#                        only)
 #   cannot-start         a pod whose image is missing breaks the pods at once:
 #                        one pod at a time tries, the task stays queued,
 #                        /readyz says why; once the image is there (kind
@@ -180,6 +183,35 @@ pa2=$(lease_pod "$(wait_tasks "$a2" 1 completed 180)")
 pod_exists "$pb1" && pod_exists "$pb2" || fail "a pod within b's guarantee was deleted for a"
 pod_gone "$pa1" || fail "a's own held pod $pa1 was kept, so something else went"
 pass "budget: with 3 pods full, b's task deleted a's idle pod $pa0 and kept the held $pa1; with b's guarantee 2, a's task deleted a's own held $pa1 and kept b's $pb1 and $pb2"
+
+# --- owner ----------------------------------------------------------------------
+if [ -n "$owner" ]; then
+	step "owner: the pods belong to deployment $owner"
+	uid=$(k get deployment "$owner" -o jsonpath='{.metadata.uid}')
+	pods=$(managed_pods)
+	[ -n "$pods" ] || fail "no pod to check"
+	for p in $pods; do
+		o=$(k get pod "$p" -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}/{.name}/{.uid}/{.blockOwnerDeletion}{"\n"}{end}')
+		[ "$o" = "Deployment/$owner/$uid/false" ] || fail "pod $p is owned by '$o', want Deployment/$owner/$uid/false"
+	done
+	n=$(wc -w <<<"$pods")
+	# Only the dev stand-in is deleted, and put back from deploy/k8s/dev; the
+	# kubeconfig may not delete deployments, so the kind admin context does.
+	adminctl() { KUBECONFIG=${E2E_ADMIN_KUBECONFIG:-$HOME/.kube/config} kubectl "$@"; }
+	admin=${E2E_ADMIN_CONTEXT:-}
+	if [ -z "$admin" ] && adminctl config get-contexts -o name 2>/dev/null | grep -qx kind-sandbox-dev; then admin=kind-sandbox-dev; fi
+	if [ "$owner" = sandbox-e2e-owner ] && [ -n "$admin" ]; then
+		# Deleting the manager's Deployment stops the manager too.
+		stop_manager
+		adminctl --context "$admin" -n "$NS" delete deployment "$owner" --wait=true >/dev/null
+		wait_for "Kubernetes to delete the $n pods the deployment owned" 90 no_managed_pods
+		adminctl --context "$admin" -n "$NS" apply -f "$root/deploy/k8s/dev/owner.yaml" >/dev/null
+		deleted="; deleting the deployment had Kubernetes delete all $n pods"
+	else
+		deleted="; deletion not checked (only the kind stand-in sandbox-e2e-owner is deleted)"
+	fi
+	pass "owner: all $n pods are owned by deployment $owner (not blocking its deletion)$deleted"
+fi
 
 # --- a pod that cannot start ---------------------------------------------------
 step "a pod that cannot start (its image is missing)"

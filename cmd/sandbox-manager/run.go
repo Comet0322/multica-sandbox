@@ -201,6 +201,11 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	} else {
 		// Unset or 0: sandbox.DefaultStartFailures.
 		kc.StartFailures = whole("SANDBOX_POD_START_FAILURES")
+		owner, err := podOwner(getenv("SANDBOX_POD_OWNER"))
+		if err != nil {
+			fail("SANDBOX_POD_OWNER: %v", err)
+		}
+		kc.OwnerDeployment = owner
 		s.config.Kube = kc
 	}
 
@@ -249,9 +254,9 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	defer adminLn.Close()
 
 	// The pods a previous run left are taken over before anything is
-	// claimed or orphans are recovered.
+	// claimed or orphans are recovered; the pods' owner is read first.
 	if err := m.Restore(ctx); err != nil {
-		return fmt.Errorf("take over the pods a previous run left: %w", err)
+		return fmt.Errorf("start the sandbox service: %w", err)
 	}
 	// The first listing must work: a wrong token or server address stops the
 	// manager now instead of leaving it serving nothing.

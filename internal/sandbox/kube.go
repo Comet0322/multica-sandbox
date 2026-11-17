@@ -65,6 +65,13 @@ type KubeConfig struct {
 	Namespace string
 	// Template is the pod every pod is created from (see LoadPodTemplate).
 	Template *corev1.Pod
+	// OwnerDeployment, when set, names a Deployment in the namespace that
+	// owns every pod the service creates from then on (an owner reference,
+	// not blocking deletion): tools that follow owners, such as Argo CD,
+	// show the pods under it, and deleting it has Kubernetes delete the
+	// pods. Its UID is read when the service restores, which needs get on
+	// that Deployment; a refusal stops the service from starting.
+	OwnerDeployment string
 	// MaxPods is the most pods the service has at once, starting, free,
 	// held or being deleted. Zero means DefaultMaxPods.
 	MaxPods int
@@ -218,6 +225,9 @@ type KubeService struct {
 	// kick wakes the loop that writes them.
 	dirty map[PodID]bool
 	kick  chan struct{}
+	// owner is the owner reference every new pod gets, read from
+	// OwnerDeployment; nil without one.
+	owner *metav1.OwnerReference
 	// recordRefused is why Kubernetes refused the last record, empty once
 	// one is written. While it is set no pod is given out (see Halted).
 	recordRefused string
@@ -425,6 +435,9 @@ func (k *KubeService) podObject(pd *kubePod) *corev1.Pod {
 		obj.Annotations[key] = v
 	}
 	obj.Labels[ManagedByLabel] = ManagedByValue
+	if k.owner != nil {
+		obj.OwnerReferences = []metav1.OwnerReference{*k.owner}
+	}
 	obj.Spec.RestartPolicy = corev1.RestartPolicyNever
 	if obj.Spec.Hostname == "" {
 		obj.Spec.Hostname = PodHostname
@@ -439,6 +452,35 @@ func (k *KubeService) podObject(pd *kubePod) *corev1.Pod {
 	}
 	c.Env = append(env, corev1.EnvVar{Name: PodTicketEnv, Value: pd.ticket})
 	return obj
+}
+
+// resolveOwner reads the UID of OwnerDeployment, once.
+func (k *KubeService) resolveOwner(ctx context.Context) error {
+	name := k.cfg.OwnerDeployment
+	unlock := k.lock()
+	done := name == "" || k.owner != nil
+	unlock()
+	if done {
+		return nil
+	}
+	c, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+	d, err := k.cfg.Client.AppsV1().Deployments(k.cfg.Namespace).Get(c, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err):
+		return fmt.Errorf("SANDBOX_POD_OWNER: Kubernetes refused to read deployment %s; the manager needs get on it: %w", name, err)
+	case apierrors.IsNotFound(err):
+		return fmt.Errorf("SANDBOX_POD_OWNER: no deployment %s in namespace %s", name, k.cfg.Namespace)
+	case err != nil:
+		return fmt.Errorf("SANDBOX_POD_OWNER: read deployment %s: %w", name, err)
+	}
+	no := false
+	ref := &metav1.OwnerReference{APIVersion: "apps/v1", Kind: "Deployment", Name: d.Name, UID: d.UID,
+		Controller: &no, BlockOwnerDeletion: &no}
+	defer k.lock()()
+	k.owner = ref
+	k.log.Info("new pods are owned by a deployment", "deployment", name)
+	return nil
 }
 
 // failed logs a failed API call and keeps its reason for the inventory, and

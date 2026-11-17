@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -17,6 +18,28 @@ import (
 
 // inClusterNamespace is where Kubernetes tells a pod its own namespace.
 const inClusterNamespace = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+// podOwner reads SANDBOX_POD_OWNER, deployment/<name>, into the name of the
+// Deployment that owns the pods; empty when unset.
+func podOwner(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", nil
+	}
+	kind, name, ok := strings.Cut(v, "/")
+	switch strings.ToLower(kind) {
+	case "deployment", "deployments", "deploy":
+	default:
+		ok = false
+	}
+	if !ok {
+		return "", fmt.Errorf("%q is not deployment/<name>: only a Deployment may own the pods", v)
+	}
+	if errs := validation.IsDNS1123Subdomain(name); len(errs) > 0 {
+		return "", fmt.Errorf("%q is not a deployment name: %s", name, strings.Join(errs, "; "))
+	}
+	return name, nil
+}
 
 // kubeSettings reads the settings of the sandbox service, which creates the
 // pods through the Kubernetes API from SANDBOX_POD_TEMPLATE.

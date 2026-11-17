@@ -20,6 +20,7 @@ The scenarios, in the order they run:
 | Restart | The manager is stopped while a task runs and started again; the task completes. |
 | Handoff on one pod | Agent B, handed agent A's issue while A's pod is held, lands on that pod and finds A's unpushed branch. |
 | Budget | With 3 pods all in use, a task of department b deletes department a's idle pod, not a's or b's held pods. With b's guarantee raised to 2, a task of a deletes a's own held pod, never one of b's. |
+| Owner | Every pod is owned by the owner Deployment (`sandbox-e2e-owner` in the kind namespace), not blocking its deletion. On kind, deleting that Deployment has Kubernetes delete every pod it owned; it is then put back from `deploy/k8s/dev/owner.yaml`. Skipped when the kubeconfig cannot read the Deployment. |
 | Pod that cannot start | With a template whose image does not exist, the pods break at once: one pod at a time tries, a task stays queued in Multica, the inventory shows `broken` with a permanent `image` failure, and `/readyz` returns 503. On kind, the image is then loaded: pods start again without a restart and the task completes. Set `E2E_KIND_CLUSTER` to name the kind cluster; without one, the recovery is skipped. |
 | Privacy | No pod name or pod IP seen during the run appears in Multica's runtimes, issues, comments, task runs or task messages, and agents see the hostname `sandbox`. |
 
@@ -57,6 +58,8 @@ The scripts read these settings from the environment:
 | `E2E_DEV_STATE` | `deploy/k8s/dev/.state` | Where the kind namespace's state is, for the defaults above. |
 | `E2E_STATE` | `$TMPDIR/sandbox-e2e-<run>` | The run's own files: manager log, audit log, pod template, overrides. |
 | `E2E_KIND_CLUSTER` | `sandbox-dev` when `kind` lists it | The kind cluster the cannot-start scenario loads the missing image into, to see pods start again; unset with no kind cluster, that check is skipped. |
+| `E2E_OWNER_DEPLOYMENT` | `sandbox-e2e-owner` | The Deployment the manager runs with as `SANDBOX_POD_OWNER`; empty, or unreadable with the kubeconfig, runs without an owner. Only `sandbox-e2e-owner` is ever deleted. |
+| `E2E_ADMIN_CONTEXT`, `E2E_ADMIN_KUBECONFIG` | `kind-sandbox-dev` when present, `~/.kube/config` | A context that may delete and recreate `sandbox-e2e-owner`, for the owner scenario's deletion check. |
 | `KEEP` | unset | `1` keeps the run's workspaces in Multica for inspection. |
 
 For example:

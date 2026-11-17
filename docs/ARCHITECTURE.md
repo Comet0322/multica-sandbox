@@ -70,7 +70,9 @@ A pod whose task cannot finish (out of memory, evicted, its daemon exited, the
 pod deleted) is deleted, and the task is failed in Multica with what happened
 and what to do next. The sandbox service classifies every pod failure by
 phase (create, start, run) and kind, and keeps the latest for the dispatch
-page. A restarted manager rebuilds its state from the labels and annotations
+page. With `SANDBOX_POD_OWNER`, every pod is owned by the
+manager's Deployment, so Argo CD and `kubectl` show the pods under it and
+deleting it deletes them. A restarted manager rebuilds its state from the labels and annotations
 it wrote on its pods: running tasks run on, holds resume, warm and idle pods
 are kept.
 

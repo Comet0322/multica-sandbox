@@ -73,6 +73,10 @@ spec:
             # No KUBECONFIG: the in-cluster service account. The namespace is
             # the pod's own unless SANDBOX_NAMESPACE says otherwise.
             - {name: SANDBOX_RUNTIMES, value: "pool,clean"}
+            # The pods it creates are owned by this Deployment: Argo CD and
+            # kubectl show them under it, and deleting it deletes them. Needs
+            # get on this Deployment (rbac.yaml); remove to need pods only.
+            - {name: SANDBOX_POD_OWNER, value: "deployment/sandbox-manager"}
             - {name: SANDBOX_MAX_PODS, value: "10"} # PLACEHOLDER: the budget
             - {name: SANDBOX_WARM_PODS, value: "2"}
             - {name: SANDBOX_PROVIDERS, value: "claude,opencode"} # the image's agent CLIs

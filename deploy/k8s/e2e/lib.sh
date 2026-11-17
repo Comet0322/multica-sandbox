@@ -37,6 +37,10 @@ else
 	manager_url=http://$gw:$pod_port
 fi
 ADMIN=http://127.0.0.1:$admin_port
+# The Deployment that owns the pods (SANDBOX_POD_OWNER), when the kubeconfig
+# may read it; the kind namespace has sandbox-e2e-owner (deploy/k8s/dev).
+owner=${E2E_OWNER_DEPLOYMENT-sandbox-e2e-owner}
+if [ -n "$owner" ] && ! kubectl get deployment "$owner" >/dev/null 2>&1; then owner=""; fi
 LABEL=app.kubernetes.io/managed-by=sandbox-manager
 run=${E2E_RUN:-$(date +%H%M%S)$((RANDOM % 90 + 10))}
 state=${E2E_STATE:-${TMPDIR:-/tmp}/sandbox-e2e-$run}
@@ -105,6 +109,7 @@ start_manager() {
 			SANDBOX_MANAGER_LISTEN=0.0.0.0:$pod_port \
 			SANDBOX_POOL_ADMIN_LISTEN=127.0.0.1:$admin_port \
 			SANDBOX_AUDIT_FILE=$state/audit.jsonl
+		[ -n "$owner" ] && export SANDBOX_POD_OWNER=deployment/$owner
 		for kv in "$@"; do export "${kv?}"; done
 		exec "$state/sandbox-manager"
 	) >>"$state/manager.log" 2>&1 &
@@ -256,7 +261,7 @@ preflight() {
 	curl -fsS "$API/health" >/dev/null || fail "no Multica backend at $API"
 	no_managed_pods || fail "namespace $NS already has managed pods (another manager?): $(managed_pods | tr '\n' ' ')"
 	! curl -fsS -o /dev/null "$ADMIN/v1/inventory" 2>/dev/null || fail "something already listens on $ADMIN"
-	echo "namespace $NS, kubeconfig $KUBECONFIG, backend $API, pods reach the manager at $manager_url, run $run"
+	echo "namespace $NS, kubeconfig $KUBECONFIG, backend $API, pods reach the manager at $manager_url, pods owned by ${owner:-nothing}, run $run"
 }
 
 # privacy: no pod name, IP or hostname of the run reaches Multica, in any

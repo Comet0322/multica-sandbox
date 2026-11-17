@@ -1,7 +1,8 @@
 # Stands in for the operator's own credentials, with only the
 # rights the manager needs on pods in the namespace: creating, deleting and
 # watching them, and patching them to record what each serves, which a
-# restarted manager rebuilds from. Whether the operator may create service
+# restarted manager rebuilds from; and reading the Deployment that owns the
+# pods (SANDBOX_POD_OWNER), here the stand-in sandbox-e2e-owner. Whether the operator may create service
 # accounts, roles or anything else is not known, so this account may not.
 # up.sh writes a kubeconfig for it, which the manager uses.
 apiVersion: v1
@@ -25,6 +26,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["sandbox-e2e-owner"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
