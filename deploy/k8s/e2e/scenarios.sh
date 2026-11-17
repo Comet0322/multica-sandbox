@@ -18,7 +18,10 @@
 #   budget               a full budget deletes an idle pool runtime pod
 #                        before a held one, and never a pod within another
 #                        department's guarantee
-#   cannot-start         a pod that cannot start leaves its task queued
+#   cannot-start         a pod whose image is missing breaks the pods at once:
+#                        one pod at a time tries, the task stays queued,
+#                        /readyz says why; once the image is there (kind
+#                        only), pods start again and the task completes
 #   privacy              no pod name, hostname or IP appears in Multica
 #
 #   deploy/k8s/e2e/scenarios.sh
@@ -34,7 +37,8 @@ step "bot account in two workspaces (departments a and b)"
 bot_account a b
 wsa=${workspaces[0]} wsb=${workspaces[1]}
 template "$image" >"$state/pod.yaml"
-template "multica-sandbox-pool:e2e-no-such-image" >"$state/pod-broken.yaml"
+missing_image=multica-sandbox-pool:e2e-missing-$run
+template "$missing_image" >"$state/pod-broken.yaml"
 overrides 'a: {hold_timeout: 20s}'
 
 step "manager: pool and clean runtimes, 4 pods, 1 warm, idle pods kept 10s"
@@ -178,7 +182,7 @@ pod_gone "$pa1" || fail "a's own held pod $pa1 was kept, so something else went"
 pass "budget: with 3 pods full, b's task deleted a's idle pod $pa0 and kept the held $pa1; with b's guarantee 2, a's task deleted a's own held $pa1 and kept b's $pb1 and $pb2"
 
 # --- a pod that cannot start ---------------------------------------------------
-step "a pod that cannot start (start timeout 20s)"
+step "a pod that cannot start (its image is missing)"
 stop_manager
 k delete pods -l "$LABEL" --wait=true >/dev/null
 cp "$state/pod-broken.yaml" "$state/pod.yaml"
@@ -186,14 +190,49 @@ start_manager SANDBOX_POD_START_TIMEOUT=20s SANDBOX_WARM_PODS=1
 ws=$wsa
 nostart=$(make_agent nostart "$rta")
 n=$(new_issue "cannot start" "$nostart")
-sleep 50
+wait_for "the pods to break" 60 sh -c "curl -fsS '$ADMIN/v1/inventory' | jq -e '.broken // empty' >/dev/null"
+inv=$(inventory)
+broken=$(jq -r .broken <<<"$inv")
+case "$broken" in *"image cannot be pulled"*"Check the image in the pod template"*) ;; *) fail "broken = '$broken', want the image and what to check" ;; esac
+jq -e '.failures[0] | .kind == "image" and .phase == "start" and .permanent' <<<"$inv" >/dev/null ||
+	fail "latest failure $(jq -c '.failures[0]' <<<"$inv"), want a permanent image start failure"
+ready=$(curl -sS -o "$state/readyz" -w '%{http_code}' "http://127.0.0.1:$pod_port/readyz")
+[ "$ready" = 503 ] && grep -q 'pods do not start' "$state/readyz" || fail "/readyz = $ready $(cat "$state/readyz"), want 503: pods do not start"
+most=0
+for _ in $(seq 20); do
+	c=$(managed_pods | grep -c . || true)
+	[ "$c" -gt "$most" ] && most=$c
+	sleep 2
+done
+[ "$most" -le 1 ] || fail "$most pods at once while broken, want one at a time"
 st=$(tasks "$n" | jq -rs '.[0].status')
 [ "$st" = queued ] || fail "the task is $st while no pod can start, want queued"
-problem=$(inventory | jq -r '.problem // ""')
-[ -n "$problem" ] || fail "the inventory shows no problem"
+echo "broken: $broken; at most $most pod at a time for 40s; the task queued; /readyz 503"
+cluster=${E2E_KIND_CLUSTER:-}
+if [ -z "$cluster" ] && command -v kind >/dev/null && kind get clusters 2>/dev/null | grep -qx sandbox-dev; then cluster=sandbox-dev; fi
+if [ -n "$cluster" ]; then
+	docker tag "$image" "$missing_image"
+	kind load docker-image --name "$cluster" "$missing_image" >/dev/null
+	wait_for "pods to start again" 330 sh -c "curl -fsS '$ADMIN/v1/inventory' | jq -e '(.broken // \"\") == \"\"' >/dev/null"
+	wait_tasks "$n" 1 completed 180 >/dev/null
+	ready=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:$pod_port/readyz")
+	[ "$ready" = 200 ] || fail "/readyz = $ready after pods started again, want 200"
+	recovered="; once the image was loaded, pods started again without a restart and the task completed"
+else
+	recovered="; recovery not checked (no kind cluster to load the image into)"
+fi
 ws=$wsa call POST "/api/agents/$nostart/archive" >/dev/null
-pass "cannot start: the task stayed queued in Multica for 50s; the manager shows '$problem'"
+pass "cannot start: a missing image broke the pods at once, one pod at a time tried, the task stayed queued and /readyz said why$recovered"
 stop_manager
+k delete pods -l "$LABEL" --wait=true >/dev/null
+if [ -n "$cluster" ]; then
+	# Remove the tag only: the image is the pod image under another name, and
+	# removing it by ID (crictl rmi) would remove that too.
+	for node in $(kind get nodes --name "$cluster"); do
+		docker exec "$node" ctr -n k8s.io images rm "docker.io/library/$missing_image" >/dev/null 2>&1 || true
+	done
+	docker rmi "$missing_image" >/dev/null 2>&1 || true
+fi
 template "$image" >"$state/pod.yaml"
 
 privacy

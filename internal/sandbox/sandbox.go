@@ -108,6 +108,13 @@ type Inventory struct {
 	// Problem is why pods could not be created or started lately, empty
 	// when none is known.
 	Problem string
+	// Broken is why pods are not starting at all, empty while they start:
+	// one failure that recurs on every pod, or StartFailures in a row.
+	Broken string
+	// Failures are the latest pod failures, newest first; FailureCounts
+	// counts every failure since the service started by kind.
+	Failures      []Failure
+	FailureCounts map[FailureKind]int
 }
 
 // podTokenPrefix marks a pod token.

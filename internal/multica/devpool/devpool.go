@@ -251,8 +251,8 @@ func (p *Pool) Handler() http.Handler { return http.NotFoundHandler() }
 // PrunedTotal is always zero: simulated pods are never lost.
 func (p *Pool) PrunedTotal() int { return 0 }
 
-// Problem: simulated pods always start.
-func (p *Pool) Problem() string { return "" }
+// Health: simulated pods always start.
+func (p *Pool) Health() core.PodHealth { return core.PodHealth{} }
 
 // Run registers the pods for the served workspaces and runs the tasks placed
 // on them until ctx ends.

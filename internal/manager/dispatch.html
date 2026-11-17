@@ -129,6 +129,7 @@ tr.open .caret { transform: rotate(90deg); }
 		<div class="status" id="status">Loading…</div>
 	</header>
 	<div class="error" id="error"></div>
+	<div class="error" id="broken"></div>
 	<div class="error" id="problem"></div>
 	<div class="summary" id="summary"></div>
 
@@ -171,6 +172,23 @@ tr.open .caret { transform: rotate(90deg); }
 		<span><i style="background:var(--panel);border:2px dashed var(--neutral)"></i>pod held or idle (kept for the next task of the same issue, or of the department)</span>
 		<span><i style="background:transparent;border:2px dashed var(--line)"></i>share not in use</span>
 		<span><i style="background:var(--track);border-color:var(--neutral);outline:2px solid var(--over);outline-offset:1px"></i>beyond its share</span>
+	</div>
+
+	<h2>Pod failures</h2>
+	<p class="lead" id="failureCounts">Pods that could not be created or started, and ready pods that were lost, newest first.</p>
+	<div class="tablewrap">
+		<table>
+			<thead>
+				<tr>
+					<th>When</th>
+					<th>Pod</th>
+					<th>Phase</th>
+					<th>Kind</th>
+					<th>What happened, and what to do</th>
+				</tr>
+			</thead>
+			<tbody id="failures"></tbody>
+		</table>
 	</div>
 
 	<p class="note">
@@ -291,9 +309,32 @@ function renderSummary(v) {
 	document.getElementById("summary").replaceChildren(group(podTitle, pods), group("Tasks", tasks), group("Workspaces", wsItems));
 	// Why pods cannot be created or started: no node capacity, an image that
 	// cannot be pulled, refused credentials.
+	// Broken: no pod starts at all, so one pod at a time tries until one does.
+	const broken = document.getElementById("broken");
+	broken.style.display = p.broken ? "block" : "none";
+	broken.textContent = p.broken ? "No pod starts; one pod at a time tries until one does: " + p.broken : "";
 	const problem = document.getElementById("problem");
-	problem.style.display = p.problem ? "block" : "none";
-	problem.textContent = p.problem ? "Pods cannot be created or started: " + p.problem : "";
+	const showProblem = p.problem && p.problem !== p.broken;
+	problem.style.display = showProblem ? "block" : "none";
+	problem.textContent = showProblem ? "Pods cannot be created or started: " + p.problem : "";
+}
+
+function renderFailures(v) {
+	const p = v.pool, list = p.failures || [], counts = p.failure_counts || {};
+	const kinds = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+	document.getElementById("failureCounts").textContent = kinds.length
+		? "Since the manager started: " + kinds.map(k => counts[k] + " " + k).join(", ") + ". The latest " + list.length + ", newest first:"
+		: "No pod has failed since the manager started.";
+	const rows = document.getElementById("failures");
+	rows.replaceChildren();
+	for (const f of list) {
+		rows.append(el("tr", {},
+			el("td", { style: "white-space:nowrap" }, new Date(f.at).toLocaleString()),
+			el("td", {}, f.pod || ""),
+			el("td", {}, f.phase),
+			el("td", {}, el("span", { class: f.permanent ? "short" : "" }, f.kind)),
+			el("td", {}, f.what, f.advice ? el("div", { class: "wssub", style: "white-space:normal" }, f.advice) : "")));
+	}
 }
 
 function renderGrid(v, col) {
@@ -478,6 +519,7 @@ function render(v) {
 	renderSummary(v);
 	renderGrid(v, col);
 	renderRows(v, col);
+	renderFailures(v);
 	focus(focused);
 }
 

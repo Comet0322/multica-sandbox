@@ -41,6 +41,11 @@ const (
 const (
 	DefaultMaxPods      = 10
 	DefaultStartTimeout = 3 * time.Minute
+	// DefaultStartFailures is how many pods in a row may fail to start for
+	// a passing reason before the service counts its pods as broken.
+	DefaultStartFailures = 3
+	// keptFailures is how many recent failures the inventory lists.
+	keptFailures = 20
 	// createBackoffMin and createBackoffMax bound the wait after a pod that
 	// could not be created or did not start, doubling from one to the other.
 	createBackoffMin = 10 * time.Second
@@ -70,6 +75,12 @@ type KubeConfig struct {
 	// calls the manager. Past it the pod is deleted. Zero means
 	// DefaultStartTimeout.
 	StartTimeout time.Duration
+	// StartFailures is how many pods in a row may fail to start for a
+	// passing reason (no node, the start timeout) before the service counts
+	// its pods as broken; a failure that recurs on every pod (an image that
+	// cannot be pulled, refused credentials, a rejected template) counts at
+	// once. Zero means DefaultStartFailures.
+	StartFailures int
 	// LostRetention is how long a lost pod stays listed. Zero means
 	// DefaultLostRetention.
 	LostRetention time.Duration
@@ -94,7 +105,7 @@ func (c *KubeConfig) normalize() error {
 		return errors.New("a namespace is required")
 	case c.Template == nil:
 		return errors.New("a pod template is required")
-	case c.MaxPods < 0 || c.WarmPods < 0 || c.StartTimeout < 0 || c.LostRetention < 0:
+	case c.MaxPods < 0 || c.WarmPods < 0 || c.StartTimeout < 0 || c.LostRetention < 0 || c.StartFailures < 0:
 		return errors.New("pod counts and timeouts must not be negative")
 	}
 	if _, err := daemonContainer(c.Template); err != nil {
@@ -108,6 +119,9 @@ func (c *KubeConfig) normalize() error {
 	}
 	if c.StartTimeout == 0 {
 		c.StartTimeout = DefaultStartTimeout
+	}
+	if c.StartFailures == 0 {
+		c.StartFailures = DefaultStartFailures
 	}
 	if c.LostRetention == 0 {
 		c.LostRetention = DefaultLostRetention
@@ -184,7 +198,17 @@ type KubeService struct {
 	// in the inventory until a pod gets ready.
 	problem     string
 	prunedTotal int
-	notes       []func()
+	// startFailures counts the pods in a row that failed to start; broken,
+	// once they reach StartFailures or one failed for good, is the failure
+	// that broke the pods. While broken, only one pod starts at a time, to
+	// find out when pods start again; the first that gets ready clears it.
+	startFailures int
+	broken        *Failure
+	// failures are the latest failures, oldest first; failureCounts counts
+	// every failure since the service started by kind.
+	failures      []Failure
+	failureCounts map[FailureKind]int
+	notes         []func()
 	// run is the context of Run, used for the API calls it starts; nil
 	// before Run.
 	run context.Context
@@ -225,7 +249,7 @@ func NewKube(cfg KubeConfig) (*KubeService, error) {
 		return nil, err
 	}
 	return &KubeService{cfg: cfg, log: cfg.Log, pods: map[PodID]*kubePod{}, tickets: map[string]PodID{},
-		dirty: map[PodID]bool{}, kick: make(chan struct{}, 1)}, nil
+		dirty: map[PodID]bool{}, kick: make(chan struct{}, 1), failureCounts: map[FailureKind]int{}}, nil
 }
 
 func (k *KubeService) now() time.Time { return k.cfg.Now() }
@@ -299,14 +323,10 @@ func (k *KubeService) sweepLocked() {
 	for _, pd := range k.pods {
 		switch {
 		case pd.state == PodStarting && now.Sub(pd.startBy) > k.cfg.StartTimeout:
-			why := fmt.Sprintf("pod %s did not start within %s", pd.id, k.cfg.StartTimeout)
-			if pd.waiting != "" {
-				why += ": " + pd.waiting
-			}
-			k.log.Warn("pod did not start", "pod", pd.id, "reason", pd.waiting)
-			k.setProblemLocked(why)
-			k.backOffLocked()
-			k.loseLocked(pd, why)
+			f := startTimedOut(pd.id, k.cfg.StartTimeout, pd.waiting)
+			f.Pod = pd.id
+			k.startFailedLocked(f)
+			k.loseLocked(pd, f.String())
 			k.deleteLocked(pd.id)
 		case pd.state == PodLost && now.Sub(pd.lostAt) > k.cfg.LostRetention:
 			delete(k.pods, pd.id)
@@ -338,6 +358,16 @@ func (k *KubeService) topUpLocked() {
 	if now.Before(k.wantUntil) {
 		want++
 	}
+	if k.broken != nil {
+		// One pod at a time finds out whether pods start again.
+		starting := 0
+		for _, pd := range k.pods {
+			if pd.state == PodStarting {
+				starting++
+			}
+		}
+		want = min(want, spare-starting+1)
+	}
 	for ; spare < want && total < k.cfg.MaxPods; spare, total = spare+1, total+1 {
 		k.createLocked()
 	}
@@ -366,9 +396,11 @@ func (k *KubeService) createLocked() {
 			k.log.Info("pod created", "pod", pd.id)
 			return
 		}
-		k.failed("create pod "+string(pd.id), err)
+		f := apiFailure(PhaseCreate, "create pod "+string(pd.id), err)
+		f.Pod = pd.id
+		k.log.Error("kubernetes", "error", f.What)
 		defer k.lock()()
-		k.backOffLocked()
+		k.startFailedLocked(f)
 		if cur := k.pods[pd.id]; cur == pd {
 			delete(k.pods, pd.id)
 			delete(k.tickets, pd.ticket)
@@ -437,6 +469,40 @@ func (k *KubeService) backOffLocked() {
 	k.backoffUntil = k.now().Add(k.backoff)
 }
 
+// failLocked keeps a failure for the inventory.
+func (k *KubeService) failLocked(f Failure) {
+	if f.At.IsZero() {
+		f.At = k.now()
+	}
+	k.failureCounts[f.Kind]++
+	k.failures = append(k.failures, f)
+	if len(k.failures) > keptFailures {
+		k.failures = append([]Failure(nil), k.failures[len(k.failures)-keptFailures:]...)
+	}
+}
+
+// startFailedLocked takes a pod that could not be created or did not start:
+// it shows why, delays the next creation, and breaks the pods once failures
+// recur.
+func (k *KubeService) startFailedLocked(f Failure) {
+	if f.At.IsZero() {
+		f.At = k.now()
+	}
+	k.failLocked(f)
+	k.log.Warn("pod did not start", "pod", f.Pod, "kind", f.Kind, "reason", f.What)
+	k.setProblemLocked(f.String())
+	k.backOffLocked()
+	k.startFailures++
+	if !f.Permanent() && k.startFailures < k.cfg.StartFailures {
+		return
+	}
+	if k.broken == nil {
+		k.log.Error("pods are broken: one pod at a time will try until one starts", "kind", f.Kind, "reason", f.What,
+			"failures_in_a_row", k.startFailures)
+	}
+	k.broken = &f
+}
+
 // loseLocked marks the pod lost and tells the caller when it held it.
 func (k *KubeService) loseLocked(pd *kubePod, why string) {
 	if pd.state == PodLost {
@@ -484,7 +550,11 @@ func (k *KubeService) Authenticate(ticket string) (PodID, bool) {
 	pd.lastSeen = now
 	if pd.state == PodStarting {
 		pd.state, pd.readyAt = PodFree, now
-		k.backoff, k.problem = 0, ""
+		k.backoff, k.problem, k.startFailures = 0, "", 0
+		if k.broken != nil {
+			k.log.Info("pods start again", "pod", pd.id, "broken_by", k.broken.Kind)
+			k.broken = nil
+		}
 		k.log.Info("pod ready", "pod", pd.id, "after", now.Sub(pd.createdAt).Round(time.Second).String())
 	}
 	return id, true
@@ -588,7 +658,14 @@ func (k *KubeService) resync(ctx context.Context) {
 	for _, pd := range k.pods {
 		// A pod created moments ago may not be listed yet.
 		if pd.state != PodLost && !seen[pd.id] && pd.createdAt.Before(cutoff) {
-			k.loseLocked(pd, "pod "+string(pd.id)+" no longer exists")
+			f := Failure{Pod: pd.id, Phase: PhaseRun, Kind: FailDeleted, What: "pod " + string(pd.id) + " no longer exists", Advice: adviceRunAgain}
+			if pd.state == PodStarting {
+				f.Phase = PhaseStart
+				k.startFailedLocked(f)
+			} else {
+				k.failLocked(f)
+			}
+			k.loseLocked(pd, f.String())
 		}
 	}
 }
@@ -600,60 +677,25 @@ func (k *KubeService) observe(obj *corev1.Pod, deleted bool) {
 	if pd == nil || pd.state == PodLost {
 		return
 	}
-	if why, gone := podGone(obj, deleted); gone {
-		k.log.Warn("pod ended", "pod", pd.id, "state", pd.state, "reason", why)
+	f, gone := podGone(obj, deleted)
+	if !gone && pd.state == PodStarting {
+		f, gone = startBlocked(obj)
+	}
+	if gone {
+		f.Pod = pd.id
 		if pd.state == PodStarting {
-			k.setProblemLocked(why)
-			k.backOffLocked()
+			f.Phase = PhaseStart
+			k.startFailedLocked(f)
+		} else {
+			f.Phase = PhaseRun
+			k.log.Warn("pod ended", "pod", pd.id, "state", pd.state, "kind", f.Kind, "reason", f.What)
+			k.failLocked(f)
 		}
-		k.loseLocked(pd, why)
+		k.loseLocked(pd, f.String())
 		k.deleteLocked(pd.id)
 		return
 	}
 	pd.waiting = podWaiting(obj)
-}
-
-// podGone reports whether the pod can no longer run anything, and why, in
-// words a member can read.
-func podGone(pd *corev1.Pod, deleted bool) (string, bool) {
-	for _, cs := range pd.Status.ContainerStatuses {
-		t := cs.State.Terminated
-		if t == nil {
-			continue
-		}
-		if t.Reason == "OOMKilled" {
-			return "the pod ran out of memory" + memoryLimit(pd, cs.Name), true
-		}
-		if t.ExitCode == 137 && pd.DeletionTimestamp == nil && hasLivenessProbe(pd, cs.Name) {
-			// With restartPolicy Never a failed liveness probe kills the
-			// container and leaves only this behind: killed, not out of
-			// memory, and the pod not being deleted.
-			who := cs.Name + " container"
-			if i, err := daemonContainer(pd); err == nil && pd.Spec.Containers[i].Name == cs.Name {
-				who = "daemon"
-			}
-			return "the pod's " + who + " stopped answering (its liveness probe failed)", true
-		}
-		why := fmt.Sprintf("the pod's %s container exited with code %d", cs.Name, t.ExitCode)
-		if t.Reason != "" {
-			why += " (" + t.Reason + ")"
-		}
-		return why, true
-	}
-	switch {
-	case pd.Status.Phase == corev1.PodFailed || pd.Status.Phase == corev1.PodSucceeded:
-		why := "the pod stopped"
-		if pd.Status.Reason == "Evicted" {
-			why = "the node evicted the pod"
-		}
-		if pd.Status.Message != "" {
-			why += ": " + pd.Status.Message
-		}
-		return why, true
-	case deleted || pd.DeletionTimestamp != nil:
-		return "the pod was deleted", true
-	}
-	return "", false
 }
 
 // hasLivenessProbe reports whether the container has a liveness probe.
@@ -685,7 +727,7 @@ func memoryLimit(pd *corev1.Pod, container string) string {
 func podWaiting(pd *corev1.Pod) string {
 	for _, c := range pd.Status.Conditions {
 		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Message != "" {
-			return "not scheduled: " + c.Message
+			return notScheduled + c.Message
 		}
 	}
 	for _, cs := range pd.Status.ContainerStatuses {
@@ -723,7 +765,17 @@ func (k *KubeService) Inventory() Inventory {
 	if k.recordRefused != "" {
 		problem = k.recordRefused
 	}
-	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: problem}
+	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: problem,
+		FailureCounts: make(map[FailureKind]int, len(k.failureCounts))}
+	if k.broken != nil {
+		inv.Broken = k.broken.String()
+	}
+	for i := len(k.failures) - 1; i >= 0; i-- {
+		inv.Failures = append(inv.Failures, k.failures[i])
+	}
+	for kind, n := range k.failureCounts {
+		inv.FailureCounts[kind] = n
+	}
 	for _, pd := range list {
 		inv.Pods = append(inv.Pods, pd.info())
 	}

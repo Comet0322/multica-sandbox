@@ -206,6 +206,7 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `SANDBOX_MAX_PODS` | `10` | The budget: the most pods at once, warm, starting, running, held and idle. |
 | `SANDBOX_WARM_PODS` | `2` | Ready pods kept that have served no one. At least `1`, since the manager learns each workspace's runtimes from a pod's daemon (`0` is refused), and at most `SANDBOX_MAX_PODS`. |
 | `SANDBOX_POD_START_TIMEOUT` | `3m` | How long a new pod may take until its daemon calls the manager. Past it the pod is deleted, and pod creation backs off (10s, doubling up to 5m). Nothing was claimed for it, so no task fails. |
+| `SANDBOX_POD_START_FAILURES` | `3` | How many pods in a row may fail to start for a passing reason (no node, the start timeout) before the pods count as [broken](#when-no-pod-starts). A failure that recurs on every pod (an image that cannot be pulled, refused credentials, a rejected template) breaks them at once. |
 | `SANDBOX_HOLD_TIMEOUT` | `10m` | How long a pod whose task ended is held for the task's key. `0` holds nothing. Overridable per workspace. |
 | `SANDBOX_POD_MAX_IDLE` | `24h` | How long an idle pool runtime pod is kept before it is deleted. |
 | `SANDBOX_POOL_QUOTA` | `0` | The most pods one workspace's running tasks may occupy at once; `0` is no cap. Overridable per workspace. |
@@ -290,24 +291,57 @@ labels, annotations, restart policy (`Never`), pod token and, when the
 template sets none, the hostname `sandbox`. A pod is ready once its daemon
 first calls the manager with its token.
 
-A pod that cannot run any more fails its task, which Multica shows with the
-reason in words, and the pod is deleted:
+Every pod failure is classified: its **phase** (`create`, `start` or `run`),
+its **kind**, and whether it is **permanent**, that is, recurs on every pod
+until an operator acts. Each says what happened and what to do next, in
+English. The latest 20 and the counts by kind since the manager started show
+on the dispatch page and in the inventory (`failures`, `failure_counts`).
 
-| Cause | Reason |
-| --- | --- |
-| The pod's container ran out of memory | `the pod ran out of memory (limit <limit>)` |
-| The node evicted the pod | `the node evicted the pod: <message>` |
-| The daemon stopped answering: its liveness probe failed and the container was killed (exit code 137, not out of memory) | `the pod's daemon stopped answering (its liveness probe failed)` |
-| A container exited | `the pod's <container> container exited with code <code> (<reason>)` |
-| The pod was deleted outside the manager | `the pod was deleted` |
+A ready pod that cannot run any more fails its task, which Multica shows as
+`the pod running this task was lost: <what happened>. <what to do>`, and the
+pod is deleted:
 
-The task fails as `the pod running this task was lost: <reason>`. A pod that
-does not start in time shows its waiting reason (no node capacity, an image
-that cannot be pulled) in the inventory's and the dispatch page's `problem`.
+| Kind | Cause | What happened | What to do |
+| --- | --- | --- | --- |
+| `oom` | The pod's container ran out of memory | `the pod ran out of memory (limit <limit>)` | Split the task into smaller steps, or ask an administrator to raise the pod's memory limit |
+| `evicted` | The node evicted the pod | `the node evicted the pod: <message>` | The node was short of resources; run the task again |
+| `unresponsive` | The daemon's liveness probe failed and the container was killed (exit code 137, not out of memory) | `the pod's daemon stopped answering (its liveness probe failed)` | Run the task again; if it keeps happening, tell an administrator |
+| `exited` | A container exited | `the pod's <container> container exited with code <code> (<reason>)` | Run the task again; if it keeps happening, tell an administrator |
+| `deleted` | The pod was deleted outside the manager | `the pod was deleted` | Run the task again |
 
-When Kubernetes refuses the manager's credentials, no pod can be created, so
-nothing is claimed: tasks stay queued in Multica, and the error shows as the
-`problem` and in the log.
+The pod's container is killed whole when it runs out of memory: on cgroup v2,
+Kubernetes 1.28 and later kill every process in a container that hits its
+limit (`memory.oom.group`), so the agent CLI cannot be made to die alone.
+
+A pod that could not be created or did not start fails no task, since nothing
+was claimed for it. It is deleted and pod creation backs off (10s, doubling up
+to 5m):
+
+| Kind | Cause | Permanent | What to do |
+| --- | --- | --- | --- |
+| `image` | The image cannot be pulled (`ErrImagePull`, `ImagePullBackOff`, `ErrImageNeverPull`, `InvalidImageName`); the pod is deleted as soon as this shows | yes | Check the image in the pod template and that the nodes can pull it |
+| `invalid-template` | Kubernetes rejects the pod, or its container cannot be created (`CreateContainerConfigError`) | yes | Fix the pod template and restart the manager |
+| `refused` | Kubernetes refuses the manager's credentials | yes | Check the manager's rights on pods |
+| `unschedulable` | No node took the pod within the start timeout | no | Free capacity on the nodes, or lower `SANDBOX_MAX_PODS` or the pod's requests |
+| `start-timeout` | The pod did not get ready within the start timeout for another reason | no | Check the pod's events and logs |
+| `api` | Another failed Kubernetes API call | no | It is retried |
+
+### When no pod starts
+
+The pods are **broken** once one permanent failure happens, or
+`SANDBOX_POD_START_FAILURES` (3) pods in a row fail to start. While broken:
+
+- one pod at a time tries to start, within the backoff, to find out when pods
+  start again; the budget is not filled with pods that cannot start;
+- ready pods that already exist still serve; a task with none stays queued in
+  Multica and fails nothing;
+- the dispatch page and the inventory show `broken` and why, and `/readyz`
+  turns 503 with `pods do not start: <why>`.
+
+The first pod that gets ready clears it, with no restart: load the missing
+image, or free the nodes, and the next try succeeds. A rejected template
+needs the template fixed and a manager restart, since the template is read
+at start.
 
 The manager records on each pod what it serves (patching its labels and
 annotations), and a restarted manager rebuilds its state from them: see
@@ -475,7 +509,11 @@ The admin listener serves, read-only:
 - **`GET /v1/inventory`**: `max_pods` (the budget); the pod counts `warm`,
   `starting`, `running`, `held`, `idle` and `failed`; `pruned_total` (failed
   pods dropped from the list after 10 minutes); `problem`, why pods could not
-  be created or started lately; `live_pods`; `last_sync`;
+  be created or started lately; `broken`, why no pod starts at all
+  ([When no pod starts](#when-no-pod-starts)); `failures`, the latest 20 pod
+  failures, newest first, each with `at`, `pod`, `phase`, `kind`,
+  `permanent`, `what` and `advice`; `failure_counts`, every failure since the
+  manager started by kind; `live_pods`; `last_sync`;
   `oldest_lease_age_seconds`; `pending_fail_reports`; `override_problems`;
   each pod with its `id`, `name`, `phase` (`warm`, `starting`, `running`,
   `held`, `idle` or `failed`), `kind`, `workspace_id`, `key`, `task_id`,
@@ -490,16 +528,19 @@ The admin listener serves, read-only:
   `task_id`, `workspace_id`, `initiator`, `pod_id`, `started_at`, `ended_at`
   and `end_reason`.
 - **`GET /v1/dispatch`**: `pool` (`max`, `live`, `warm`, `starting`,
-  `running`, `held`, `idle`, `failed`, `problem`), each pod (`id`, `name`,
+  `running`, `held`, `idle`, `failed`, `problem`, `broken`, `failures`,
+  `failure_counts`), each pod (`id`, `name`,
   `phase`, `kind`, `workspace_id`, `key`, `task_id`,
   `hold_remaining_seconds`, `initiators`, `reason`), each workspace's share
   and its tasks (queued, starting, running, recently ended), and totals.
 - **`GET /dispatch`**: a page that shows `/v1/dispatch` and reads it again
-  every 10 seconds: each pod's kind and phase, pod creation failures with
-  their reason, and each workspace's pods against its target.
+  every 10 seconds: each pod's kind and phase, whether pods are broken, pod
+  creation failures with their reason, each workspace's pods against its
+  target, and the latest pod failures with what to do.
 
 `/readyz` on the pod listener turns 503 when no listing succeeded for three
-sync intervals: a revoked or expired PAT, or Multica unreachable. Point a
+sync intervals (a revoked or expired PAT, or Multica unreachable), or while
+the pods are [broken](#when-no-pod-starts). Point a
 readiness probe at it, but keep publishing a not-ready manager to its pods
 (`publishNotReadyAddresses`), or their running tasks could not report.
 
@@ -530,7 +571,9 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
   pod from one that served someone: it deletes every pod it finds, and the
   tasks that ran on them are failed upstream (Multica retries those eligible).
 - **Memory is per pod.** The pod template's limits bound each task; a task
-  over them fails with the out-of-memory reason, and only that task.
+  over them fails with the out-of-memory reason, and only that task. The
+  whole container is killed, the daemon too (see
+  [Pods and their failures](#pods-and-their-failures)).
 - **Pool runtime pods are shared within a department.** Work that must not be seen by
   another key of the department uses an agent bound to a clean runtime.
 - **Accepting an invitation opens the manager to that workspace.** The manager

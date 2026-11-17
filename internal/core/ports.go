@@ -77,6 +77,29 @@ type PodInfo struct {
 	Reason string
 }
 
+// PodHealth is how pod creation goes, for the inventory: why pods could not
+// be created or started lately, why they do not start at all, and the
+// latest pod failures, newest first, with every failure counted by kind.
+type PodHealth struct {
+	Problem       string
+	Broken        string
+	Failures      []PodFailure
+	FailureCounts map[string]int
+}
+
+// PodFailure is one pod failure as the sandbox service classified it.
+type PodFailure struct {
+	At  time.Time `json:"at"`
+	Pod string    `json:"pod,omitempty"`
+	// Phase is create, start or run; Kind what went wrong (oom, evicted,
+	// image, refused...); Permanent whether retrying does not help.
+	Phase     string `json:"phase"`
+	Kind      string `json:"kind"`
+	Permanent bool   `json:"permanent"`
+	What      string `json:"what"`
+	Advice    string `json:"advice,omitempty"`
+}
+
 // HandBack says why a pod is handed back, for the audit trail: the reason
 // and the lease that caused it, when one did.
 type HandBack struct {

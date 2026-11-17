@@ -199,6 +199,8 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	} else if kc, err := kubeSettings(getenv, whole("SANDBOX_MAX_PODS"), warm, duration("SANDBOX_POD_START_TIMEOUT")); err != nil {
 		fail("%v", err)
 	} else {
+		// Unset or 0: sandbox.DefaultStartFailures.
+		kc.StartFailures = whole("SANDBOX_POD_START_FAILURES")
 		s.config.Kube = kc
 	}
 

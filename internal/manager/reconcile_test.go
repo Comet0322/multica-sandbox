@@ -450,7 +450,7 @@ func TestTaskIsQueuedForRetryOnce(t *testing.T) {
 }
 
 // daemonExited is why a pod whose daemon container exited was lost.
-const daemonExited = "the pod's daemon container exited with code 1 (Error)"
+const daemonExited = "the pod's daemon container exited with code 1 (Error). Run the task again; if it keeps happening, tell an administrator"
 
 var exitedStatus = corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
 	Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}},

@@ -45,9 +45,17 @@ type WorkspaceInfo struct {
 func (m *Manager) Inventory() Inventory {
 	view := m.core.View()
 	pods := m.pool.Pods()
+	health := m.pool.Health()
 	inv := Inventory{
-		MaxPods: m.maxPods, PrunedTotal: m.pool.PrunedTotal(), Problem: m.pool.Problem(),
+		MaxPods: m.maxPods, PrunedTotal: m.pool.PrunedTotal(), Problem: health.Problem, Broken: health.Broken,
+		Failures: make([]PodFailure, 0, len(health.Failures)), FailureCounts: health.FailureCounts,
 		Pods: []PodInfo{}, Workspaces: []WorkspaceInfo{}, LivePods: view.LivePods,
+	}
+	for _, f := range health.Failures {
+		inv.Failures = append(inv.Failures, PodFailure(f))
+	}
+	if inv.FailureCounts == nil {
+		inv.FailureCounts = map[string]int{}
 	}
 	leased := map[string]int{}
 	for _, t := range view.Tenants {

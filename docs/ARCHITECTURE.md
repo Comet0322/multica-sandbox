@@ -67,8 +67,10 @@ package; see [AGENTS.md](../AGENTS.md)).
    deleted.
 
 A pod whose task cannot finish (out of memory, evicted, its daemon exited, the
-pod deleted) is deleted, and the task is failed in Multica with the reason in
-words. A restarted manager rebuilds its state from the labels and annotations
+pod deleted) is deleted, and the task is failed in Multica with what happened
+and what to do next. The sandbox service classifies every pod failure by
+phase (create, start, run) and kind, and keeps the latest for the dispatch
+page. A restarted manager rebuilds its state from the labels and annotations
 it wrote on its pods: running tasks run on, holds resume, warm and idle pods
 are kept.
 
@@ -125,8 +127,12 @@ another department's guarantee. A hold is therefore kept as long as possible,
 never guaranteed.
 
 A pod that has not started (its daemon has not called in) within
-`SANDBOX_POD_START_TIMEOUT` is deleted, and pod creation backs off. Nothing was
-claimed for it, so no task fails.
+`SANDBOX_POD_START_TIMEOUT`, or whose image cannot be pulled, is deleted, and
+pod creation backs off. Nothing was claimed for it, so no task fails. When a
+failure recurs on every pod (a missing image, refused credentials) or
+`SANDBOX_POD_START_FAILURES` pods in a row fail, the pods are **broken**: one
+pod at a time tries until one starts, instead of filling the budget with pods
+that cannot start, and `/readyz` says why.
 
 ## What never reaches Multica
 
@@ -137,7 +143,8 @@ claimed for it, so no task fails.
   (`deploy/k8s/e2e`).
 - **Pod tokens.** Each pod's token is known only to the manager and that pod.
 - **Kubernetes errors as such.** Multica sees a failed task's reason in words
-  (`the pod ran out of memory (limit 4Gi)`), not Kubernetes objects.
+  (`the pod ran out of memory (limit 4Gi). Split the task into smaller
+  steps, ...`), not Kubernetes objects.
 - **The pods' heartbeats.** The manager heartbeats its runtimes itself; a
   runtime is online while the manager runs, pods or not.
 

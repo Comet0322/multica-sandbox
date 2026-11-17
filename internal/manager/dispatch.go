@@ -59,6 +59,12 @@ type DispatchPool struct {
 	// Problem is why pods could not be created or started lately, such as
 	// no node capacity or an image that cannot be pulled.
 	Problem string `json:"problem,omitempty"`
+	// Broken is why no pod starts at all, empty while pods start.
+	Broken string `json:"broken,omitempty"`
+	// Failures are the latest pod failures, newest first, and
+	// FailureCounts every failure counted by kind.
+	Failures      []PodFailure   `json:"failures"`
+	FailureCounts map[string]int `json:"failure_counts"`
 }
 
 // DispatchWorkspace is one workspace's share: its settings, the target the
@@ -186,6 +192,7 @@ func dispatchView(inv Inventory, tasks map[string][]DispatchTask, now time.Time)
 		Pool: DispatchPool{
 			Max: inv.MaxPods, Live: inv.LivePods, Warm: inv.Warm, Starting: inv.Starting,
 			Running: inv.Running, Held: inv.Held, Idle: inv.Idle, Failed: inv.Failed, Problem: inv.Problem,
+			Broken: inv.Broken, Failures: inv.Failures, FailureCounts: inv.FailureCounts,
 		},
 		Workspaces: []DispatchWorkspace{},
 		Pods:       []DispatchPod{},

@@ -262,19 +262,23 @@ func TestKubeDeletesAPodThatDoesNotStartAndBacksOff(t *testing.T) {
 	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, StartTimeout: time.Minute})
 	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
 	name := h.pods()[0].Name
-	h.setStatus(name, corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{
-		Name: "daemon", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff", Message: "pod:1 not found"}},
-	}}})
+	h.setStatus(name, unschedulable)
 	h.eventually("the waiting reason observed", func() bool { return true })
 	time.Sleep(30 * time.Millisecond)
 	h.clock.Add(2 * time.Minute)
 	h.eventually("the pod deleted", func() bool { return len(h.pods()) == 0 })
 	inv := h.svc.Inventory()
-	if !strings.Contains(inv.Problem, "did not start within 1m0s") || !strings.Contains(inv.Problem, "ImagePullBackOff") {
+	if !strings.Contains(inv.Problem, "did not start within 1m0s") || !strings.Contains(inv.Problem, "Insufficient memory") {
 		t.Fatalf("problem = %q, want the timeout and the waiting reason", inv.Problem)
 	}
+	if inv.Broken != "" {
+		t.Fatalf("broken after one passing failure: %q", inv.Broken)
+	}
+	if len(inv.Failures) != 1 || inv.Failures[0].Kind != sandbox.FailUnschedulable || inv.Failures[0].Phase != sandbox.PhaseStart {
+		t.Fatalf("failures = %+v, want one unschedulable start failure", inv.Failures)
+	}
 	_, err := h.svc.Create(context.Background())
-	if !errors.Is(err, sandbox.ErrNoCapacity) || !strings.Contains(err.Error(), "ImagePullBackOff") {
+	if !errors.Is(err, sandbox.ErrNoCapacity) || !strings.Contains(err.Error(), "Insufficient memory") {
 		t.Fatalf("Create = %v, want ErrNoCapacity with the reason", err)
 	}
 	time.Sleep(30 * time.Millisecond)
@@ -290,22 +294,23 @@ func TestKubeReportsHowAHeldPodWasLost(t *testing.T) {
 		name   string
 		status corev1.PodStatus
 		want   string
+		kind   sandbox.FailureKind
 	}{
 		{"out of memory", corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}},
-		}}}, "the pod ran out of memory (limit 4Gi)"},
-		{"evicted", corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted", Message: "low on memory"}, "the node evicted the pod: low on memory"},
+		}}}, "the pod ran out of memory (limit 4Gi)", sandbox.FailOOM},
+		{"evicted", corev1.PodStatus{Phase: corev1.PodFailed, Reason: "Evicted", Message: "low on memory"}, "the node evicted the pod: low on memory", sandbox.FailEvicted},
 		{"daemon exited", corev1.PodStatus{Phase: corev1.PodRunning, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}},
-		}}}, "the pod's daemon container exited with code 1 (Error)"},
+		}}}, "the pod's daemon container exited with code 1 (Error)", sandbox.FailExited},
 		// With restartPolicy Never, a failed liveness probe kills the
 		// container: exit code 137, not out of memory.
 		{"daemon not answering", corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 137}},
-		}}}, "the pod's daemon stopped answering (its liveness probe failed)"},
+		}}}, "the pod's daemon stopped answering (its liveness probe failed)", sandbox.FailUnresponsive},
 		{"killed with no liveness probe", corev1.PodStatus{Phase: corev1.PodFailed, ContainerStatuses: []corev1.ContainerStatus{{
 			Name: "sidecar", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 137}},
-		}}}, "the pod's sidecar container exited with code 137 (Error)"},
+		}}}, "the pod's sidecar container exited with code 137 (Error)", sandbox.FailExited},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -318,8 +323,17 @@ func TestKubeReportsHowAHeldPodWasLost(t *testing.T) {
 			}
 			h.setStatus(string(id), tc.status)
 			h.eventually("the loss noted", func() bool { return len(h.notes.all()) == 1 })
-			if got := h.notes.all()[0]; got.id != id || got.why != tc.want {
-				t.Fatalf("lost = %+v, want %s: %q", got, id, tc.want)
+			got := h.notes.all()[0]
+			if got.id != id || !strings.HasPrefix(got.why, tc.want+". ") {
+				t.Fatalf("lost = %+v, want %s: %q and what to do", got, id, tc.want)
+			}
+			inv := h.svc.Inventory()
+			if len(inv.Failures) != 1 || inv.Failures[0].Phase != sandbox.PhaseRun || inv.Failures[0].Kind != tc.kind ||
+				inv.Failures[0].Pod != id || inv.FailureCounts[tc.kind] != 1 {
+				t.Fatalf("failures = %+v, counts %v; want one %s run failure of %s", inv.Failures, inv.FailureCounts, tc.kind, id)
+			}
+			if inv.Broken != "" {
+				t.Fatalf("a lost ready pod broke the pods: %q", inv.Broken)
 			}
 			h.eventually("the pod deleted", func() bool { return len(h.pods()) == 0 || h.pods()[0].Name != string(id) })
 		})
@@ -335,7 +349,7 @@ func TestKubeNotesAHeldPodDeletedOutsideTheManager(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.eventually("the loss noted", func() bool { return len(h.notes.all()) == 1 })
-	if got := h.notes.all()[0].why; got != "the pod was deleted" {
+	if got := h.notes.all()[0].why; got != "the pod was deleted. Run the task again" {
 		t.Fatalf("why = %q", got)
 	}
 }
@@ -362,6 +376,10 @@ func TestKubeShowsRefusedCredentials(t *testing.T) {
 	}
 	if _, err := svc.Create(ctx); !errors.Is(err, sandbox.ErrNoCapacity) || !strings.Contains(err.Error(), "credentials") {
 		t.Fatalf("Create = %v, want ErrNoCapacity naming the credentials", err)
+	}
+	// Refused credentials refuse every pod: broken at once.
+	if b := svc.Inventory().Broken; !strings.Contains(b, "refused the manager's credentials") || !strings.Contains(b, "create, delete, get, list, watch and patch") {
+		t.Fatalf("broken = %q, want the refusal and the rights to check", b)
 	}
 }
 
@@ -425,5 +443,141 @@ func TestKubeGivesPodsANeutralHostname(t *testing.T) {
 	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
 	if got := h.pods()[0].Spec.Hostname; got != "agent" {
 		t.Errorf("hostname = %q, want the template's agent", got)
+	}
+}
+
+// unschedulable is the status of a pod no node takes.
+var unschedulable = corev1.PodStatus{Phase: corev1.PodPending, Conditions: []corev1.PodCondition{{
+	Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: "Unschedulable",
+	Message: "0/3 nodes are available: 3 Insufficient memory.",
+}}}
+
+// imageMissing is the status of a pod whose image cannot be pulled.
+var imageMissing = corev1.PodStatus{Phase: corev1.PodPending, ContainerStatuses: []corev1.ContainerStatus{{
+	Name: "daemon", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImageNeverPull", Message: "pod:1 not present"}},
+}}}
+
+// starting counts the pods Kubernetes has that no daemon called in from.
+func (h *kubeHarness) starting() int {
+	n := 0
+	for _, pd := range h.svc.Inventory().Pods {
+		if pd.State == sandbox.PodStarting {
+			n++
+		}
+	}
+	return n
+}
+
+func TestKubeBreaksAtOnceOnAPodThatCanNeverStart(t *testing.T) {
+	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 2, MaxPods: 4, StartTimeout: time.Hour})
+	h.eventually("two warm pods", func() bool { return len(h.pods()) == 2 })
+	for _, pd := range h.pods() {
+		h.setStatus(pd.Name, imageMissing)
+	}
+	// No start timeout passes: the image cannot be pulled, so the pods are
+	// deleted as soon as that shows.
+	h.eventually("the pods deleted", func() bool { return len(h.pods()) == 0 })
+	inv := h.svc.Inventory()
+	if !strings.Contains(inv.Broken, "the pod's image cannot be pulled: ErrImageNeverPull") || !strings.Contains(inv.Broken, "Check the image in the pod template") {
+		t.Fatalf("broken = %q, want the image and what to check", inv.Broken)
+	}
+	if inv.FailureCounts[sandbox.FailImage] != 2 || !inv.Failures[0].Permanent() {
+		t.Fatalf("failures = %+v, counts %v; want two permanent image failures", inv.Failures, inv.FailureCounts)
+	}
+	if _, err := h.svc.Create(context.Background()); !errors.Is(err, sandbox.ErrNoCapacity) {
+		t.Fatalf("Create = %v, want ErrNoCapacity", err)
+	}
+	// While broken, one pod at a time tries, after the backoff, though two
+	// are wanted warm and Create wants one more.
+	h.clock.Add(time.Minute)
+	h.eventually("one pod trying", func() bool { return len(h.pods()) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	if n := len(h.pods()); n != 1 {
+		t.Fatalf("pods while broken = %d, want 1", n)
+	}
+	// The first pod that gets ready clears it, and the warm pods come back.
+	h.ready()
+	inv = h.svc.Inventory()
+	if inv.Broken != "" || inv.Problem != "" {
+		t.Fatalf("after a pod got ready: broken %q, problem %q; want neither", inv.Broken, inv.Problem)
+	}
+	h.eventually("the warm pods back", func() bool { return len(h.pods()) >= 3 })
+}
+
+func TestKubeBreaksAfterStartFailuresInARow(t *testing.T) {
+	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 2, StartTimeout: time.Minute, StartFailures: 3})
+	for i := 1; i <= 3; i++ {
+		h.eventually("a pod trying", func() bool { return len(h.pods()) == 1 })
+		h.setStatus(h.pods()[0].Name, unschedulable)
+		time.Sleep(30 * time.Millisecond)
+		h.clock.Add(2 * time.Minute)
+		h.eventually("the pod deleted", func() bool { return len(h.pods()) == 0 })
+		broken := h.svc.Inventory().Broken
+		switch {
+		case i < 3 && broken != "":
+			t.Fatalf("broken after %d failures: %q", i, broken)
+		case i == 3 && (!strings.Contains(broken, "Insufficient memory") || !strings.Contains(broken, "lower SANDBOX_MAX_PODS")):
+			t.Fatalf("broken after 3 failures = %q, want no node and what to do", broken)
+		}
+		h.clock.Add(10 * time.Minute) // past the backoff
+	}
+	if n := h.svc.Inventory().FailureCounts[sandbox.FailUnschedulable]; n != 3 {
+		t.Fatalf("unschedulable failures = %d, want 3", n)
+	}
+}
+
+func TestKubeCountsFailuresInARowOnlyUntilAPodStarts(t *testing.T) {
+	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 2, StartTimeout: time.Minute, StartFailures: 2})
+	fail := func() {
+		var name string
+		h.eventually("a pod trying", func() bool {
+			created := map[string]bool{}
+			for _, pd := range h.pods() {
+				created[pd.Name] = true
+			}
+			for _, pd := range h.svc.Inventory().Pods {
+				if pd.State == sandbox.PodStarting && created[string(pd.ID)] {
+					name = string(pd.ID)
+					return true
+				}
+			}
+			return false
+		})
+		h.setStatus(name, unschedulable)
+		time.Sleep(30 * time.Millisecond)
+		h.clock.Add(2 * time.Minute)
+		h.eventually("the pod deleted", func() bool { return h.starting() == 0 })
+		h.clock.Add(10 * time.Minute)
+	}
+	fail()
+	h.eventually("a pod ready", func() bool { return len(h.ready()) == 1 })
+	// Holding the ready pod has a new warm pod created, which fails again.
+	if _, err := h.svc.Create(context.Background()); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	fail()
+	if b := h.svc.Inventory().Broken; b != "" {
+		t.Fatalf("broken by failures a ready pod separated: %q", b)
+	}
+}
+
+func TestKubeShowsRecentFailuresNewestFirst(t *testing.T) {
+	h := newKubeHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 1, StartTimeout: time.Minute, StartFailures: 100})
+	for i := 0; i < 25; i++ {
+		h.eventually("a pod trying", func() bool { return len(h.pods()) == 1 })
+		h.setStatus(h.pods()[0].Name, unschedulable)
+		time.Sleep(20 * time.Millisecond)
+		h.clock.Add(2 * time.Minute)
+		h.eventually("the pod deleted", func() bool { return len(h.pods()) == 0 })
+		h.clock.Add(10 * time.Minute)
+	}
+	inv := h.svc.Inventory()
+	if len(inv.Failures) != 20 || inv.FailureCounts[sandbox.FailUnschedulable] != 25 {
+		t.Fatalf("failures listed %d, counted %v; want the latest 20 and all 25 counted", len(inv.Failures), inv.FailureCounts)
+	}
+	for i := 1; i < len(inv.Failures); i++ {
+		if inv.Failures[i].At.After(inv.Failures[i-1].At) {
+			t.Fatalf("failure %d is newer than %d", i, i-1)
+		}
 	}
 }

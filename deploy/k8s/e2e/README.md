@@ -8,7 +8,7 @@ pods, the daemon, the backend and the Kubernetes API are real.
 | Script | What it checks | Time |
 | --- | --- | --- |
 | `smoke.sh` | One pool task and one clean task complete on real pods; no pod detail reaches Multica | under a minute |
-| `scenarios.sh` | Every scenario below | about 4 minutes |
+| `scenarios.sh` | Every scenario below | about 4½ minutes |
 
 The scenarios, in the order they run:
 
@@ -20,7 +20,7 @@ The scenarios, in the order they run:
 | Restart | The manager is stopped while a task runs and started again; the task completes. |
 | Handoff on one pod | Agent B, handed agent A's issue while A's pod is held, lands on that pod and finds A's unpushed branch. |
 | Budget | With 3 pods all in use, a task of department b deletes department a's idle pod, not a's or b's held pods. With b's guarantee raised to 2, a task of a deletes a's own held pod, never one of b's. |
-| Pod that cannot start | With a template whose image does not exist, a task stays queued in Multica, and the manager shows why pods do not start. |
+| Pod that cannot start | With a template whose image does not exist, the pods break at once: one pod at a time tries, a task stays queued in Multica, the inventory shows `broken` with a permanent `image` failure, and `/readyz` returns 503. On kind, the image is then loaded: pods start again without a restart and the task completes. Set `E2E_KIND_CLUSTER` to name the kind cluster; without one, the recovery is skipped. |
 | Privacy | No pod name or pod IP seen during the run appears in Multica's runtimes, issues, comments, task runs or task messages, and agents see the hostname `sandbox`. |
 
 The fake agent (`deploy/fake/fake-claude`) stands in for a real CLI: it
@@ -56,6 +56,7 @@ The scripts read these settings from the environment:
 | `E2E_PULL_POLICY` | `Never` | Its pull policy; `IfNotPresent` for an image in a registry. |
 | `E2E_DEV_STATE` | `deploy/k8s/dev/.state` | Where the kind namespace's state is, for the defaults above. |
 | `E2E_STATE` | `$TMPDIR/sandbox-e2e-<run>` | The run's own files: manager log, audit log, pod template, overrides. |
+| `E2E_KIND_CLUSTER` | `sandbox-dev` when `kind` lists it | The kind cluster the cannot-start scenario loads the missing image into, to see pods start again; unset with no kind cluster, that check is skipped. |
 | `KEEP` | unset | `1` keeps the run's workspaces in Multica for inspection. |
 
 For example:

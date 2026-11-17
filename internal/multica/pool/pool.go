@@ -181,9 +181,21 @@ func (p *Pool) Pods() []core.PodInfo {
 // PrunedTotal counts the lost pods the sandbox service pruned.
 func (p *Pool) PrunedTotal() int { return p.svc.Inventory().PrunedTotal }
 
-// Problem is why pods could not be created or started lately, empty when
-// none is known.
-func (p *Pool) Problem() string { return p.svc.Inventory().Problem }
+// Health is how pod creation goes: the latest problem, whether pods are
+// broken, and the latest failures.
+func (p *Pool) Health() core.PodHealth {
+	inv := p.svc.Inventory()
+	h := core.PodHealth{Problem: inv.Problem, Broken: inv.Broken, Failures: make([]core.PodFailure, 0, len(inv.Failures)),
+		FailureCounts: make(map[string]int, len(inv.FailureCounts))}
+	for _, f := range inv.Failures {
+		h.Failures = append(h.Failures, core.PodFailure{At: f.At, Pod: string(f.Pod), Phase: string(f.Phase), Kind: string(f.Kind),
+			Permanent: f.Permanent(), What: f.What, Advice: f.Advice})
+	}
+	for k, n := range inv.FailureCounts {
+		h.FailureCounts[string(k)] = n
+	}
+	return h
+}
 
 // Tenants lists the tenants the pod's daemon registered for, sorted.
 func (p *Pool) Tenants(pod string) []string {
@@ -269,7 +281,17 @@ type backend struct{ p *Pool }
 
 var _ multica.Backend = backend{}
 
-func (b backend) NotReady() string { return b.p.source.NotReady() }
+// NotReady is why the manager is not ready: Multica cannot be reached, or
+// no pod starts.
+func (b backend) NotReady() string {
+	if why := b.p.source.NotReady(); why != "" {
+		return why
+	}
+	if broken := b.p.svc.Inventory().Broken; broken != "" {
+		return "pods do not start: " + broken
+	}
+	return ""
+}
 
 func (b backend) PodByToken(ticket string) (string, bool) {
 	id, ok := b.p.svc.Authenticate(ticket)

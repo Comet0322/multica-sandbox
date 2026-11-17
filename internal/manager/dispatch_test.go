@@ -104,7 +104,8 @@ func TestDispatchViewShowsEveryPodPhaseAndCreationFailures(t *testing.T) {
 		Name: "daemon", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137}},
 	}}})
 	eventually(t, "t4 failed", func() bool { _, ok := h.upstream.failureOf("t4"); return ok })
-	if why, _ := h.upstream.failureOf("t4"); why != "the pod running this task was lost: the pod ran out of memory (limit 1Gi)" {
+	if why, _ := h.upstream.failureOf("t4"); why != "the pod running this task was lost: the pod ran out of memory (limit 1Gi). "+
+		"Split the task into smaller steps, or ask an administrator to raise the pod's memory limit" {
 		t.Fatalf("t4 failed with %q", why)
 	}
 	eventually(t, "the creation failure shown", func() bool { return h.dispatchView().Pool.Problem != "" })
@@ -130,6 +131,14 @@ func TestDispatchViewShowsEveryPodPhaseAndCreationFailures(t *testing.T) {
 	}
 	if !strings.Contains(v.Pool.Problem, "Insufficient memory") {
 		t.Errorf("problem %q, want the creation failure's reason", v.Pool.Problem)
+	}
+	// Newest first: the creation that found no room, then the pod's loss.
+	if f := v.Pool.Failures; len(f) != 2 || f[0].Phase != "create" || f[1].Kind != "oom" || f[1].Phase != "run" ||
+		f[1].Pod != doomed.id || !strings.Contains(f[1].Advice, "Split the task") || v.Pool.FailureCounts["oom"] != 1 {
+		t.Errorf("failures %+v, counts %v; want the creation failure, then the pod's out-of-memory loss", f, v.Pool.FailureCounts)
+	}
+	if v.Pool.Broken != "" {
+		t.Errorf("broken %q with pods starting", v.Pool.Broken)
 	}
 }
 

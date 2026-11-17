@@ -326,7 +326,7 @@ func TestKubeRestoredPodThatEndedMeanwhileIsLost(t *testing.T) {
 	}
 	h.run()
 	h.eventually("the loss noted", func() bool { return len(h.notes.all()) == 1 })
-	if n := h.notes.all()[0]; n.id != "sandbox-oom" || n.why != "the pod ran out of memory (limit 4Gi)" {
+	if n := h.notes.all()[0]; n.id != "sandbox-oom" || !strings.HasPrefix(n.why, "the pod ran out of memory (limit 4Gi). ") {
 		t.Fatalf("lost = %+v", n)
 	}
 }

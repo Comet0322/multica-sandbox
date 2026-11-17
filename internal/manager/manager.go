@@ -279,14 +279,14 @@ type Manager struct {
 
 // PodSide is the pod side as the manager wires it: what the core asks of a
 // pool, what the task source tells the pods, the handler served to the pods,
-// and, for the inventory, how many lost pods were pruned and why pods could
-// not be created or started lately.
+// and, for the inventory, how many lost pods were pruned and how pod
+// creation goes.
 type PodSide interface {
 	core.Pool
 	tasksource.Pods
 	Handler() http.Handler
 	PrunedTotal() int
-	Problem() string
+	Health() core.PodHealth
 }
 
 // SimulatedPods builds a pod side that stands in for the real pool, given

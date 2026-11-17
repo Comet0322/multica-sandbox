@@ -58,6 +58,19 @@ type PodInfo struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// PodFailure is one pod failure: when, which pod, in which phase (create,
+// start or run), what kind (oom, evicted, image, refused...), whether
+// retrying helps, what happened and what to do.
+type PodFailure struct {
+	At        time.Time `json:"at"`
+	Pod       string    `json:"pod,omitempty"`
+	Phase     string    `json:"phase"`
+	Kind      string    `json:"kind"`
+	Permanent bool      `json:"permanent"`
+	What      string    `json:"what"`
+	Advice    string    `json:"advice,omitempty"`
+}
+
 // Inventory is the manager's view of the pods. Name is display-only.
 type Inventory struct {
 	// MaxPods is the budget (SANDBOX_MAX_PODS).
@@ -76,6 +89,14 @@ type Inventory struct {
 	// capacity, an image that cannot be pulled, refused credentials), empty
 	// when none is known.
 	Problem string `json:"problem,omitempty"`
+	// Broken is why no pod starts at all (an image that cannot be pulled,
+	// refused credentials, or SANDBOX_POD_START_FAILURES failures in a row),
+	// empty while pods start. While broken, one pod at a time tries.
+	Broken string `json:"broken,omitempty"`
+	// Failures are the latest pod failures, newest first; FailureCounts
+	// counts every pod failure since the manager started, by kind.
+	Failures      []PodFailure   `json:"failures"`
+	FailureCounts map[string]int `json:"failure_counts"`
 	// Workspaces lists each served workspace with its lease count and cap.
 	Workspaces []WorkspaceInfo `json:"workspaces"`
 	// Draining lists workspaces removed by a reload that still hold leases;

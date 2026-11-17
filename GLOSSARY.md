@@ -115,6 +115,14 @@ _Avoid_: Priority (that orders tasks within one workspace)
 The most pods one workspace's running tasks may occupy at once; pods in hold do not count against it.
 _Avoid_: Limit, max leases
 
+**Pod failure**:
+A pod that could not be created, did not start, or was lost once ready, classified by phase (create, start, run) and kind (oom, evicted, image, refused...). A permanent failure recurs on every pod until an operator acts.
+_Avoid_: Error, crash
+
+**Broken**:
+The pods' state once a permanent failure happened or `SANDBOX_POD_START_FAILURES` pods in a row failed to start: one pod at a time tries until one gets ready, which clears it.
+_Avoid_: Degraded, down, halted (halted is when Kubernetes refuses the pods' records)
+
 **Eviction**:
 Ending a hold early because the budget is full: the pod is deleted, or an idle pod is given to another key.
 _Avoid_: Preemption, reclaim

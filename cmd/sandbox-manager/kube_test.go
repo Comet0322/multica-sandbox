@@ -52,15 +52,24 @@ func TestLoadSettingsCreatesPodsThroughKubernetesWithATemplate(t *testing.T) {
 	if kc.Template.Spec.Containers[0].Image != "pod:1" || kc.Client == nil {
 		t.Fatal("the template or the client is missing")
 	}
+	if kc.StartFailures != 0 {
+		t.Fatalf("start failures = %d, want 0 (the service's default)", kc.StartFailures)
+	}
 
 	env["SANDBOX_WARM_PODS"] = "1"
 	env["SANDBOX_NAMESPACE"] = "other"
+	env["SANDBOX_POD_START_FAILURES"] = "5"
 	s, err = loadSettings(envLookup(env))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.config.Kube.WarmPods != 1 || s.config.Kube.Namespace != "other" {
-		t.Fatalf("warm %d, ns %q; want 1 and other", s.config.Kube.WarmPods, s.config.Kube.Namespace)
+	if s.config.Kube.WarmPods != 1 || s.config.Kube.Namespace != "other" || s.config.Kube.StartFailures != 5 {
+		t.Fatalf("warm %d, ns %q, start failures %d; want 1, other, 5", s.config.Kube.WarmPods, s.config.Kube.Namespace, s.config.Kube.StartFailures)
+	}
+
+	env["SANDBOX_POD_START_FAILURES"] = "-1"
+	if _, err := loadSettings(envLookup(env)); err == nil || !strings.Contains(err.Error(), "SANDBOX_POD_START_FAILURES") {
+		t.Fatalf("err = %v, want SANDBOX_POD_START_FAILURES refused", err)
 	}
 }
 
