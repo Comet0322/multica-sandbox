@@ -31,7 +31,7 @@ func (c *Core) applyLocked(ds []policy.Decision) (claim *policy.Claim, acquire b
 		case policy.Delete:
 			c.handBackLocked(d)
 		case policy.Fail:
-			c.forced = append(c.forced, forcedTask{tenant: d.Tenant, id: d.Task, reason: d.Reason})
+			c.failLocked(d.Tenant, d.Task, d.Reason)
 			if t := c.claimed[d.Task]; t != nil {
 				c.auditDenied(d.Tenant, t.task, d.Reason)
 			}
@@ -210,9 +210,10 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 		why := "the managed runtime does not serve this task's workspace"
 		c.mu.Lock()
 		c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, false))
+		c.failLocked(claim.Tenant, task.ID, why)
 		c.mu.Unlock()
 		c.auditDenied(claim.Tenant, task, why)
-		c.fail(ctx, claim.Tenant, task.ID, why)
+		c.settle(ctx)
 		return
 	}
 	task.Tenant, task.Kind = claim.Tenant, claim.Kind

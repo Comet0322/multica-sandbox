@@ -12,12 +12,9 @@ import (
 // DispatchOnce runs one active-dispatch round, as Run does on each tick.
 func (m *Manager) DispatchOnce(ctx context.Context) { m.core.DispatchOnce(ctx) }
 
-// ReconcileOnce runs one lease reconciliation pass and resends the failure
-// reports that did not get through, as the loops do on each tick.
-func (m *Manager) ReconcileOnce(ctx context.Context) {
-	m.core.ReconcileOnce(ctx)
-	m.source.RetryFailures(ctx)
-}
+// ReconcileOnce runs one lease reconciliation pass, which resends the
+// failure reports that did not get through, as the loop does on each tick.
+func (m *Manager) ReconcileOnce(ctx context.Context) { m.core.ReconcileOnce(ctx) }
 
 // HeartbeatOnce heartbeats the runtimes upstream once, as the loop does.
 func (m *Manager) HeartbeatOnce(ctx context.Context) { m.source.HeartbeatOnce(ctx) }

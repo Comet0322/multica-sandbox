@@ -131,8 +131,8 @@ func (c *Core) handBackLocked(d policy.Delete) {
 }
 
 // settle carries out what decisions taken under c.mu left for the network:
-// it hands the pods back to the pool and fails upstream the tasks the policy
-// decided to fail. Callers invoke it without holding c.mu.
+// it hands the pods back to the pool and reports the tasks decided to fail.
+// Callers invoke it without holding c.mu.
 func (c *Core) settle(ctx context.Context) {
 	c.mu.Lock()
 	backs := c.handBacks
@@ -145,9 +145,7 @@ func (c *Core) settle(ctx context.Context) {
 			c.log.Error("hand a pod back to the pool", "pod_id", b.id, "error", err)
 		}
 	}
-	for _, t := range forced {
-		c.fail(ctx, t.tenant, t.id, t.reason)
-	}
+	c.reportFailures(ctx, forced)
 }
 
 // healHeldLocked forgets the held pods the pool no longer lists as held (a

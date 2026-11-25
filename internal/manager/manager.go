@@ -393,20 +393,6 @@ func (m *Manager) Run(ctx context.Context) {
 		go m.podRun(ctx)
 	}
 	go m.source.HeartbeatLoop(ctx)
-	if m.cfg.ReconcileInterval > 0 {
-		go func() {
-			t := time.NewTicker(m.cfg.ReconcileInterval)
-			defer t.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-t.C:
-					m.source.RetryFailures(ctx)
-				}
-			}
-		}()
-	}
 	m.core.Run(ctx)
 }
 

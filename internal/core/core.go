@@ -80,8 +80,10 @@ type Core struct {
 	// claimed holds, by task ID, the tasks claimed that no pod has picked
 	// up yet.
 	claimed map[string]*claimedTask
-	// forced holds tasks the policy decided to fail, not yet reported.
-	forced []forcedTask
+	// forced holds the tasks decided to fail since the last settle, and
+	// failing every failure report the source has not taken yet, by task ID.
+	forced  []forcedTask
+	failing map[string]forcedTask
 	// tenants are the tenants served or draining, by ID.
 	tenants map[string]*tenant
 	// recorded is what the Pool was last told each held pod serves.
@@ -114,7 +116,7 @@ func New(cfg Config) (*Core, error) {
 	}
 	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, held: map[string]*pod{},
 		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}, tenants: map[string]*tenant{},
-		recorded: map[string]PodRecord{}}
+		recorded: map[string]PodRecord{}, failing: map[string]forcedTask{}}
 	pol, err := policy.New(policy.Config{
 		Now:           c.now,
 		RemovedReason: cfg.RemovedReason,

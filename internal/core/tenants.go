@@ -150,12 +150,10 @@ func (c *Core) endDrainingLeases(ctx context.Context, rec *tenant) {
 		}
 	}
 	for _, l := range ended {
+		c.log.Warn("lease ended: workspace was removed and the drain timeout passed", "task_id", l.TaskID, "workspace_id", rec.id)
+		c.failLocked(rec.id, l.TaskID, "the workspace was removed from the sandbox pool while this task was running")
 		c.endTaskLocked(l.TaskID, "workspace removed from the configuration")
 	}
 	c.mu.Unlock()
 	c.settle(ctx)
-	for _, l := range ended {
-		c.log.Warn("lease ended: workspace was removed and the drain timeout passed", "task_id", l.TaskID, "workspace_id", rec.id)
-		c.fail(ctx, rec.id, l.TaskID, "the workspace was removed from the sandbox pool while this task was running")
-	}
 }

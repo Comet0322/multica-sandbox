@@ -398,36 +398,6 @@ func TestFailureReportMulticaRefusesIsDropped(t *testing.T) {
 	}
 }
 
-func TestFailureReportIsGivenUpAfterThirtyMinutes(t *testing.T) {
-	t.Parallel()
-	h := newHarness(t, 1)
-	clock := h.withClock()
-	pod := h.newPod("pool-0")
-	leaseOne(t, h, pod, "t1")
-	h.upstream.intercept(func(w http.ResponseWriter, r *http.Request) bool {
-		if strings.HasSuffix(r.URL.Path, "/fail") {
-			http.Error(w, "bad gateway", http.StatusBadGateway)
-			return true
-		}
-		return false
-	})
-	h.loseDaemon(pod, "t1")
-	eventually(t, "the failure queued", func() bool { return h.inventory().PendingFailReports == 1 })
-	clock.advance(29 * time.Minute)
-	h.pool.ReconcileOnce(context.Background())
-	if n := h.inventory().PendingFailReports; n != 1 {
-		t.Fatalf("still within 30 minutes, pending %d", n)
-	}
-	clock.advance(2 * time.Minute)
-	h.pool.ReconcileOnce(context.Background())
-	if n := h.inventory().PendingFailReports; n != 0 {
-		t.Fatalf("pending %d after 30 minutes", n)
-	}
-	if !strings.Contains(h.logs.String(), "gave up failing task upstream") {
-		t.Fatalf("giving up must be logged as an error:\n%s", h.logs.String())
-	}
-}
-
 func TestTaskIsQueuedForRetryOnce(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 1)

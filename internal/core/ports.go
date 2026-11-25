@@ -41,9 +41,10 @@ type TaskSource interface {
 	// one it belongs to, which the core checks against the tenant asked;
 	// its Kind is the kind claimed for.
 	Claim(ctx context.Context, tenant string, kind policy.Kind) (*Task, error)
-	// Fail reports a claimed task as failed. A report that does not get
-	// through is the source's to send again.
-	Fail(ctx context.Context, tenant, taskID, reason string)
+	// Fail reports a claimed task as failed. An error means the report did
+	// not get through and is to be sent again; a report the upstream took,
+	// or refused for good, returns none.
+	Fail(ctx context.Context, tenant, taskID, reason string) error
 	// TaskEnded reports whether a leased task is over upstream, and why. A
 	// task whose state cannot be read now is not over.
 	TaskEnded(ctx context.Context, tenant, taskID string) (reason string, ended bool)

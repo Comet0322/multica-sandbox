@@ -190,16 +190,14 @@ func TestAFailureThatDoesNotGetThroughIsRetried(t *testing.T) {
 	if _, err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	s.Fail(context.Background(), wsA, "t1", "pod lost")
-	if n := s.PendingFailReports(); n != 1 {
-		t.Fatalf("queued reports %d", n)
+	if err := s.Fail(context.Background(), wsA, "t1", "pod lost"); err == nil {
+		t.Fatal("a report Multica could not take returned no error")
 	}
 	mu.Lock()
 	down = false
 	mu.Unlock()
-	s.RetryFailures(context.Background())
-	if n := s.PendingFailReports(); n != 0 {
-		t.Fatalf("queued reports after a good retry: %d", n)
+	if err := s.Fail(context.Background(), wsA, "t1", "pod lost"); err != nil {
+		t.Fatalf("a report Multica took: %v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

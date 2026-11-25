@@ -78,7 +78,7 @@ func (m *Manager) Inventory() Inventory {
 	if !view.OldestLease.IsZero() {
 		inv.OldestLeaseAgeSeconds = int64(now.Sub(view.OldestLease) / time.Second)
 	}
-	inv.PendingFailReports = m.source.PendingFailReports()
+	inv.PendingFailReports = m.core.PendingFailReports()
 	for _, sp := range pods {
 		pv := view.Pods[sp.ID]
 		info := PodInfo{ID: sp.ID, Name: sp.Name, Phase: podPhase(sp, pv), CreatedAt: sp.CreatedAt, LastSeen: sp.LastSeen}

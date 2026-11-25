@@ -35,10 +35,6 @@ const DefaultHeartbeatInterval = 15 * time.Second
 // so one listing short of a workspace is not taken as the account leaving it.
 const syncRemoveAfter = 2
 
-// failRetryFor is how long a failure report is retried before it is given up
-// on.
-const failRetryFor = 30 * time.Minute
-
 // Config configures a Source.
 type Config struct {
 	Log *slog.Logger
@@ -129,23 +125,12 @@ type Source struct {
 	mu sync.Mutex
 	// overrides are the per-workspace overrides in effect.
 	overrides overrideState
-	// failRetry holds failure reports Multica did not take yet.
-	failRetry []pendingFail
 	// models is the latest pod model list report per provider not in
 	// cfg.Models, reused for every runtime of that provider.
 	models *multica.ModelCatalog
 	// orphansRecovered is set once the first successful Sync asked Multica to
 	// fail what an earlier manager left running.
 	orphansRecovered bool
-}
-
-// pendingFail is a failure report that did not reach Multica yet.
-type pendingFail struct {
-	ws     *workspace
-	id     string
-	reason string
-	// since is when the report was first attempted.
-	since time.Time
 }
 
 // New returns the source. Connect gives it the core and the pod side before
@@ -493,71 +478,27 @@ func (s *Source) Claim(ctx context.Context, tenant string, kind policy.Kind) (*c
 	return &core.Task{Task: claimed.PolicyTask(owner, kind), Email: claimed.Email(), Payload: claimed.Raw}, nil
 }
 
-// Fail reports a claimed task as failed. One that does not get through for a
-// reason worth retrying is queued, and RetryFailures sends it again; without
-// that the task would stay running upstream for good.
-func (s *Source) Fail(ctx context.Context, tenant, taskID, reason string) {
+// Fail reports a claimed task as failed. It returns the error when the
+// report did not get through for a reason worth sending it again (the
+// network, 429 or 5xx); Multica refusing it otherwise means it no longer
+// needs the report, and a workspace no longer served cannot take one.
+func (s *Source) Fail(ctx context.Context, tenant, taskID, reason string) error {
 	ws := s.ws.find(tenant)
 	if ws == nil {
-		return
+		s.log.Warn("fail task upstream: its workspace is not served; not reported", "task_id", taskID, "workspace_id", tenant)
+		return nil
 	}
 	err := ws.conn().Fail(ctx, taskID, reason)
-	if err == nil {
-		return
+	switch {
+	case err == nil:
+		return nil
+	case multica.RetryableFail(err):
+		s.log.Warn("fail task upstream; sent again later", "task_id", taskID, "error", err)
+		return err
+	default:
+		s.log.Warn("fail task upstream: refused; not sent again", "task_id", taskID, "error", err)
+		return nil
 	}
-	if !multica.RetryableFail(err) {
-		s.log.Warn("fail task upstream: refused; not retried", "task_id", taskID, "error", err)
-		return
-	}
-	s.log.Warn("fail task upstream; queued for retry", "task_id", taskID, "error", err)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, f := range s.failRetry {
-		if f.id == taskID {
-			return
-		}
-	}
-	s.failRetry = append(s.failRetry, pendingFail{ws: ws, id: taskID, reason: reason, since: s.now()})
-}
-
-// RetryFailures sends the queued failure reports again. A report leaves the
-// queue once Multica takes it or refuses it (4xx), or after failRetryFor.
-func (s *Source) RetryFailures(ctx context.Context) {
-	s.mu.Lock()
-	queue := s.failRetry
-	s.failRetry = nil
-	s.mu.Unlock()
-	now := s.now()
-	var keep []pendingFail
-	for _, f := range queue {
-		if now.Sub(f.since) > failRetryFor {
-			s.log.Error("gave up failing task upstream; it stays open in Multica until its own timeout", "task_id", f.id, "workspace_id", f.ws.cfg.WorkspaceID, "since", f.since)
-			continue
-		}
-		err := f.ws.conn().Fail(ctx, f.id, f.reason)
-		switch {
-		case err == nil:
-			s.log.Info("failed task upstream after retry", "task_id", f.id, "workspace_id", f.ws.cfg.WorkspaceID)
-		case multica.RetryableFail(err):
-			keep = append(keep, f)
-		default:
-			s.log.Warn("fail task upstream: refused on retry; dropped", "task_id", f.id, "error", err)
-		}
-	}
-	s.mu.Lock()
-	for _, f := range keep {
-		if !slices.ContainsFunc(s.failRetry, func(q pendingFail) bool { return q.id == f.id }) {
-			s.failRetry = append(s.failRetry, f)
-		}
-	}
-	s.mu.Unlock()
-}
-
-// PendingFailReports counts failure reports Multica has not taken yet.
-func (s *Source) PendingFailReports() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.failRetry)
 }
 
 // TaskEnded reports whether a leased task is over upstream. A task that ended

@@ -1,9 +1,6 @@
 package core
 
-import (
-	"context"
-	"time"
-)
+import "time"
 
 // maxLeaseHistory bounds the closed leases kept for the lease query.
 const maxLeaseHistory = 1000
@@ -30,7 +27,8 @@ type claimedTask struct {
 	claimedAt time.Time
 }
 
-// forcedTask is a task the policy decided to fail, not yet failed upstream.
+// forcedTask is a task decided to fail, whose failure report the source has
+// not taken yet.
 type forcedTask struct {
 	tenant string
 	id     string
@@ -144,14 +142,7 @@ func (c *Core) expireLeasesLocked() {
 	}
 	for _, l := range over {
 		c.log.Warn("lease ended: maximum lease time exceeded", "task_id", l.TaskID, "workspace_id", l.Tenant, "pod_id", l.PodID, "started_at", l.StartedAt)
-		c.forced = append(c.forced, forcedTask{tenant: l.Tenant, id: l.TaskID, reason: "task exceeded the maximum lease time"})
+		c.failLocked(l.Tenant, l.TaskID, "task exceeded the maximum lease time")
 		c.endTaskLocked(l.TaskID, "lease exceeded the maximum lease time")
 	}
-}
-
-// fail reports a task as failed to the source, which retries what does not
-// get through. The report does not depend on ctx being cancelled: it is
-// often a pod's request, which may end first.
-func (c *Core) fail(ctx context.Context, tenant, taskID, reason string) {
-	c.source.Fail(context.WithoutCancel(ctx), tenant, taskID, reason)
 }

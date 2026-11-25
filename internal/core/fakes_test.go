@@ -16,10 +16,12 @@ import (
 // fakeSource is a task source in memory: each tenant has a queue of tasks a
 // claim takes from the front.
 type fakeSource struct {
-	mu      sync.Mutex
-	queues  map[string][]core.Task
-	order   []string
-	fails   []string // "tenant task reason"
+	mu     sync.Mutex
+	queues map[string][]core.Task
+	order  []string
+	fails  []string // "tenant task reason"
+	// failErr is what Fail returns; nil takes every report.
+	failErr error
 	closed  []string
 	ended   map[string]string // task -> reason, for TaskEnded
 	claims  []string          // tenants claimed from, in order
@@ -85,10 +87,18 @@ func (s *fakeSource) Claim(_ context.Context, tenant string, kind policy.Kind) (
 	return &t, nil
 }
 
-func (s *fakeSource) Fail(_ context.Context, tenant, taskID, reason string) {
+func (s *fakeSource) Fail(_ context.Context, tenant, taskID, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fails = append(s.fails, tenant+" "+taskID+" "+reason)
+	return s.failErr
+}
+
+// failWith makes Fail return err, nil to take reports again.
+func (s *fakeSource) failWith(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failErr = err
 }
 
 func (s *fakeSource) TaskEnded(_ context.Context, _, taskID string) (string, bool) {

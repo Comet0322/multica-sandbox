@@ -55,7 +55,7 @@ func (c *Core) Restore(pods []RestoredPod) {
 		c.held[rp.ID] = pd
 		if rec.Phase == policy.PhaseRunning && rec.TaskStarted.IsZero() {
 			c.log.Warn("restored pod had not taken its task up; the task is failed", "pod_id", rp.ID, "task_id", rec.Task, "workspace_id", rec.Tenant)
-			c.forced = append(c.forced, forcedTask{tenant: rec.Tenant, id: rec.Task, reason: reasonRestartedBeforeStart})
+			c.failLocked(rec.Tenant, rec.Task, reasonRestartedBeforeStart)
 			c.handBackLocked(policy.Delete{Pod: rp.ID, Reason: "its task was lost in a restart"})
 			continue
 		}
