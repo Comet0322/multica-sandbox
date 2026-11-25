@@ -1,6 +1,7 @@
 package core
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"slices"
@@ -185,7 +186,7 @@ func (c *Core) heldOrderLocked() []string {
 			}
 			return 1
 		}
-		return int(a.seq) - int(b.seq)
+		return cmp.Compare(a.seq, b.seq)
 	})
 	ids := make([]string, len(pods))
 	for i, pd := range pods {

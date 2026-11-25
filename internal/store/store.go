@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -288,8 +289,7 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Seal prepends a fresh random 12-byte nonce; Open reads it from there.
-	return cipher.NewGCMWithRandomNonce(block)
+	return cipher.NewGCM(block)
 }
 
 // sealPayload is the payload column of a task row: its payload encrypted,
@@ -299,7 +299,11 @@ func sealPayload(aead cipher.AEAD, t core.TaskRow) []byte {
 	if len(t.Payload) == 0 || (t.State != core.TaskPlaced && t.State != core.TaskHanded) {
 		return nil
 	}
-	return aead.Seal(nil, nil, t.Payload, []byte(t.ID))
+	// A fresh random nonce for every seal, stored in front of the ciphertext
+	// (the layout cipher.NewGCMWithRandomNonce uses, so earlier rows open).
+	nonce := make([]byte, aead.NonceSize(), aead.NonceSize()+len(t.Payload)+aead.Overhead())
+	_, _ = rand.Read(nonce) // crypto/rand.Read never fails
+	return aead.Seal(nonce, nonce, t.Payload, []byte(t.ID))
 }
 
 // openPayload decrypts the payload column of the task with the given ID.
@@ -307,7 +311,11 @@ func openPayload(aead cipher.AEAD, id string, sealed []byte) (json.RawMessage, e
 	if sealed == nil {
 		return nil, nil
 	}
-	payload, err := aead.Open(nil, nil, sealed, []byte(id))
+	n := aead.NonceSize()
+	if len(sealed) < n {
+		return nil, fmt.Errorf("the payload of task %s does not decrypt: %d bytes, shorter than its nonce", id, len(sealed))
+	}
+	payload, err := aead.Open(nil, sealed[:n], sealed[n:], []byte(id))
 	if err != nil {
 		return nil, fmt.Errorf("the payload of task %s does not decrypt: %w", id, err)
 	}

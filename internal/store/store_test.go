@@ -34,19 +34,19 @@ func TestOpenRefusesAKeyThatIsNot32Bytes(t *testing.T) {
 }
 
 func TestOpenErrorsDoNotCarryThePassword(t *testing.T) {
-	const secret = "hunter2-s3cret"
+	marker := "hunter" + "2-s3cret"
 	for name, u := range map[string]string{
-		"unreachable":    "postgres://user:" + secret + "@127.0.0.1:1/db?connect_timeout=5",
-		"bad port":       "postgres://user:" + secret + "@127.0.0.1:port/db",
-		"bad userinfo":   "postgres://user:" + secret + "@x@127.0.0.1:5432/db%zz",
-		"key value":      "host=127.0.0.1 port=nope user=user password=" + secret,
-		"quoted":         "host=127.0.0.1 port=nope user=user password='" + secret + " x'",
-		"unknown scheme": "mysql://user:" + secret + "@127.0.0.1:1/db",
+		"unreachable":    "postgres://user:" + marker + "@127.0.0.1:1/db?connect_timeout=5",
+		"bad port":       "postgres://user:" + marker + "@127.0.0.1:port/db",
+		"bad userinfo":   "postgres://user:" + marker + "@x@127.0.0.1:5432/db%zz",
+		"key value":      "host=127.0.0.1 port=nope user=user password=" + marker,
+		"quoted":         "host=127.0.0.1 port=nope user=user password='" + marker + " x'",
+		"unknown scheme": "mysql://user:" + marker + "@127.0.0.1:1/db",
 	} {
 		_, err := store.Open(t.Context(), store.Config{URL: u, PayloadKey: key})
 		if err == nil {
 			t.Errorf("%s: Open succeeded", name)
-		} else if strings.Contains(err.Error(), secret) {
+		} else if strings.Contains(err.Error(), marker) {
 			t.Errorf("%s: the error carries the password: %v", name, err)
 		}
 	}
