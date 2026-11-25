@@ -17,7 +17,7 @@ func TestRestoredPods(t *testing.T) {
 		{
 			name: "a restored running task runs on, and its pod is held for its key once it ends",
 			setup: setup(tenant("A", plain), restored("p1", policy.PodInfo{
-				Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:1", Task: "a1",
+				Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:1", Task: "a1", Started: true,
 			})),
 			steps: []step{
 				{do: info("p1"), want: []string{"running A/pool key=issue:1"}},
@@ -59,11 +59,52 @@ func TestRestoredPods(t *testing.T) {
 			}),
 		},
 		{
+			name: "a restored started task is failed when its pod is lost",
+			setup: setup(tenant("A", plain), restored("p1", policy.PodInfo{
+				Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:1", Task: "a1", Started: true,
+			})),
+			steps: []step{
+				{do: lost("p1"), want: []string{"fail a1 (pod lost)", "end-lease a1 (lost)"}},
+			},
+		},
+		{
+			name: "a restored task its pod had not picked up waits for another pod when its pod is lost",
+			setup: setup(tenant("A", plain), restored("p1", policy.PodInfo{
+				Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:1", Task: "a1",
+			})),
+			steps: []step{
+				{do: info("p1"), want: []string{"running A/pool key=issue:1"}},
+				{do: lost("p1")},
+				{do: acquired("p2", "A"), want: []string{"place a1 pod=p2"}},
+			},
+		},
+		{
+			name:  "a restored task on no pod waits for one, and fails when none comes in time",
+			setup: setup(tenant("A", plain)),
+			steps: []step{
+				{do: restoredTask(poolTask("a1", "A", "issue:1"))},
+				{do: busy("A"), want: []string{"busy"}},
+				{after: 4 * time.Minute, do: tick(), want: []string{"fail a1 (no pod could take the task in time)"}},
+			},
+		},
+		{
+			name:  "a restored task on no pod goes to the next pod of its tenant",
+			setup: setup(tenant("A", plain), warmPod("p1", "B")),
+			steps: []step{
+				{do: restoredTask(poolTask("a1", "A", "issue:1"))},
+				{do: acquired("p2", "A"), want: []string{"place a1 pod=p2"}},
+			},
+		},
+		{
 			name:  "a restored pod never serves another tenant",
 			setup: setup(tenant("A", plain), tenant("B", plain), warmPod("p2", "A", "B"), restored("p1", policy.PodInfo{Phase: policy.PhaseIdle, Tenant: "A", Kind: policy.KindPool, Since: t0})),
 			steps: runs(1, "p2", poolTask("b1", "B", ""), "p2"),
 		},
 	})
+}
+
+func restoredTask(t policy.Task) func(*policy.Policy) []string {
+	return func(p *policy.Policy) []string { return describe(p.TaskRestored(t)) }
 }
 
 func busy(tenant string) func(*policy.Policy) []string {

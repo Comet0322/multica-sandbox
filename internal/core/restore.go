@@ -60,7 +60,8 @@ func (c *Core) Restore(pods []RestoredPod) {
 			continue
 		}
 		c.applyLocked(c.policy.PodRestored(rp.ID, policy.PodInfo{
-			Phase: rec.Phase, Tenant: rec.Tenant, Kind: rec.Kind, Key: rec.Key, Task: rec.Task, Since: rec.Since, Until: rec.Until,
+			Phase: rec.Phase, Tenant: rec.Tenant, Kind: rec.Kind, Key: rec.Key, Task: rec.Task, Started: rec.Task != "",
+			Since: rec.Since, Until: rec.Until,
 		}))
 		if rec.Phase == policy.PhaseRunning {
 			l := &lease{TaskID: rec.Task, PodID: rp.ID, Tenant: rec.Tenant, StartedAt: rec.TaskStarted, PodName: pd.Name, pod: pd}

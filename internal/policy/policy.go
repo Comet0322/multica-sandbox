@@ -270,9 +270,10 @@ func (p *Policy) PodAcquired(pod string, tenants ...string) []Decision {
 }
 
 // PodRestored records a pod a previous run of the caller left, in the phase
-// it was in: a running pod's task is started and runs on, a hold ends at its
-// own end and an idle pod ages from when it became idle. The pod serves its
-// own tenant only. A warm one is PodAcquired with no tenant yet.
+// it was in: a running pod's task runs on, started or not as info says, a
+// hold ends at its own end and an idle pod ages from when it became idle.
+// The pod serves its own tenant only. A warm one is PodAcquired with no
+// tenant yet.
 func (p *Policy) PodRestored(pod string, info PodInfo) []Decision {
 	if info.Phase == PhaseWarm || info.Phase == "" {
 		return p.PodAcquired(pod)
@@ -282,10 +283,18 @@ func (p *Policy) PodRestored(pod string, info PodInfo) []Decision {
 		tenant: info.Tenant, kind: info.Kind, key: info.Key, since: info.Since, until: info.Until}
 	p.pods[pod] = pd
 	if info.Phase == PhaseRunning {
-		ts := &taskState{Task: Task{ID: info.Task, Tenant: info.Tenant, Kind: info.Kind, Key: info.Key}, started: true, pod: pd}
+		ts := &taskState{Task: Task{ID: info.Task, Tenant: info.Tenant, Kind: info.Kind, Key: info.Key}, started: info.Started, pod: pd}
 		pd.task = ts
 		p.tasks[ts.ID] = ts
 	}
+	return p.placeWaiting()
+}
+
+// TaskRestored records a task a previous run of the caller claimed and left
+// on no pod: it waits for one, as a task whose pod was lost before it
+// started does.
+func (p *Policy) TaskRestored(t Task) []Decision {
+	p.wait(&taskState{Task: t})
 	return p.placeWaiting()
 }
 
@@ -420,8 +429,10 @@ type PodInfo struct {
 	Kind   Kind
 	// Key is the key of the pod's task, or the key it is held for.
 	Key string
-	// Task is the task placed on or running on the pod.
-	Task string
+	// Task is the task placed on or running on the pod; Started is set once
+	// the pod picked it up.
+	Task    string
+	Started bool
 	// Claimed is set while a claim in flight was made against the pod.
 	Claimed bool
 	// Since is when a held pod was held or an idle pod became idle; Until
@@ -437,7 +448,7 @@ func (p *Policy) Pod(id string) (PodInfo, bool) {
 	}
 	info := PodInfo{Phase: pd.phase, Tenant: pd.tenant, Kind: pd.kind, Key: pd.key, Claimed: pd.claim != nil, Since: pd.since, Until: pd.until}
 	if pd.task != nil {
-		info.Task = pd.task.ID
+		info.Task, info.Started = pd.task.ID, pd.task.started
 	}
 	return info, true
 }
