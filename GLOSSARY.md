@@ -25,8 +25,12 @@ The program that acts as a daemon toward the Multica server and as the server to
 _Avoid_: Broker, controller, pool manager
 
 **Core**:
-The part of the manager that carries out the policy's decisions and keeps the record of every task it dispatched. It knows tenants, opaque tasks and pod IDs only.
+The part of the manager that carries out the policy's decisions and keeps the dispatch record. It knows tenants, opaque tasks and pod IDs only.
 _Avoid_: Broker, dispatcher, scheduler
+
+**Dispatch record**:
+The core's record of the pods it holds and the tasks it claimed, from claim to end, kept in the manager's Postgres database. A restarted manager takes over from it. A task in it is placed (on a pod or waiting for one), handed (its pod was given it and has not reported it started), running or ended.
+_Avoid_: State on the pods, pod record, annotations
 
 **Policy**:
 The pure part of the core's decisions:
@@ -48,11 +52,11 @@ The part of the manager that serves the pods: the sandbox service, and the Multi
 _Avoid_: Worker gateway, executor
 
 **Sandbox service**:
-The module that owns the pods themselves. Callers use it through Create, Delete, PutFiles, GetFiles and Exec. It creates pods from the operator's pod template through the Kubernetes API, watches them, records on each pod what it serves, and deletes them.
+The module that owns the pods themselves. Callers use it through Create, Delete, PutFiles, GetFiles and Exec. It creates pods from the operator's pod template through the Kubernetes API, watches them, and deletes them.
 _Avoid_: Pod manager, provider, runtime, executor
 
 **Pod template**:
-The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, labels, annotations, restart policy and pod token, and a neutral hostname (`sandbox`) when the template sets none.
+The Pod YAML the operator provides (`SANDBOX_POD_TEMPLATE`). It sets the image, resources, probes, security context and anything else of the pod. The sandbox service fills in only the pod's name, its own label, restart policy, owner and pod token, and a neutral hostname (`sandbox`) when the template sets none.
 _Avoid_: Pod spec (for the file), manifest
 
 **Acquire**:
@@ -125,7 +129,7 @@ _Avoid_: Parent, controller (the reference is not a controller one)
 
 **Broken**:
 The pods' state once a permanent failure happened or `SANDBOX_POD_START_FAILURES` pods in a row failed to start: one pod at a time tries until one gets ready, which clears it.
-_Avoid_: Degraded, down, halted (halted is when Kubernetes refuses the pods' records)
+_Avoid_: Degraded, down, halted
 
 **Eviction**:
 Ending a hold early because the budget is full: the pod is deleted, or an idle pod is given to another key.

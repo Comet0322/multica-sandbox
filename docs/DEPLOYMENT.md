@@ -15,6 +15,8 @@ namespace
 ├── Multica: Postgres, the backend, the web app      (deploy/k8s/multica)
 ├── the manager: one Deployment and its Service        (deploy/k8s/manager.yaml)
 └── the pods the manager creates, one task each        (from the pod template)
+
+a Postgres database of the manager's own: its dispatch record
 ```
 
 - The manager reaches the backend at its Service (`http://multica-backend:8080`).
@@ -22,8 +24,11 @@ namespace
   which the pod template names in `SANDBOX_MANAGER_URL`. They need no other
   address in the namespace.
 - The manager reaches the Kubernetes API with rights on pods only.
+- The manager reaches its own Postgres database, which may be anywhere it
+  can connect to.
 
-Run one manager per namespace: two would act on the same pods.
+Run one manager per namespace and per database: two would act on the same
+pods and the same dispatch record.
 
 ### Steps
 
@@ -56,16 +61,20 @@ Run one manager per namespace: two would act on the same pods.
    its requests and limits ([The pod template](#the-pod-template)).
 5. **Permissions.** Give the manager its rights on pods
    ([Permissions](#permissions)).
-6. **The manager.** Apply `deploy/k8s/manager.yaml` after setting its
+6. **The database.** Create a Postgres database and a role that owns it,
+   for the manager alone, and a payload key
+   ([The dispatch record](#the-dispatch-record-and-a-manager-restart)).
+7. **The manager.** Apply `deploy/k8s/manager.yaml` after setting its
    placeholders ([Running the manager](#running-the-manager)).
-7. **Check it** with the dispatch page, then move departments one at a time
+8. **Check it** with the dispatch page, then move departments one at a time
    with the [runbook](../deploy/RUNBOOK.md).
 
 ## The pod template
 
 `SANDBOX_POD_TEMPLATE` is the path of one Pod in YAML, which every pod is
 created from; `deploy/k8s/pod.yaml` is the example. The manager fills in only
-the pod's name, labels, annotations, restart policy (`Never`), the pod token
+the pod's name, its label `app.kubernetes.io/managed-by=sandbox-manager`,
+restart policy (`Never`), owner (with `SANDBOX_POD_OWNER`), the pod token
 (`SANDBOX_POD_TOKEN` in the daemon's environment) and, when the template sets
 none, the hostname `sandbox`. Everything else is the operator's:
 
@@ -87,6 +96,11 @@ none, the hostname `sandbox`. Everything else is the operator's:
   daemon's loopback health endpoint (`127.0.0.1:19514/health`). A pod whose
   daemon stops answering is killed, not restarted; its task fails and the pod
   is deleted.
+- **One task at a time.** Keep `MULTICA_DAEMON_MAX_CONCURRENT_TASKS=1` in
+  the daemon's environment. The manager hands a task that has not started to
+  its pod again on the pod's next claim (after a lost answer or a manager
+  restart). A daemon with a free slot would claim while it prepares the task
+  and run it twice; with one slot it claims only while it runs nothing.
 - **The hostname.** Without `spec.hostname` it is the pod's name, which
   agents print into what reaches Multica. Keep `sandbox`.
 - **Security.** The example passes Pod Security `restricted`: non-root,
@@ -103,18 +117,16 @@ applies to pods created from then on.
 ## Permissions
 
 The manager needs, in its namespace, exactly these verbs on `pods`: `create`,
-`delete`, `get`, `list`, `watch` and `patch`; and, only with
+`delete`, `get`, `list` and `watch`; and, only with
 `SANDBOX_POD_OWNER`, `get` on that one Deployment (a Role rule with
-`resourceNames`). It needs nothing else: no Secrets, `pods/exec`, `pods/log`
-or cluster-wide rights. `patch`
-records on each pod what it serves; without it the manager runs, shows the
-refusal on the dispatch page, and a restarted manager deletes every pod it
-finds ([restart](#what-a-pod-serves-and-a-manager-restart)).
+`resourceNames`). It needs nothing else: no `patch`, Secrets, `pods/exec`,
+`pods/log` or cluster-wide rights. What each pod serves is in the manager's
+database, not on the pod.
 
 The manager authenticates in one of two ways:
 
 - **A service account** (no `KUBECONFIG`): `deploy/k8s/rbac.yaml` creates the
-  ServiceAccount `sandbox-manager`, a Role with the six verbs above and its
+  ServiceAccount `sandbox-manager`, a Role with the five verbs above and its
   RoleBinding. Creating them takes RBAC rights the operator may not have; then
   ask the cluster's administrators to apply it, or check it with
   `kubectl apply --dry-run=server`.
@@ -127,7 +139,7 @@ The manager authenticates in one of two ways:
   from a Secret. Check what it may do first:
 
   ```bash
-  for v in create delete get list watch patch; do kubectl auth can-i $v pods -n <namespace>; done
+  for v in create delete get list watch; do kubectl auth can-i $v pods -n <namespace>; done
   kubectl auth can-i get deployments/sandbox-manager -n <namespace>   # only with SANDBOX_POD_OWNER
   kubectl config view --minify    # how it authenticates
   ```
@@ -146,8 +158,10 @@ dispatch page and in the log.
 - one replica, strategy `Recreate`;
 - the service account from `rbac.yaml`, or a kubeconfig mounted from a Secret
   (commented out in the file);
-- the PAT from the Secret `sandbox-manager` (`SANDBOX_POOL_TOKEN_FILE`), and
-  the pod template and overrides from the ConfigMap `sandbox-manager`;
+- the PAT, the database's URL and the payload key from the Secret
+  `sandbox-manager` (`SANDBOX_POOL_TOKEN_FILE`, `SANDBOX_DATABASE_URL_FILE`,
+  `SANDBOX_PAYLOAD_KEY_FILE`), and the pod template and overrides from the
+  ConfigMap `sandbox-manager`;
 - liveness on `/healthz` and readiness on `/readyz` of the pod listener, with
   the Service publishing not-ready addresses, so pods can report their running
   tasks while Multica is unreachable;
@@ -156,7 +170,9 @@ dispatch page and in the log.
   `http://127.0.0.1:8791/dispatch`.
 
 ```bash
-kubectl create secret generic sandbox-manager -n <namespace> --from-file=pool-token=<PAT file>
+openssl rand -base64 32 >payload-key   # keep it with the database's backups
+kubectl create secret generic sandbox-manager -n <namespace> --from-file=pool-token=<PAT file> \
+  --from-file=database-url=<file holding the database URL> --from-file=payload-key=payload-key
 kubectl create configmap sandbox-manager -n <namespace> \
   --from-file=pod.yaml=<your pod template> --from-file=overrides.yaml=<your overrides file>
 kubectl apply -f deploy/k8s/manager.yaml -n <namespace>
@@ -198,6 +214,13 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | `SANDBOX_MODELS` | none | Models the agent settings picker offers, per agent CLI: `claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2`, the first of each list the default. For a listed CLI the manager answers the picker with that list at once, and never asks a pod. A CLI not listed is answered from a pod's report, which the manager reuses for ten minutes. Multica keeps the last answer up to a day and asks again when it is a minute old, so the first picker opened after a change can still show the old list. List only models every member can use: the picker is per runtime, not per member, and a model a member's key cannot use fails only when the task runs. Set it whenever the model credential is chosen per task (for example an LLM gateway sidecar that looks up the member's key by the task ID): a pod asked for models has no task, so its report is the CLI's own catalog or its built-in fallback, never what the members can use. |
 | `SANDBOX_POOL_SYNC_INTERVAL` | `30s` | How often the account's workspaces are listed again. A workspace joined is served from the next pass; one left out of two listings in a row drains like a removed one, and one that comes back while draining is served again with its leases intact. A failed or empty listing changes nothing. |
 
+### Dispatch record
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `SANDBOX_DATABASE_URL` | none | Postgres URL of the manager's own database (secret; `_FILE` form accepted), for example `postgres://sandbox_manager:<password>@<host>:5432/sandbox_manager`. Required. See [The dispatch record](#the-dispatch-record-and-a-manager-restart). |
+| `SANDBOX_PAYLOAD_KEY_FILE` | none | Absolute path of the key task payloads are encrypted with in the database: 32 bytes in base64 (`openssl rand -base64 32`). Required. Keep it with the database: the payloads of tasks not started yet do not decrypt without it, and the manager does not start. |
+
 ### Pods
 
 | Variable | Default | Meaning |
@@ -220,10 +243,10 @@ errors. Prefer the `_FILE` form with a mounted secret.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `SANDBOX_MANAGER_LISTEN` | `:8790` | Pod API listener. Also serves `/healthz` (liveness: always 200) and `/readyz` (200 only if a workspace listing succeeded within three sync intervals, else 503). |
+| `SANDBOX_MANAGER_LISTEN` | `:8790` | Pod API listener. Also serves `/healthz` (liveness: always 200) and `/readyz` (200 only if a workspace listing succeeded within three sync intervals, the dispatch record can be written and pods start, else 503). |
 | `SANDBOX_POOL_ADMIN_LISTEN` | `127.0.0.1:8791` | Admin listener (see [Admin API](#admin-api-and-dispatch-page)). Not for pods. |
 | `SANDBOX_POOL_WAKE_INTERVAL` | `1s` | Dispatch tick. `0` does not turn dispatch off: the tick then runs every second and only the wake socket hints are disabled. |
-| `SANDBOX_POOL_RECONCILE_INTERVAL` | `30s` | Lease reconciliation period; `0` turns it off (and with it the retry of failure reports). See [Lease end and reconciliation](#lease-end-and-reconciliation). |
+| `SANDBOX_POOL_RECONCILE_INTERVAL` | `30s` | Lease reconciliation period; `0` turns it off, and with it the retry of failure reports, which a restart then sends. See [Lease end and reconciliation](#lease-end-and-reconciliation). |
 | `SANDBOX_AUDIT_FILE` | off | JSON Lines audit log, appended (0600). `-` writes to stdout. |
 
 The manager handles no repository or LLM credentials. Agents reach an LLM and
@@ -291,7 +314,7 @@ always has somewhere to run; a task no pod can take stays queued in Multica.
 
 The manager acts only on pods labelled
 `app.kubernetes.io/managed-by=sandbox-manager`. It fills in each pod's name,
-labels, annotations, restart policy (`Never`), pod token and, when the
+that label, restart policy (`Never`), owner, pod token and, when the
 template sets none, the hostname `sandbox`. A pod is ready once its daemon
 first calls the manager with its token.
 
@@ -347,10 +370,9 @@ image, or free the nodes, and the next try succeeds. A rejected template
 needs the template fixed and a manager restart, since the template is read
 at start.
 
-The manager records on each pod what it serves (patching its labels and
-annotations), and a restarted manager rebuilds its state from them: see
-[What a pod serves, and a manager restart](#what-a-pod-serves-and-a-manager-restart).
-Recording needs the `patch` verb on pods.
+What each pod serves is in the manager's database, and a restarted manager
+takes over from it: see
+[The dispatch record and a manager restart](#the-dispatch-record-and-a-manager-restart).
 
 ## Pod owner and Argo CD
 
@@ -390,38 +412,80 @@ not manage them:
   restart, for instance by changing an annotation on the Deployment's pod
   template in the same commit.
 
-## What a pod serves, and a manager restart
+## The dispatch record and a manager restart
 
-The manager keeps no state of its own. It records on each pod what the pod
-serves, by patching the pod:
-- labels `sandbox-manager/workspace` and `sandbox-manager/kind`;
-- annotations `sandbox-manager/phase` (`running`, `held` or `idle`),
-  `sandbox-manager/key`, `sandbox-manager/task`,
-  `sandbox-manager/task-started`, `sandbox-manager/since` and
-  `sandbox-manager/until`.
+The manager keeps its dispatch record in a Postgres database of its own
+(`SANDBOX_DATABASE_URL`): the pods it holds, with what each serves, and every
+task it claimed, from claim to end. It creates and upgrades its tables at
+start, and keeps the schema's version in the table `schema_version`. Give it
+an empty database and a role that owns it. It needs no other database right.
+The table `pods` has one row per pod the manager holds or held: its phase
+(`warm`, `running`, `held` or `idle`), workspace, kind, key, when its hold
+ends or its idle time began, and when and why it went. The table `tasks` has
+one row per task: its workspace, kind, key, pod, state and timestamps, why it
+ended, and whether its failure report is still to be sent.
 
-A warm pod carries none of them. Nothing about who started a task is written
-on a pod. When the manager starts it lists the pods labelled
-`app.kubernetes.io/managed-by=sandbox-manager` and takes them over:
-- a running task runs on, and its pod's daemon reports through the new manager
-  as before (it registers again on its next heartbeat);
-- a hold resumes with its remaining time, and an idle pod ages on from when it
-  became idle;
-- a pod with no record whose containers never started is kept as warm and is
-  ready once its daemon calls in;
-- any other pod with no record is deleted: a task may have been placed on it
-  just before the previous run stopped, before its record was written, and
-  kept as warm it could serve another key while still running that task;
-- a pod it cannot interpret (no pod token, a garbled record) is deleted;
-- a task placed on a pod that had not taken it up, and a task Multica shows
-  dispatched to the manager that no pod has, are failed, so Multica retries
-  them.
+A task in the record is in one of four states:
+- `placed`: claimed, and placed on a pod or waiting for one;
+- `handed`: its pod's daemon was given it and has not reported it started;
+- `running`: the daemon's start report reached Multica;
+- `ended`: over, whatever the outcome.
 
-A record that cannot be written is tried again, with a growing wait, until it
-is. When Kubernetes refuses to patch pods, the manager stops claiming until a
-record is written again, and the dispatch page shows the refusal: without
-records a restart would fail every running task. A restarted manager without
-the right to patch deletes every pod it finds.
+A task's payload is the task as Multica handed it out, with the agent's
+custom environment, which may hold credentials. The database keeps it
+encrypted with AES-256-GCM, with the key in `SANDBOX_PAYLOAD_KEY_FILE`, and
+only while the task is `placed` or `handed`. The manager clears it once the
+task runs. Nothing about who started a task is in the database. Ended tasks
+and pods that went are deleted 30 days later, unless a task's failure report
+is still to be sent.
+
+The manager writes the record before it acts on it:
+- a claimed task is in the record before a pod can get it;
+- a pod gets a task only once the record says it was handed it;
+- a failure is marked pending before it is reported, and reported again on
+  every reconciliation pass until Multica takes it.
+
+While the database cannot be written, the manager claims nothing and hands
+no pod a task, `/readyz` returns 503 with `the dispatch record cannot be
+written: <why>`, and the inventory's `problem` says the same. Pods keep
+reporting on their running tasks. Once the database takes writes again, the
+manager carries on with no restart.
+
+When the manager starts, it reads the record and takes over:
+- it adopts the pods the record holds that still exist, with their pod
+  tokens, and deletes every other pod labelled
+  `app.kubernetes.io/managed-by=sandbox-manager`, warm ones too; new warm
+  pods are made;
+- a running task runs on, and its pod's daemon reports through the new
+  manager as before (it registers again on its next heartbeat);
+- a task `placed` on a pod, or `handed` to it and not started, is handed to
+  that pod again at its next claim, and runs;
+- a task placed on no pod waits for one, as long as a new pod may take to
+  start;
+- a hold resumes with its remaining time, and an idle pod ages on from when
+  it became idle;
+- a pod the record holds that Kubernetes no longer has is lost at the first
+  dispatch tick, so its running task is failed, and a task placed on it goes
+  to another pod;
+- the failure reports Multica had not taken are sent again.
+
+The manager never asks Multica to fail what Multica shows on its runtimes. A
+task it claimed but had not recorded when it stopped is handed out again by
+Multica to the manager's next claim after 90 seconds, or failed by Multica as
+a retryable timeout after 300 seconds.
+
+### Moving from a manager that kept the record on its pods
+
+Earlier versions kept the record in pod labels and annotations. The new
+version does not read them. To move:
+
+1. Scale the old manager's Deployment to 0 once the dispatch page shows no
+   running task. Tasks queued in Multica wait.
+2. Delete its pods:
+   `kubectl delete pods -l app.kubernetes.io/managed-by=sandbox-manager -n <namespace>`.
+3. Create the database, the payload key and the Secret, and deploy the new
+   version ([Running the manager](#running-the-manager)). The Role no longer
+   needs `patch`.
 
 ## Pod API authorization
 
@@ -468,10 +532,12 @@ for each leased task's status with the endpoint the stock daemon polls
 (`GET /api/daemon/tasks/{id}/status`, with the PAT), at most 8 calls at once
 and 10s each. Any other error keeps the lease for the next pass.
 
-A failure report that does not reach Multica (network error, timeout, 429 or
-5xx) is queued and sent again by every reconciliation pass until Multica takes
-it, refuses it with another 4xx (taken as already handled), or 30 minutes have
-passed. `/v1/inventory` shows the queue length as `pending_fail_reports`.
+A failure report is marked pending in the dispatch record before it is sent.
+One that does not reach Multica (network error, timeout, 429 or 5xx) is sent
+again by every reconciliation pass until Multica takes it or refuses it with
+another 4xx (taken as already handled), with no time limit, and a restarted
+manager sends it again. `/v1/inventory` shows how many are pending as
+`pending_fail_reports`.
 
 ## Per-workspace overrides
 
@@ -550,8 +616,9 @@ The admin listener serves, read-only:
 
 - **`GET /v1/inventory`**: `max_pods` (the budget); the pod counts `warm`,
   `starting`, `running`, `held`, `idle` and `failed`; `pruned_total` (failed
-  pods dropped from the list after 10 minutes); `problem`, why pods could not
-  be created or started lately; `broken`, why no pod starts at all
+  pods dropped from the list after 10 minutes); `problem`, why the dispatch
+  record cannot be written, else why pods could not be created or started
+  lately; `broken`, why no pod starts at all
   ([When no pod starts](#when-no-pod-starts)); `failures`, the latest 20 pod
   failures, newest first, each with `at`, `pod`, `phase`, `kind`,
   `permanent`, `what` and `advice`; `failure_counts`, every failure since the
@@ -581,8 +648,9 @@ The admin listener serves, read-only:
   target, and the latest pod failures with what to do.
 
 `/readyz` on the pod listener turns 503 when no listing succeeded for three
-sync intervals (a revoked or expired PAT, or Multica unreachable), or while
-the pods are [broken](#when-no-pod-starts). Point a
+sync intervals (a revoked or expired PAT, or Multica unreachable), while the
+[dispatch record](#the-dispatch-record-and-a-manager-restart) cannot be
+written, or while the pods are [broken](#when-no-pod-starts). Point a
 readiness probe at it, but keep publishing a not-ready manager to its pods
 (`publishNotReadyAddresses`), or their running tasks could not report.
 
@@ -595,7 +663,6 @@ The manager needs Multica v0.11.0 and no migration newer than it. It
 calls, with the bot PAT: `GET /api/me`, `GET /api/daemon/workspaces` (and
 `GET /api/workspaces` for slugs while the overrides file has entries),
 `POST /api/daemon/register`, `POST /api/daemon/heartbeat`,
-`POST /api/daemon/runtimes/{id}/recover-orphans`,
 `GET /api/daemon/runtimes/{id}/tasks/pending`, `POST /api/daemon/tasks/claim`,
 `GET /api/daemon/tasks/{id}/status`, `POST /api/daemon/tasks/{id}/fail`,
 `GET /api/runtimes` and `PATCH /api/runtimes/{id}`; it relays the pods' task
@@ -611,14 +678,22 @@ neither the manager's runtimes nor the tasks running on them.
 
 ## Known limits and operations
 
-- **A pod deleted while the manager is down.** A restarted manager keeps the
-  running tasks of the pods it finds. A task whose pod was deleted while the
-  manager was down is not in Kubernetes any more and Multica shows it running,
-  so it waits for Multica's own timeout.
-- **Without the right to patch pods, a restart fails every running task.**
-  Nothing is recorded on the pods, so a restarted manager cannot tell a warm
-  pod from one that served someone: it deletes every pod it finds, and the
-  tasks that ran on them are failed upstream (Multica retries those eligible).
+- **A pod deleted while the manager is down.** The record still holds it, so
+  the restarted manager finds it lost at its first dispatch tick: its running
+  task is failed in Multica, which retries the task when it is eligible.
+- **While the manager is down, nothing is dispatched or served.** Pods'
+  reports wait: the daemon keeps its complete and fail reports and sends them
+  again for hours, and retries its start report for a few seconds. Progress
+  and transcript messages a daemon sends meanwhile are lost.
+- **A restart longer than 90 seconds.** Multica hands a task that was
+  dispatched and not started to the manager's next claim again. The manager
+  takes the new delivery for the task it holds, so the task runs once.
+- **The payload key cannot be rotated in place.** The payloads of tasks
+  placed or handed when the key changes do not decrypt with the new key, and
+  the manager does not start. Change it only while the dispatch page shows no
+  starting task, and restart at once.
+- **The database is the manager's alone.** Two managers on one database
+  would take over each other's pods. Back it up with the payload key.
 - **Memory is per pod.** The pod template's limits bound each task; a task
   over them fails with the out-of-memory reason, and only that task. The
   whole container is killed, the daemon too (see
@@ -669,13 +744,20 @@ email and the code `up.sh` prints). It writes to `deploy/k8s/dev/.state/`,
 which git ignores:
 - `backend.env`: the database password, the JWT secret and the fixed sign-in
   code;
-- `dev-user.kubeconfig`: a kubeconfig with only the manager's rights (the six
+- `dev-user.kubeconfig`: a kubeconfig with only the manager's rights (the five
   verbs on pods in the namespace, and `get` on the Deployment
-  `sandbox-e2e-owner`), standing in for an operator's own.
+  `sandbox-e2e-owner`), standing in for an operator's own;
+- `manager-db-url` and `payload-key`: the manager's database and its payload
+  key (`deploy/k8s/dev/manager-db.sh`).
 
 It also creates `sandbox-e2e-owner`, a Deployment with no replicas that
 stands in for the manager's own Deployment as the pods' owner while the
-manager runs on the host (`deploy/k8s/dev/owner.yaml`).
+manager runs on the host (`deploy/k8s/dev/owner.yaml`), and the manager's
+database: a role and a database `sandbox_manager` on the namespace's
+Postgres, which the host reaches at the kind node's address on node port
+30432 (`deploy/k8s/dev/manager-db.yaml`). The role may create databases: the
+end-to-end scenarios make one per run. `manager-db.sh` runs on its own too,
+to add the database to a cluster made before it existed.
 
 The namespace enforces Pod Security `baseline` and warns about `restricted`.
 Running `up.sh` again keeps the database and secrets; `down.sh` deletes the
@@ -697,7 +779,8 @@ deploy/k8s/dev/manager.sh
 ```
 
 It signs in the bot `pool-bot@dev.test` with a workspace `dev`, creates its
-pods from `deploy/k8s/dev/pod.yaml` with `dev-user.kubeconfig`, and listens on
+pods from `deploy/k8s/dev/pod.yaml` with `dev-user.kubeconfig`, keeps its
+dispatch record in `sandbox_manager`, and listens on
 `:8792` for pods (reached at the kind network's gateway) and on
 `127.0.0.1:8793` for the admin API (`/dispatch`).
 

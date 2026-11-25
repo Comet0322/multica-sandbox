@@ -9,10 +9,11 @@ This repository is our sandbox manager: the program that runs Multica tasks one 
 - Everything Multica-specific lives under `internal/multica`. The package itself imports only the policy (`internal/multica/imports_test.go`). `internal/multica/tasksource` (the daemon Multica sees) and `internal/multica/pool` (the sandbox service plus the daemon protocol served to the pods) are the core's two sides; neither imports the other, and what passes between them directly (registrations, model list requests, workspace hints) never touches the policy. `internal/manager` wires them together.
 - `internal/policy` imports nothing else of this module and knows no Kubernetes or Multica: a workspace is a tenant, and a task's key (its issue, else its chat session) comes from the caller (`internal/policy/imports_test.go`).
 - `internal/sandbox` imports nothing else of this module (`internal/sandbox/imports_test.go`).
+- `internal/store` keeps the core's dispatch record in Postgres (`core.Store`) and imports only the core and the policy (`internal/store/imports_test.go`).
 
 ## Checks
 
-- Go: `gofmt -l .`, `go vet ./...` and `go test -race ./...`, as a non-root user.
+- Go: `gofmt -l .`, `go vet ./...` and `go test -race ./...`, as a non-root user. The store's database tests run only with `SANDBOX_TEST_DATABASE_URL` set to a Postgres the tests may create schemas in (a throwaway container, or the kind namespace's `deploy/k8s/dev/.state/manager-db-url`).
 - End to end: the local kind namespace in `deploy/k8s/dev` (`up.sh`; see `docs/DEPLOYMENT.md`) runs Multica v0.11.0 and real pods. `deploy/k8s/e2e/scenarios.sh` (or the quicker `smoke.sh`) runs the manager against it and cleans up after itself; `deploy/k8s/dev/manager.sh` runs it by hand. Build the fake pod image with `--build-context multica=../multica --target fake` and load it into kind after any change to `deploy/`. Leave no pod or manager running after a manual run.
 
 ## Agent skills

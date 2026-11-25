@@ -10,6 +10,7 @@ manager exists.
 Multica server ──/api/daemon/* (bot PAT)── task source ─┐
       ▲                                                  │
       │ task reports, agent calls (relayed)            core ── policy
+      │                                                  │  └── store ── Postgres (dispatch record)
       │                                                  │
       └──────────────────────────────────── pool side ──┴── sandbox service ── Kubernetes API
                                                 │                                   │
@@ -24,10 +25,11 @@ Terms follow [GLOSSARY.md](../GLOSSARY.md). How to run it is in the
 | Component | Package | Job | Knows nothing of |
 | --- | --- | --- | --- |
 | Task source | `internal/multica/tasksource` | The one daemon Multica sees. Follows the bot account's workspaces, registers a pool and a clean runtime set in each (each under its own daemon ID), heartbeats them, reads their pending lists, claims tasks and reports failures. | Pods, Kubernetes |
-| Core | `internal/core` | Carries out the policy's decisions: acquire, claim, place, hold, delete, fail. Keeps the one record of every task it dispatched, from claim to end, and reconciles it with Multica. | Multica, Kubernetes (it sees tenants, opaque tasks and pod IDs) |
+| Core | `internal/core` | Carries out the policy's decisions: acquire, claim, place, hold, delete, fail. Keeps the dispatch record (the pods it holds, every task it claimed from claim to end) in its store, and reconciles it with Multica. | Multica, Kubernetes (it sees tenants, opaque tasks and pod IDs) |
+| Store | `internal/store` | Keeps the dispatch record in Postgres, so a restarted manager takes over from it. Encrypts each task's payload, and keeps it only until the task runs. | Multica, Kubernetes |
 | Policy | `internal/policy` | Pure decisions: which department claims next, where a claimed task goes, whether a pod may be created, which pod goes when the budget is full, when holds and idle pods end. | Anything outside itself |
 | Pool side | `internal/multica/pool` | Plays the Multica server toward each pod's daemon: authenticates it by its pod token, answers its registration, hands its claim the task the core placed on its pod, and relays its reports and its agents' calls upstream. | The policy |
-| Sandbox service | `internal/sandbox` | Creates pods from the operator's pod template, watches them, keeps the warm pods, deletes pods that do not start in time, records on each pod what it serves, and reports lost pods with their reason. | Multica, workspaces, tasks |
+| Sandbox service | `internal/sandbox` | Creates pods from the operator's pod template, watches them, keeps the warm pods, deletes pods that do not start in time, and reports lost pods with their reason. At start it adopts the pods the dispatch record holds and deletes the others. | Multica, workspaces, tasks |
 | Manager | `internal/manager`, `cmd/sandbox-manager` | Wires the parts together, reads the settings, serves the admin API and the dispatch page. | |
 | Pod | `deploy/Dockerfile.pod` | `tini` and the stock daemon, which runs one agent CLI per task as a non-root user. | The manager's internals |
 
@@ -57,7 +59,11 @@ package; see [AGENTS.md](../AGENTS.md)).
    daemon claims from the pool side and gets that task, runs the agent CLI,
    and reports start, progress, messages and the result through the pool
    side, which relays them to Multica with the bot's PAT. The agent calls
-   Multica with the task token Multica issued, through the manager.
+   Multica with the task token Multica issued, through the manager. The
+   task is in the dispatch record before its pod gets it, and the pod gets
+   it again on every claim until its start report reaches Multica, so a
+   lost answer or a manager restart costs nothing. The daemon runs one task
+   at a time, so it claims only while it runs none.
 6. **The task ends.** With a key, the pod is **held** for it for the
    department's hold timeout, so the issue's next task (the same agent again,
    or the next agent of a handoff) lands on it. Without a key, a pool runtime pod
@@ -72,9 +78,10 @@ and what to do next. The sandbox service classifies every pod failure by
 phase (create, start, run) and kind, and keeps the latest for the dispatch
 page. With `SANDBOX_POD_OWNER`, every pod is owned by the
 manager's Deployment, so Argo CD and `kubectl` show the pods under it and
-deleting it deletes them. A restarted manager rebuilds its state from the labels and annotations
-it wrote on its pods: running tasks run on, holds resume, warm and idle pods
-are kept.
+deleting it deletes them. A restarted manager takes over from its dispatch
+record: running tasks run on, a task placed or handed but not started is
+handed to its pod again, holds resume and idle pods are kept. Every other pod
+is deleted, and warm pods are made again.
 
 ## Pool and clean runtimes
 
@@ -165,6 +172,6 @@ Multica, which the daemon passes to the agent unchanged.
 | Holds by key | A handoff within a squad finds the previous agent's unpushed work while the pod is held. | Held pods count against the budget, and a hold may be dropped when the budget is full. |
 | Pool runtime pods shared within a department | Fewer pod starts; an issue's later tasks may reuse a warm cache. | Another issue of the department may see files left on the pod; the clean runtime exists for work that must not. |
 | Warm pods | Claims rarely wait for a pod to start. | Pods that use their requests while serving no one. |
-| State kept on the pods (labels and annotations) | The manager keeps no database; a restart takes over running tasks. | It needs the `patch` verb on pods; without it the manager stops claiming, and a restart deletes every pod. |
+| The dispatch record in Postgres | A restart, or a crash, fails no task: running tasks run on, a task not started yet is handed again, and failure reports are sent until Multica takes them. Pods need no `patch` verb. | The manager needs a database and a payload key. While the database cannot be written, nothing is claimed and no pod is handed a task. |
 | Stock Multica and stock daemon | No fork to maintain; the manager follows Multica's daemon protocol. | The manager depends on that protocol (pinned to v0.11.0 by fixtures) and on Multica's API for workspaces and tasks. |
 | One bot account for every workspace | One credential, one daemon identity, workspaces found by membership. | The PAT is a single point of failure, and a workspace that invites the bot is served by it. |
