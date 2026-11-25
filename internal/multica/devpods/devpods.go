@@ -1,4 +1,4 @@
-// Package devpool is a simulated pod side for development: it stands in for
+// Package devpods is a simulated pod side for development: it stands in for
 // the sandbox service and the stock daemon in each pod, so the manager's core
 // and task source run against a real Multica server without any pod.
 //
@@ -8,7 +8,7 @@
 // to Multica, and after a while completed (or, at the configured rate,
 // failed). A pod handed back is deleted, and a new pod takes its place after
 // a simulated start. Nothing runs: no agent, no repository, no files.
-package devpool
+package devpods
 
 import (
 	"context"
@@ -304,8 +304,8 @@ func (p *Pool) register(ctx context.Context) {
 		p.mu.Unlock()
 		for _, id := range todo {
 			raw, _ := json.Marshal(map[string]any{
-				"workspace_id": ws.ID, "daemon_id": "devpool-" + id, "device_name": id, "cli_version": "devpool",
-				"runtimes": []map[string]any{{"name": "claude", "type": "claude", "version": "0.0.0-devpool", "status": "online"}},
+				"workspace_id": ws.ID, "daemon_id": "devpods-" + id, "device_name": id, "cli_version": "devpods",
+				"runtimes": []map[string]any{{"name": "claude", "type": "claude", "version": "0.0.0-devpods", "status": "online"}},
 			})
 			_, tenant, perr := p.source.Register(ctx, id, multica.Registration{
 				Raw: raw, WorkspaceID: ws.ID, DeviceName: id, Offered: map[string]bool{"claude": true},
@@ -369,7 +369,7 @@ func (p *Pool) run(ctx context.Context, podID string, t claimed) {
 	}
 	if err := p.conn.Post(ctx, "/api/daemon/tasks/"+t.ID+"/start", start, nil); err != nil {
 		p.log.Warn("simulated task start refused", "pod_id", podID, "task_id", t.ID, "error", err)
-		p.end(podID, t.ID, "fail", map[string]any{"error": "devpool: start refused: " + err.Error()})
+		p.end(podID, t.ID, "fail", map[string]any{"error": "devpods: start refused: " + err.Error()})
 		return
 	}
 	d := p.cfg.TaskMin
@@ -386,10 +386,10 @@ func (p *Pool) run(ctx context.Context, podID string, t claimed) {
 		return // the core ended the lease meanwhile
 	}
 	if randFloat64() < p.cfg.FailRate {
-		p.end(podID, t.ID, "fail", map[string]any{"error": "devpool: simulated failure"})
+		p.end(podID, t.ID, "fail", map[string]any{"error": "devpods: simulated failure"})
 		return
 	}
-	p.end(podID, t.ID, "complete", map[string]any{"output": fmt.Sprintf("devpool: simulated run of %s on %s", d.Round(time.Second), podID)})
+	p.end(podID, t.ID, "complete", map[string]any{"output": fmt.Sprintf("devpods: simulated run of %s on %s", d.Round(time.Second), podID)})
 }
 
 // end reports a task's end upstream and tells the core once Multica took it

@@ -1,6 +1,6 @@
-// Command sandbox-devpool runs the sandbox manager on a simulated pool, for
+// Command sandbox-devpods runs the sandbox manager on a simulated pool, for
 // development: the core and the task source are the real ones and talk to a
-// real Multica server, the pods are simulated (see package devpool). It
+// real Multica server, the pods are simulated (see package devpods). It
 // serves only the admin API, with the dispatch page at /dispatch.
 //
 // It is not for production: nothing runs in a simulated pod, every task is
@@ -23,13 +23,13 @@ import (
 	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
-	"sandbox-manager/internal/multica/devpool"
+	"sandbox-manager/internal/multica/devpods"
 	"sandbox-manager/internal/multica/tasksource"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "sandbox-devpool:", err)
+		fmt.Fprintln(os.Stderr, "sandbox-devpods:", err)
 		os.Exit(1)
 	}
 }
@@ -79,7 +79,7 @@ func run() error {
 		cfg.ReadOverrides = func() ([]byte, error) { return os.ReadFile(path) }
 	}
 	m, err := manager.NewSimulated(cfg, log, func(c *core.Core, s *tasksource.Source, client *multica.Client) (manager.PodSide, func(context.Context)) {
-		p := devpool.New(devpool.Config{
+		p := devpods.New(devpods.Config{
 			Log: log, Pods: *pods, TaskMin: *taskMin, TaskMax: *taskMax, FailRate: *failRate, StartTime: *startTime,
 		}, c, s, client)
 		return p, p.Run
@@ -99,7 +99,7 @@ func run() error {
 	}
 	srv := &http.Server{Handler: m.AdminHandler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
-	log.Info("devpool serving", "dispatch", "http://"+ln.Addr().String()+"/dispatch", "pods", *pods)
+	log.Info("devpods serving", "dispatch", "http://"+ln.Addr().String()+"/dispatch", "pods", *pods)
 	go m.SyncLoop(ctx, nil)
 	go m.Run(ctx)
 	<-ctx.Done()

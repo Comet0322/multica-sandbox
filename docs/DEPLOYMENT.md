@@ -703,7 +703,7 @@ pods from `deploy/k8s/dev/pod.yaml` with `dev-user.kubeconfig`, and listens on
 
 The end-to-end scenarios run against the same namespace, or another one, with
 `deploy/k8s/e2e/scenarios.sh` (see [its README](../deploy/k8s/e2e/README.md)).
-`deploy/devpool/run.sh` runs the manager on simulated pods against the same
+`deploy/devpods/run.sh` runs the manager on simulated pods against the same
 Multica, with load, to watch the dispatch page.
 
 ## Moving departments

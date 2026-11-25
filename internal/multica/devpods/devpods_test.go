@@ -1,4 +1,4 @@
-package devpool_test
+package devpods_test
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 
 	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/multica"
-	"sandbox-manager/internal/multica/devpool"
+	"sandbox-manager/internal/multica/devpods"
 )
 
 type fakeCore struct {
@@ -76,7 +76,7 @@ func TestASimulatedPodRunsItsTaskAndReportsIt(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &fakeCore{queue: map[string][]json.RawMessage{}, owned: map[string]string{}}
-	p := devpool.New(devpool.Config{Pods: 2, TaskMin: 10 * time.Millisecond, Poll: 10 * time.Millisecond}, c, fakeSource{}, multica.NewClient(srv.URL, "mul_pat", "devpool", nil))
+	p := devpods.New(devpods.Config{Pods: 2, TaskMin: 10 * time.Millisecond, Poll: 10 * time.Millisecond}, c, fakeSource{}, multica.NewClient(srv.URL, "mul_pat", "devpods", nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go p.Run(ctx)
@@ -125,8 +125,8 @@ func TestAtAFailRateOfOneASimulatedTaskFailsWithinItsDurations(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &fakeCore{queue: map[string][]json.RawMessage{}, owned: map[string]string{}}
-	cfg := devpool.Config{Pods: 1, TaskMin: 5 * time.Millisecond, TaskMax: 30 * time.Millisecond, FailRate: 1, Poll: 10 * time.Millisecond}
-	p := devpool.New(cfg, c, fakeSource{}, multica.NewClient(srv.URL, "mul_pat", "devpool", nil))
+	cfg := devpods.Config{Pods: 1, TaskMin: 5 * time.Millisecond, TaskMax: 30 * time.Millisecond, FailRate: 1, Poll: 10 * time.Millisecond}
+	p := devpods.New(cfg, c, fakeSource{}, multica.NewClient(srv.URL, "mul_pat", "devpods", nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go p.Run(ctx)
@@ -159,7 +159,7 @@ func TestAtAFailRateOfOneASimulatedTaskFailsWithinItsDurations(t *testing.T) {
 }
 
 func TestAHandedBackPodIsReplacedByANewOne(t *testing.T) {
-	p := devpool.New(devpool.Config{Pods: 1, StartTime: time.Hour}, &fakeCore{}, fakeSource{}, multica.NewClient("http://127.0.0.1:1", "x", "d", nil))
+	p := devpods.New(devpods.Config{Pods: 1, StartTime: time.Hour}, &fakeCore{}, fakeSource{}, multica.NewClient("http://127.0.0.1:1", "x", "d", nil))
 	id, err := p.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)

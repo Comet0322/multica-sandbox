@@ -13,7 +13,7 @@ Runs Multica tasks on pods it creates through the Kubernetes API, one task at a 
 | `internal/multica` | What we know of Multica: its API, the daemon protocol served to the pods, runtime registration, a task's key |
 | `internal/multica/tasksource` | The task source: the one daemon Multica sees; workspaces, runtimes, heartbeats, claims, overrides |
 | `internal/multica/pool` | The pod side: the sandbox service plus the daemon protocol, wake sockets and the pods' daemon registrations |
-| `internal/multica/devpool`, `cmd/sandbox-devpool` | Development only: a simulated pod side, to run the core and the task source against a real Multica without pods (`deploy/devpool/run.sh`) |
+| `internal/multica/devpods`, `cmd/sandbox-devpods` | Development only: a simulated pod side, to run the core and the task source against a real Multica without pods (`deploy/devpods/run.sh`) |
 | `internal/multica/daemonwire` | The daemon protocol types we exchange with Multica, pinned to v0.11.0 |
 | `internal/policy` | The policy: fair sharing, quota, placement by kind and key, holds, idle lifetime, budget deletion; knows no Kubernetes or Multica |
 | `internal/sandbox` | The sandbox service: creates pods from the pod template, watches them, records what each serves on it, deletes them |
