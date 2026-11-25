@@ -28,6 +28,11 @@ const (
 	// PodTokenEnv is the environment variable the pod's entrypoint reads its
 	// pod token from.
 	PodTicketEnv = "SANDBOX_POD_TOKEN"
+	// MaxTasksEnv is the daemon's task slot count, which the service sets to
+	// one whatever the template says. The manager hands a task that has not
+	// started to its pod again on the pod's next claim; a daemon with a free
+	// slot would claim while it prepares the task and run it twice.
+	MaxTasksEnv = "MULTICA_DAEMON_MAX_CONCURRENT_TASKS"
 	// PodHostname is the hostname of a pod whose template sets none. Without
 	// it the hostname would be the pod's name, which agents print into what
 	// reaches Multica.
@@ -432,11 +437,11 @@ func (k *KubeService) podObject(pd *kubePod) *corev1.Pod {
 	c := &obj.Spec.Containers[i]
 	env := c.Env[:0:0]
 	for _, e := range c.Env {
-		if e.Name != PodTicketEnv {
+		if e.Name != PodTicketEnv && e.Name != MaxTasksEnv {
 			env = append(env, e)
 		}
 	}
-	c.Env = append(env, corev1.EnvVar{Name: PodTicketEnv, Value: pd.ticket})
+	c.Env = append(env, corev1.EnvVar{Name: PodTicketEnv, Value: pd.ticket}, corev1.EnvVar{Name: MaxTasksEnv, Value: "1"})
 	return obj
 }
 

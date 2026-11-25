@@ -96,9 +96,10 @@ none, the hostname `sandbox`. Everything else is the operator's:
   daemon's loopback health endpoint (`127.0.0.1:19514/health`). A pod whose
   daemon stops answering is killed, not restarted; its task fails and the pod
   is deleted.
-- **One task at a time.** Keep `MULTICA_DAEMON_MAX_CONCURRENT_TASKS=1` in
-  the daemon's environment. The manager hands a task that has not started to
-  its pod again on the pod's next claim (after a lost answer or a manager
+- **One task at a time.** The sandbox service sets
+  `MULTICA_DAEMON_MAX_CONCURRENT_TASKS=1` on the daemon, replacing any value
+  the template gives. The manager hands a task that has not started to its
+  pod again on the pod's next claim (after a lost answer or a manager
   restart). A daemon with a free slot would claim while it prepares the task
   and run it twice; with one slot it claims only while it runs nothing.
 - **The hostname.** Without `spec.hostname` it is the pod's name, which

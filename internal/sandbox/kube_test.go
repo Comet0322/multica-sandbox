@@ -33,7 +33,7 @@ func kubeTemplate() *corev1.Pod {
 				{Name: "sidecar", Image: "sidecar:1"},
 				{
 					Name: "daemon", Image: "pod:1",
-					Env: []corev1.EnvVar{{Name: "KEEP", Value: "1"}, {Name: sandbox.PodTicketEnv, Value: "from-template"}},
+					Env: []corev1.EnvVar{{Name: "KEEP", Value: "1"}, {Name: sandbox.PodTicketEnv, Value: "from-template"}, {Name: sandbox.MaxTasksEnv, Value: "20"}},
 					Resources: corev1.ResourceRequirements{
 						Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")},
 					},
@@ -181,16 +181,22 @@ func TestKubeCreatesWarmPodsFromTheTemplate(t *testing.T) {
 			t.Errorf("restart policy = %s, want Never", pd.Spec.RestartPolicy)
 		}
 		daemon := pd.Spec.Containers[1]
-		var tickets []string
+		var tickets, slots []string
 		keep := false
 		for _, e := range daemon.Env {
-			if e.Name == sandbox.PodTicketEnv {
+			switch e.Name {
+			case sandbox.PodTicketEnv:
 				tickets = append(tickets, e.Value)
+			case sandbox.MaxTasksEnv:
+				slots = append(slots, e.Value)
 			}
 			keep = keep || e.Name == "KEEP"
 		}
 		if len(tickets) != 1 || !strings.HasPrefix(tickets[0], "mpt_") || !keep {
 			t.Errorf("daemon env = %v, want KEEP and one issued pod token", daemon.Env)
+		}
+		if len(slots) != 1 || slots[0] != "1" {
+			t.Errorf("daemon task slots = %v, want one slot whatever the template says", slots)
 		}
 		if len(pd.Spec.Containers[0].Env) != 0 {
 			t.Errorf("the sidecar got env %v, want none", pd.Spec.Containers[0].Env)
