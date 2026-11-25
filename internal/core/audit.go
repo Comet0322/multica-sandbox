@@ -82,7 +82,7 @@ func (c *Core) auditLease(action string, l *lease, reason string) {
 	}
 	c.cfg.Audit.Record(AuditRecord{
 		Action: action, Decision: AuditAllow, Reason: reason,
-		TaskID: l.TaskID, WorkspaceID: l.Tenant, Initiator: l.Initiator, PodID: l.PodID, PodName: l.PodName,
+		TaskID: l.ID, WorkspaceID: l.Tenant, Initiator: l.Email, PodID: l.PodID, PodName: l.PodName,
 	})
 }
 

@@ -69,6 +69,7 @@ func run() error {
 		Pool:        multica.Machine{Name: os.Getenv("SANDBOX_MANAGER_NAME"), DeviceName: os.Getenv("SANDBOX_MANAGER_DEVICE_NAME")},
 		HoldTimeout: *hold, SyncInterval: *syncEvery,
 		DispatchInterval: *dispatchEv, ReconcileInterval: 30 * time.Second, Providers: []string{"claude"},
+		Store: forgetful{},
 	}
 	var err error
 	if cfg.Models, err = multica.ParseModels(*models); err != nil {
@@ -107,6 +108,14 @@ func run() error {
 	defer cancel()
 	return srv.Shutdown(shutdown)
 }
+
+// forgetful is the dispatch record of a simulated pool: the simulated pods
+// end with the process, so nothing is left to take over and nothing is
+// kept.
+type forgetful struct{}
+
+func (forgetful) Load(context.Context) (core.Record, error)                  { return core.Record{}, nil }
+func (forgetful) Write(context.Context, []core.PodRow, []core.TaskRow) error { return nil }
 
 // envOr is the environment variable, or def when it is unset or empty.
 func envOr(name, def string) string {

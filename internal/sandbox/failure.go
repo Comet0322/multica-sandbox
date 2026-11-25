@@ -89,7 +89,7 @@ const (
 	adviceOOM        = "Split the task into smaller steps, or ask an administrator to raise the pod's memory limit"
 	adviceEvicted    = "The node was short of resources; run the task again"
 	adviceImage      = "Check the image in the pod template and that the nodes can pull it"
-	adviceRefused    = "Check the manager's rights on pods in its namespace: create, delete, get, list, watch and patch"
+	adviceRefused    = "Check the manager's rights on pods in its namespace: create, delete, get, list and watch"
 	adviceInvalid    = "Fix the pod template and restart the manager"
 	adviceSchedule   = "Free capacity on the nodes, or lower SANDBOX_MAX_PODS or the pod's requests"
 	adviceStartCheck = "Check the pod's events and logs"

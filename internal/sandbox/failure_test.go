@@ -50,7 +50,7 @@ func TestFailuresAreClassified(t *testing.T) {
 		advice    string
 	}{
 		{"refused", apiFailure(PhaseCreate, "create pod p", apierrors.NewForbidden(pods, "p", errors.New("no"))),
-			FailRefused, true, "Kubernetes refused the manager's credentials", "create, delete, get, list, watch and patch"},
+			FailRefused, true, "Kubernetes refused the manager's credentials", "create, delete, get, list and watch"},
 		{"unauthorized", apiFailure(PhaseCreate, "create pod p", apierrors.NewUnauthorized("expired")),
 			FailRefused, true, "Kubernetes refused the manager's credentials", "Check the manager's rights"},
 		{"rejected", apiFailure(PhaseCreate, "create pod p", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "p", nil)),

@@ -52,7 +52,7 @@ func (c *Core) ReconcileOnce(ctx context.Context) {
 	var ended []verdict
 	parallel(len(held), reconcileParallel, func(i int) {
 		l := held[i]
-		reason, over := c.source.TaskEnded(ctx, l.Tenant, l.TaskID)
+		reason, over := c.source.TaskEnded(ctx, l.Tenant, l.ID)
 		if !over {
 			return
 		}
@@ -65,11 +65,11 @@ func (c *Core) ReconcileOnce(ctx context.Context) {
 	}
 	c.mu.Lock()
 	for _, v := range ended {
-		if c.leases[v.l.TaskID] != v.l {
+		if c.leases[v.l.ID] != v.l {
 			continue // ended meanwhile
 		}
-		c.log.Warn("lease ended by reconciliation", "task_id", v.l.TaskID, "workspace_id", v.l.Tenant, "pod_id", v.l.PodID, "reason", v.reason)
-		c.endTaskLocked(v.l.TaskID, v.reason)
+		c.log.Warn("lease ended by reconciliation", "task_id", v.l.ID, "workspace_id", v.l.Tenant, "pod_id", v.l.PodID, "reason", v.reason)
+		c.endTaskLocked(v.l.ID, v.reason)
 	}
 	c.mu.Unlock()
 	c.settle(ctx)

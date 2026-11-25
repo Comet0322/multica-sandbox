@@ -32,6 +32,23 @@ func (c *Core) TaskEnded(podID, taskID, reason string) {
 	}
 }
 
+// TaskRunning tells the core the pod reported a task started, and the
+// upstream took it: the pod is not handed the task again, and the task's
+// payload is dropped.
+func (c *Core) TaskRunning(podID, taskID string) {
+	c.mu.Lock()
+	l := c.leases[taskID]
+	owned := l != nil && l.PodID == podID && l.pod != nil && c.held[podID] == l.pod
+	if owned && l.State == TaskHanded {
+		l.State, l.Payload = TaskRunning, nil
+		c.saveTaskLocked(l.TaskRow)
+	}
+	c.mu.Unlock()
+	if owned {
+		c.settle(context.Background())
+	}
+}
+
 // MayServe reports whether a pod may act for a tenant, as far as the core
 // knows: a pod it holds may when it holds a task of the tenant (leased or
 // placed on it), and may not while it works for another tenant or once it
@@ -50,7 +67,7 @@ func (c *Core) MayServe(podID, tenant string) Verdict {
 		}
 	}
 	for _, t := range pd.queue {
-		if t.task.Tenant == tenant {
+		if t.Tenant == tenant {
 			return Allowed
 		}
 	}

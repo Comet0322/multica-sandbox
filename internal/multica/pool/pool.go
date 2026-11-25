@@ -20,7 +20,6 @@ import (
 
 	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/multica"
-	"sandbox-manager/internal/policy"
 	"sandbox-manager/internal/sandbox"
 )
 
@@ -34,12 +33,8 @@ type Service interface {
 	Inventory() sandbox.Inventory
 	// Pod reports one pod; false when the service does not know it.
 	Pod(id sandbox.PodID) (sandbox.PodInfo, bool)
-	// Record keeps what a held pod serves on the pod; Restore takes over the
-	// pods a previous run left, with what they serve.
-	Record(id sandbox.PodID, r sandbox.PodRecord)
-	Restore(ctx context.Context) ([]sandbox.RestoredPod, error)
-	// Halted is why no task may be claimed now, empty when tasks may be.
-	Halted() string
+	// Adopt takes over the pods a previous run held and deletes the others.
+	Adopt(ctx context.Context, held []sandbox.PodID) error
 }
 
 // Core is what the pool asks and tells the core.
@@ -47,11 +42,12 @@ type Core interface {
 	Next(ctx context.Context, pod string) json.RawMessage
 	Owns(pod, task string) bool
 	TaskEnded(pod, task, reason string)
+	TaskRunning(pod, task string)
 	MayServe(pod, tenant string) core.Verdict
 	PodServes(pod, tenant string)
-	Restore(pods []core.RestoredPod)
 	PodLost(pod, why string)
 	Touch()
+	StoreProblem() string
 }
 
 // Source is what the pool asks the task source directly: the registrations,
@@ -209,40 +205,22 @@ func (p *Pool) Tenants(pod string) []string {
 	return out
 }
 
-// Record keeps what a held pod serves on the pod.
-func (p *Pool) Record(pod string, rec core.PodRecord) {
-	p.svc.Record(sandbox.PodID(pod), sandbox.PodRecord{
-		Phase: string(rec.Phase), Tenant: rec.Tenant, Kind: string(rec.Kind), Key: rec.Key,
-		Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
-	})
-}
-
-// Restore takes over the pods a previous run left: the core holds those that serve anyone, each
-// registered for its own workspace until its daemon registers again (see
-// HeartbeatPod). Call it before the pool serves anything.
-func (p *Pool) Restore(ctx context.Context) error {
-	found, err := p.svc.Restore(ctx)
-	if err != nil {
-		return err
-	}
-	pods := make([]core.RestoredPod, 0, len(found))
+// Adopt takes over the pods the core held before it restarted: the sandbox
+// service holds those that still exist and deletes every other pod. Each
+// counts as registered for the workspace it serves until its daemon
+// registers again (see HeartbeatPod).
+func (p *Pool) Adopt(ctx context.Context, pods []core.HeldPod) error {
+	ids := make([]sandbox.PodID, 0, len(pods))
 	p.mu.Lock()
-	for _, f := range found {
-		rec := f.Record
-		p.registered[string(f.ID)] = map[string]struct{}{rec.Tenant: {}}
-		pods = append(pods, core.RestoredPod{ID: string(f.ID), Record: core.PodRecord{
-			Phase: policy.Phase(rec.Phase), Tenant: rec.Tenant, Kind: policy.Kind(rec.Kind), Key: rec.Key,
-			Task: rec.Task, TaskStarted: rec.TaskStarted, Since: rec.Since, Until: rec.Until,
-		}})
+	for _, pd := range pods {
+		ids = append(ids, sandbox.PodID(pd.ID))
+		if pd.Tenant != "" {
+			p.registered[pd.ID] = map[string]struct{}{pd.Tenant: {}}
+		}
 	}
 	p.mu.Unlock()
-	p.core.Restore(pods)
-	return nil
+	return p.svc.Adopt(ctx, ids)
 }
-
-// Halted is why no task may be claimed now (the sandbox service cannot
-// record what its pods serve), empty when tasks may be.
-func (p *Pool) Halted() string { return p.svc.Halted() }
 
 // Wake tells a pod over its wake socket that a task is placed on it.
 func (p *Pool) Wake(pod string) { p.api.WakePod(pod) }
@@ -281,11 +259,14 @@ type backend struct{ p *Pool }
 
 var _ multica.Backend = backend{}
 
-// NotReady is why the manager is not ready: Multica cannot be reached, or
-// no pod starts.
+// NotReady is why the manager is not ready: Multica cannot be reached, the
+// dispatch record cannot be written, or no pod starts.
 func (b backend) NotReady() string {
 	if why := b.p.source.NotReady(); why != "" {
 		return why
+	}
+	if why := b.p.core.StoreProblem(); why != "" {
+		return "the dispatch record cannot be written: " + why
 	}
 	if broken := b.p.svc.Inventory().Broken; broken != "" {
 		return "pods do not start: " + broken
@@ -385,15 +366,21 @@ func (b backend) ModelsReported(runtimeID string, report []byte) {
 }
 
 // TaskRoute is the route for a pod's report on a task, provided the task is
-// leased to that pod. A terminal report (complete, fail, cancel-ack) ends the
-// lease once Multica took it. It also ends when Multica refuses it with 401,
-// 403 or 404: the PAT lost access, or the task or its runtime is gone, so
-// Multica no longer knows the task and nothing will ever end it there.
+// leased to that pod. A start report Multica took marks the task running, so
+// the pod is not handed it again. A terminal report (complete, fail,
+// cancel-ack) ends the lease once Multica took it. It also ends when Multica
+// refuses it with 401, 403 or 404: the PAT lost access, or the task or its
+// runtime is gone, so Multica no longer knows the task and nothing will ever
+// end it there.
 func (b backend) TaskRoute(podID, taskID, action, path string) (*multica.Route, bool) {
 	if !b.p.core.Owns(podID, taskID) {
 		return nil, false
 	}
 	route := &multica.Route{AccountAuth: true, After: func(status int) {
+		if multica.StartAction(action) && status >= 200 && status <= 299 {
+			b.p.core.TaskRunning(podID, taskID)
+			return
+		}
 		if !multica.TerminalAction(action) {
 			return
 		}

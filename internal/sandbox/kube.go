@@ -69,7 +69,7 @@ type KubeConfig struct {
 	// owns every pod the service creates from then on (an owner reference,
 	// not blocking deletion): tools that follow owners, such as Argo CD,
 	// show the pods under it, and deleting it has Kubernetes delete the
-	// pods. Its UID is read when the service restores, which needs get on
+	// pods. Its UID is read when the service adopts, which needs get on
 	// that Deployment; a refusal stops the service from starting.
 	OwnerDeployment string
 	// MaxPods is the most pods the service has at once, starting, free,
@@ -219,18 +219,11 @@ type KubeService struct {
 	// run is the context of Run, used for the API calls it starts; nil
 	// before Run.
 	run context.Context
-	// restored is set once Restore took over the pods a previous run left.
-	restored bool
-	// dirty are the held pods whose record changed and is not written yet;
-	// kick wakes the loop that writes them.
-	dirty map[PodID]bool
-	kick  chan struct{}
+	// adopted is set once Adopt took over the pods a previous run left.
+	adopted bool
 	// owner is the owner reference every new pod gets, read from
 	// OwnerDeployment; nil without one.
 	owner *metav1.OwnerReference
-	// recordRefused is why Kubernetes refused the last record, empty once
-	// one is written. While it is set no pod is given out (see Halted).
-	recordRefused string
 }
 
 type kubePod struct {
@@ -240,15 +233,13 @@ type kubePod struct {
 	state     PodState
 	createdAt time.Time
 	// startBy is when the start timeout began: the creation, or the
-	// restore of a pod a previous run left.
+	// adoption of a pod a previous run left.
 	startBy  time.Time
 	readyAt  time.Time
 	lastSeen time.Time
 	lostAt   time.Time
 	// waiting is why the pod is not running yet, from its status.
 	waiting string
-	// record is what the pod serves, as last recorded (see Record).
-	record PodRecord
 	// lostWhy is why a lost pod was lost.
 	lostWhy string
 }
@@ -259,7 +250,7 @@ func NewKube(cfg KubeConfig) (*KubeService, error) {
 		return nil, err
 	}
 	return &KubeService{cfg: cfg, log: cfg.Log, pods: map[PodID]*kubePod{}, tickets: map[string]PodID{},
-		dirty: map[PodID]bool{}, kick: make(chan struct{}, 1), failureCounts: map[FailureKind]int{}}, nil
+		failureCounts: map[FailureKind]int{}}, nil
 }
 
 func (k *KubeService) now() time.Time { return k.cfg.Now() }
@@ -286,23 +277,18 @@ func (k *KubeService) lock() (unlock func()) {
 
 func (k *KubeService) selector() string { return ManagedByLabel + "=" + ManagedByValue }
 
-// Run watches the pods, times out the ones that do not start, keeps the warm
-// pods and writes the pods' records, until ctx ends. Without a Restore
-// before it, it restores the pods a previous run left itself and deletes
-// those that served anyone, which no caller holds.
+// Run watches the pods, times out the ones that do not start and keeps the
+// warm pods, until ctx ends. Without an Adopt before it, it deletes every pod
+// a previous run left, which no caller holds.
 func (k *KubeService) Run(ctx context.Context) {
 	k.mu.Lock()
 	k.run = ctx
-	restored := k.restored
+	adopted := k.adopted
 	k.mu.Unlock()
-	if !restored {
-		served, _ := k.Restore(ctx)
-		for _, r := range served {
-			_ = k.Delete(ctx, r.ID, AuditLabel{Reason: "left by a previous run"})
-		}
+	if !adopted {
+		_ = k.Adopt(ctx, nil)
 	}
 	go k.watchLoop(ctx)
-	go k.recordLoop(ctx)
 	t := time.NewTicker(k.cfg.TickInterval)
 	defer t.Stop()
 	resync := time.NewTicker(resyncInterval)
@@ -608,9 +594,6 @@ func (k *KubeService) Authenticate(ticket string) (PodID, bool) {
 func (k *KubeService) Create(ctx context.Context) (PodID, error) {
 	defer k.lock()()
 	k.sweepLocked()
-	if k.recordRefused != "" {
-		return "", fmt.Errorf("%w: %s", ErrNoCapacity, k.recordRefused)
-	}
 	var pick *kubePod
 	for _, pd := range k.pods {
 		if pd.state == PodFree && (pick == nil || pd.readyAt.Before(pick.readyAt) || pd.readyAt.Equal(pick.readyAt) && pd.seq < pick.seq) {
@@ -641,7 +624,6 @@ func (k *KubeService) Delete(ctx context.Context, id PodID, label AuditLabel) er
 	// stays listed, with its reason.
 	delete(k.pods, id)
 	delete(k.tickets, pd.ticket)
-	delete(k.dirty, id)
 	k.log.Info("pod deleted", "pod", id, "reason", label.Reason)
 	if k.cfg.Audit != nil {
 		k.cfg.Audit.Record(AuditRecord{
@@ -803,11 +785,7 @@ func (k *KubeService) Inventory() Inventory {
 		list = append(list, pd)
 	}
 	sort.Slice(list, func(i, j int) bool { return list[i].seq < list[j].seq })
-	problem := k.problem
-	if k.recordRefused != "" {
-		problem = k.recordRefused
-	}
-	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: problem,
+	inv := Inventory{Pods: make([]PodInfo, 0, len(list)), PrunedTotal: k.prunedTotal, Problem: k.problem,
 		FailureCounts: make(map[FailureKind]int, len(k.failureCounts))}
 	if k.broken != nil {
 		inv.Broken = k.broken.String()

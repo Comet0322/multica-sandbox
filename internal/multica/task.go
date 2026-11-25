@@ -83,6 +83,10 @@ func TerminalTaskStatus(status string) bool {
 	return false
 }
 
+// StartAction reports whether a pod's task report says the daemon started the
+// task.
+func StartAction(action string) bool { return action == "start" }
+
 // TerminalAction reports whether a pod's task report ends the task: a result,
 // or the acknowledgement that it stopped after a cancellation (the stock daemon
 // sends only cancel-ack, never complete or fail, for a task cancelled or ended

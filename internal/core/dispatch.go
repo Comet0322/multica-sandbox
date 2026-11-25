@@ -31,13 +31,19 @@ func (c *Core) applyLocked(ds []policy.Decision) (claim *policy.Claim, acquire b
 		case policy.Delete:
 			c.handBackLocked(d)
 		case policy.Fail:
-			c.failLocked(d.Tenant, d.Task, d.Reason)
-			if t := c.claimed[d.Task]; t != nil {
-				c.auditDenied(d.Tenant, t.task, d.Reason)
+			t := c.taskLocked(d.Task)
+			if t == nil {
+				c.log.Error("policy failed a task the core does not hold", "task_id", d.Task, "workspace_id", d.Tenant)
+				now := c.now()
+				t = &TaskRow{Task: Task{Task: policy.Task{ID: d.Task, Tenant: d.Tenant}}, State: TaskEnded, ClaimedAt: now, EndedAt: now, EndReason: d.Reason}
 			}
-			c.dropClaimedLocked(d.Task)
+			if c.claimed[d.Task] != nil {
+				c.auditDenied(d.Tenant, &t.Task, d.Reason)
+			}
+			c.failLocked(t, d.Reason)
+			c.dropClaimedLocked(d.Task, d.Reason)
 		case policy.EndLease:
-			c.dropClaimedLocked(d.Task)
+			c.dropClaimedLocked(d.Task, d.Reason)
 			c.closeLeaseLocked(c.leases[d.Task], d.Reason)
 		}
 	}
@@ -56,23 +62,36 @@ func (c *Core) placeLocked(d policy.Place) {
 	}
 	c.unqueueLocked(d.Task)
 	target.queue = append(target.queue, t)
+	t.PodID = d.Pod
+	c.saveTaskLocked(t)
 	c.log.Info("claimed task assigned to pod", "task_id", d.Task, "pod_id", d.Pod, "workspace_id", d.Tenant)
 	c.pool.Wake(d.Pod)
 }
 
 // takeQueuedLocked hands the pod the oldest task placed on it and starts its
 // lease. Nil when none is placed there.
-func (c *Core) takeQueuedLocked(pd *pod) *claimedTask {
+func (c *Core) takeQueuedLocked(pd *pod) *TaskRow {
 	if len(pd.queue) == 0 {
 		return nil
 	}
 	t := pd.queue[0]
 	pd.queue = pd.queue[1:]
-	delete(c.claimed, t.task.ID)
-	c.startLeaseLocked(pd, t.task)
-	c.policy.TaskStarted(t.task.ID)
+	delete(c.claimed, t.ID)
+	c.startLeaseLocked(pd, t)
+	c.policy.TaskStarted(t.ID)
 	c.recordLocked()
 	return t
+}
+
+// handedLocked is the task the pod was handed and has not reported started,
+// nil when there is none.
+func handedLocked(pd *pod) *TaskRow {
+	for _, l := range pd.leases {
+		if l.State == TaskHanded {
+			return l.TaskRow
+		}
+	}
+	return nil
 }
 
 // endTaskLocked tells the policy a task is over and carries out what follows:
@@ -84,17 +103,20 @@ func (c *Core) endTaskLocked(taskID, reason string) {
 // unqueueLocked takes a task off whichever pod it is queued on.
 func (c *Core) unqueueLocked(taskID string) {
 	for _, pd := range c.held {
-		pd.queue = slices.DeleteFunc(pd.queue, func(t *claimedTask) bool { return t.task.ID == taskID })
+		pd.queue = slices.DeleteFunc(pd.queue, func(t *TaskRow) bool { return t.ID == taskID })
 	}
 }
 
-// dropClaimedLocked forgets a claimed task that will not start.
-func (c *Core) dropClaimedLocked(taskID string) {
-	if _, ok := c.claimed[taskID]; !ok {
+// dropClaimedLocked ends a claimed task that will not start.
+func (c *Core) dropClaimedLocked(taskID, reason string) {
+	t := c.claimed[taskID]
+	if t == nil {
 		return
 	}
 	delete(c.claimed, taskID)
 	c.unqueueLocked(taskID)
+	t.State, t.EndedAt, t.EndReason, t.Payload = TaskEnded, c.now(), reason, nil
+	c.saveTaskLocked(t)
 }
 
 // DispatchOnce is the dispatch tick, the only place tasks are claimed. It
@@ -150,9 +172,10 @@ func (c *Core) readPending(ctx context.Context) {
 // When the policy asks for a pod, one is acquired from the pool; once the
 // pool has none, the policy may pick a pod in hold instead. Every claim is
 // made against a held pod, so every claimed task has somewhere to run. A
-// halted pool stops every claim.
+// record that cannot be written stops every claim: a claimed task must be
+// in the record before a pod gets it.
 func (c *Core) claimRound(ctx context.Context) {
-	if c.pool.Halted() != "" {
+	if c.flush(ctx) != nil {
 		return
 	}
 	var tried []policy.Target
@@ -203,14 +226,18 @@ func (c *Core) claimRound(ctx context.Context) {
 	}
 }
 
-// placeClaimed hands a claimed task to the policy, which places it, or fails
-// the task when it cannot run here.
+// placeClaimed records a claimed task and hands it to the policy, which
+// places it, or fails the task when it cannot run here. The record is
+// written before the task's pod is handed it (see Next).
 func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task) {
+	now := c.now()
 	if !strings.EqualFold(task.Tenant, claim.Tenant) {
 		why := "the managed runtime does not serve this task's workspace"
+		t := &TaskRow{Task: *task, State: TaskEnded, ClaimedAt: now, EndedAt: now, EndReason: why}
+		t.Tenant, t.Kind, t.Payload = claim.Tenant, claim.Kind, nil
 		c.mu.Lock()
 		c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, false))
-		c.failLocked(claim.Tenant, task.ID, why)
+		c.failLocked(t, why)
 		c.mu.Unlock()
 		c.auditDenied(claim.Tenant, task, why)
 		c.settle(ctx)
@@ -218,13 +245,34 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 	}
 	task.Tenant, task.Kind = claim.Tenant, claim.Kind
 	c.mu.Lock()
-	c.claimed[task.ID] = &claimedTask{task: task, claimedAt: c.now()}
-	c.applyLocked(c.policy.ClaimReturned(claim.ID, &task.Task, false))
+	if t := c.taskLocked(task.ID); t != nil {
+		// Multica handed the task out again: the delivery the core holds was
+		// not started in time (a restart took long, say). The new delivery
+		// replaces it; the task keeps its place.
+		if t.State != TaskRunning {
+			t.Payload = task.Payload
+			c.saveTaskLocked(t)
+		}
+		c.applyLocked(c.policy.ClaimReturned(claim.ID, nil, false))
+		c.mu.Unlock()
+		c.log.Warn("claimed a task the core holds already; its new delivery replaces the old one", "task_id", task.ID, "workspace_id", task.Tenant, "state", t.State)
+		c.settle(ctx)
+		return
+	}
+	t := &TaskRow{Task: *task, State: TaskPlaced, ClaimedAt: now}
+	c.claimed[task.ID] = t
+	c.saveTaskLocked(t)
+	c.applyLocked(c.policy.ClaimReturned(claim.ID, &t.Task.Task, false))
 	c.mu.Unlock()
 	c.settle(ctx)
 }
 
-// Next hands the polling pod the oldest task placed on it, nil when none is.
+// Next hands the polling pod the task placed on it, nil when none is. A task
+// the pod was handed and has not reported started is handed again, so a
+// response the pod never got, or a restart, costs nothing. The pod gets a
+// task only once the record says it was handed it; until it can be written
+// the pod gets nothing, and asks again.
+//
 // It never claims upstream: only the dispatch tick does, against a pod the
 // core holds, so a polling pod with nothing placed on it causes no upstream
 // call and tasks stay queued upstream until a pod can take them.
@@ -233,12 +281,17 @@ func (c *Core) Next(ctx context.Context, podID string) json.RawMessage {
 	c.tickLocked()
 	var payload json.RawMessage
 	if pd := c.held[podID]; pd != nil {
-		if t := c.takeQueuedLocked(pd); t != nil {
-			payload = t.task.Payload
-			c.log.Info("leased pod to task", "pod_id", podID, "task_id", t.task.ID, "workspace_id", t.task.Tenant)
+		if t := handedLocked(pd); t != nil {
+			payload = t.Payload
+			c.log.Info("task handed to its pod again", "pod_id", podID, "task_id", t.ID, "workspace_id", t.Tenant)
+		} else if t := c.takeQueuedLocked(pd); t != nil {
+			payload = t.Payload
+			c.log.Info("leased pod to task", "pod_id", podID, "task_id", t.ID, "workspace_id", t.Tenant)
 		}
 	}
 	c.mu.Unlock()
-	c.settle(ctx)
+	if !c.settle(ctx) {
+		return nil
+	}
 	return payload
 }

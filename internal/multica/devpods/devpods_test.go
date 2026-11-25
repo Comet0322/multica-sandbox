@@ -16,11 +16,12 @@ import (
 )
 
 type fakeCore struct {
-	mu     sync.Mutex
-	queue  map[string][]json.RawMessage
-	owned  map[string]string
-	ended  []string
-	serves []string
+	mu      sync.Mutex
+	queue   map[string][]json.RawMessage
+	owned   map[string]string
+	ended   []string
+	serves  []string
+	running []string
 }
 
 func (c *fakeCore) Next(_ context.Context, pod string) json.RawMessage {
@@ -41,6 +42,12 @@ func (c *fakeCore) Owns(pod, task string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.owned[task] == pod
+}
+
+func (c *fakeCore) TaskRunning(pod, task string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.running = append(c.running, pod+" "+task)
 }
 
 func (c *fakeCore) TaskEnded(pod, task, reason string) {

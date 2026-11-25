@@ -79,6 +79,8 @@ func TestLoadSettingsReadsTheEnvironment(t *testing.T) {
 		"SANDBOX_POOL_QUOTA":              "6",
 		"SANDBOX_POOL_SYNC_INTERVAL":      "45s",
 		"SANDBOX_POOL_RUNTIME_VISIBILITY": "private",
+		"SANDBOX_DATABASE_URL":            "postgres://manager@db/record",
+		"SANDBOX_PAYLOAD_KEY_FILE":        testdata("payload-key"),
 	}
 	s, err := loadSettings(func(k string) string { return env[k] })
 	if err != nil {
@@ -102,7 +104,7 @@ func servedBy(t *testing.T, up *fakeMultica, syncInterval time.Duration, hup cha
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool, err := manager.New(manager.Config{
-		MulticaURL: up.URL, PAT: "mul_pat_pool", SyncInterval: syncInterval, Kube: testKube(),
+		MulticaURL: up.URL, PAT: "mul_pat_pool", SyncInterval: syncInterval, Kube: testKube(), Store: nopStore{},
 	}, log)
 	if err != nil {
 		t.Fatal(err)

@@ -50,6 +50,7 @@ type Config struct {
 type Core interface {
 	Next(ctx context.Context, pod string) json.RawMessage
 	Owns(pod, task string) bool
+	TaskRunning(pod, task string)
 	TaskEnded(pod, task, reason string)
 	PodServes(pod, tenant string)
 }
@@ -220,11 +221,9 @@ func (p *Pool) Wake(id string) {
 // Preferred: every simulated pod picks its task up at once.
 func (p *Pool) Preferred(string) bool { return true }
 
-// Record: simulated pods keep nothing across a restart.
-func (p *Pool) Record(string, core.PodRecord) {}
-
-// Halted: a simulated pool never stops claims.
-func (p *Pool) Halted() string { return "" }
+// Adopt: simulated pods do not outlive the process, so none is left to
+// adopt.
+func (p *Pool) Adopt(context.Context, []core.HeldPod) error { return nil }
 
 // What the source tells (tasksource.Pods).
 
@@ -332,7 +331,9 @@ type claimed struct {
 	StartClaimSupported bool   `json:"start_claim_supported"`
 }
 
-// pick takes every task placed on the pod and runs each.
+// pick takes every task placed on the pod and runs each. A task the pod
+// runs already, which the core hands again until its start is reported, is
+// not run twice.
 func (p *Pool) pick(ctx context.Context, id string) {
 	for {
 		raw := p.core.Next(ctx, id)
@@ -342,13 +343,18 @@ func (p *Pool) pick(ctx context.Context, id string) {
 		var t claimed
 		if err := json.Unmarshal(raw, &t); err != nil || t.ID == "" {
 			p.log.Error("simulated pod got a task it cannot read", "pod_id", id)
-			continue
+			return
 		}
 		p.mu.Lock()
-		if pd := p.find(id); pd != nil {
+		pd := p.find(id)
+		again := pd == nil || pd.running[t.ID]
+		if !again {
 			pd.running[t.ID] = true
 		}
 		p.mu.Unlock()
+		if again {
+			return
+		}
 		go p.run(ctx, id, t)
 	}
 }
@@ -372,6 +378,7 @@ func (p *Pool) run(ctx context.Context, podID string, t claimed) {
 		p.end(podID, t.ID, "fail", map[string]any{"error": "devpods: start refused: " + err.Error()})
 		return
 	}
+	p.core.TaskRunning(podID, t.ID)
 	d := p.cfg.TaskMin
 	if span := p.cfg.TaskMax - p.cfg.TaskMin; span > 0 {
 		d += time.Duration(randInt64N(int64(span)))

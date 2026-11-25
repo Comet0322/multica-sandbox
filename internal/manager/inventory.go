@@ -51,6 +51,11 @@ func (m *Manager) Inventory() Inventory {
 		Failures: make([]PodFailure, 0, len(health.Failures)), FailureCounts: health.FailureCounts,
 		Pods: []PodInfo{}, Workspaces: []WorkspaceInfo{}, LivePods: view.LivePods,
 	}
+	if why := m.core.StoreProblem(); why != "" {
+		// Nothing is claimed or handed to a pod meanwhile, which matters more
+		// than how pods start.
+		inv.Problem = "the dispatch record cannot be written: " + why
+	}
 	for _, f := range health.Failures {
 		inv.Failures = append(inv.Failures, PodFailure(f))
 	}

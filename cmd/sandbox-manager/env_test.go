@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/policy"
+	"sandbox-manager/internal/store"
 )
 
 func envLookup(env map[string]string) func(string) string {
@@ -31,11 +33,30 @@ func testdata(name string) string {
 
 func baseEnv() map[string]string {
 	return map[string]string{
-		"SANDBOX_POOL_TOKEN":   "mul_pat_pool",
-		"MULTICA_SERVER_URL":   "http://multica:8080",
-		"SANDBOX_POD_TEMPLATE": testdata("pod.yaml"),
-		"KUBECONFIG":           testdata("kubeconfig"),
+		"SANDBOX_POOL_TOKEN":       "mul_pat_pool",
+		"MULTICA_SERVER_URL":       "http://multica:8080",
+		"SANDBOX_POD_TEMPLATE":     testdata("pod.yaml"),
+		"KUBECONFIG":               testdata("kubeconfig"),
+		"SANDBOX_DATABASE_URL":     "postgres://manager@db/record",
+		"SANDBOX_PAYLOAD_KEY_FILE": testdata("payload-key"),
 	}
+}
+
+// nopStore is a dispatch record that keeps nothing, for a manager that is
+// never restarted.
+type nopStore struct{}
+
+func (nopStore) Load(context.Context) (core.Record, error)                  { return core.Record{}, nil }
+func (nopStore) Write(context.Context, []core.PodRow, []core.TaskRow) error { return nil }
+func (nopStore) PruneLoop(context.Context)                                  {}
+func (nopStore) Close()                                                     {}
+
+// withoutDatabase has runManager open a nopStore instead of the database,
+// until the test ends.
+func withoutDatabase(t *testing.T) {
+	open := openStore
+	openStore = func(context.Context, store.Config) (recordStore, error) { return nopStore{}, nil }
+	t.Cleanup(func() { openStore = open })
 }
 
 func TestLoadSettingsReadsHoldIdleAndAudit(t *testing.T) {
@@ -163,11 +184,17 @@ func TestManagerStartsWithEveryRemainingSetting(t *testing.T) {
 		"SANDBOX_HOLD_TIMEOUT":            "5m",
 		"SANDBOX_POOL_RECONCILE_INTERVAL": "1m",
 		"SANDBOX_MODELS":                  "claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2",
+		"SANDBOX_DATABASE_URL":            "postgres://manager@db/record",
+		"SANDBOX_PAYLOAD_KEY_FILE":        testdata("payload-key"),
 	}
 	s, err := loadSettings(envLookup(env))
 	if err != nil || len(s.warnings) != 0 {
 		t.Fatalf("a remaining setting was refused: %v %q", err, s.warnings)
 	}
+	if s.databaseURL != "postgres://manager@db/record" || len(s.payloadKey) != 32 {
+		t.Fatalf("database settings = %q and a %d-byte key", s.databaseURL, len(s.payloadKey))
+	}
+	s.config.Store = nopStore{}
 	pool, err := manager.New(s.config, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("the pool refused the settings: %v", err)
@@ -187,6 +214,10 @@ func TestLoadSettingsRefusesBadSettings(t *testing.T) {
 		"bad pod count":     {map[string]string{"SANDBOX_MAX_PODS": "-2"}, "SANDBOX_MAX_PODS"},
 		"no pod template":   {map[string]string{"SANDBOX_POD_TEMPLATE": ""}, "SANDBOX_POD_TEMPLATE is required"},
 		"bad models":        {map[string]string{"SANDBOX_MODELS": "claude"}, "SANDBOX_MODELS"},
+		"no database":       {map[string]string{"SANDBOX_DATABASE_URL": ""}, "SANDBOX_DATABASE_URL or SANDBOX_DATABASE_URL_FILE is required"},
+		"no payload key":    {map[string]string{"SANDBOX_PAYLOAD_KEY_FILE": ""}, "SANDBOX_PAYLOAD_KEY_FILE is required"},
+		"short key":         {map[string]string{"SANDBOX_PAYLOAD_KEY_FILE": testdata("pod.yaml")}, "SANDBOX_PAYLOAD_KEY_FILE"},
+		"missing key file":  {map[string]string{"SANDBOX_PAYLOAD_KEY_FILE": testdata("no-such-key")}, "SANDBOX_PAYLOAD_KEY_FILE: cannot read"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -210,6 +241,7 @@ func TestStartupRejectsSettingsThePoolRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.podListen, s.adminListen = "127.0.0.1:0", "127.0.0.1:0"
+	withoutDatabase(t)
 	err = runManager(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), s)
 	if err == nil || !strings.Contains(err.Error(), "Multica URL") {
 		t.Fatalf("a bad Multica URL must stop startup, got %v", err)

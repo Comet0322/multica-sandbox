@@ -87,6 +87,9 @@ const (
 // Config configures a Manager.
 type Config struct {
 	MulticaURL string
+	// Store keeps the core's dispatch record, so a manager that restarts
+	// takes over from it (see Restore). Required.
+	Store core.Store
 	// Kube configures the sandbox service, which creates the pods through
 	// the Kubernetes API from a pod template. Its Notify, Audit,
 	// Log and Now are the manager's. It is required unless the pod side is
@@ -349,7 +352,7 @@ func build(cfg Config, log *slog.Logger, svc pool.Service, sim SimulatedPods) (*
 	}
 	m.maxPods = maxPods
 	c, err := core.New(core.Config{
-		Log: log, Clock: m.clock, Audit: audit, RemovedReason: "workspace removed",
+		Log: log, Clock: m.clock, Audit: audit, Store: cfg.Store, RemovedReason: "workspace removed",
 		Kinds: cfg.Runtimes, HoldTimeout: cfg.HoldTimeout, MaxIdle: cfg.PodMaxIdle, MaxPods: maxPods, PodWait: podWait, Backoff: cfg.UpstreamBackoff,
 		DispatchInterval: cfg.DispatchInterval, ReconcileInterval: cfg.ReconcileInterval, LeaseMax: cfg.LeaseMax,
 		DrainTimeout: cfg.DrainTimeout, DrainPoll: cfg.DrainPoll,
@@ -396,15 +399,11 @@ func (m *Manager) Run(ctx context.Context) {
 	m.core.Run(ctx)
 }
 
-// Restore takes over the pods a previous run left (see pool.Pool.Restore):
-// running tasks run on, holds resume and warm and idle pods are kept. Call it
-// once, before Sync and Run.
-func (m *Manager) Restore(ctx context.Context) error {
-	if m.real == nil {
-		return nil
-	}
-	return m.real.Restore(ctx)
-}
+// Restore takes over what a previous run left, from the store (see
+// core.Core.Restore): running tasks run on, tasks not started yet are handed
+// to their pods again, holds resume and idle pods are kept; every other pod
+// is deleted. Call it once, before Sync and Run.
+func (m *Manager) Restore(ctx context.Context) error { return m.core.Restore(ctx) }
 
 // Sync brings the served workspaces in line with the account's memberships
 // (see tasksource.Source.Sync).

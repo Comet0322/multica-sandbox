@@ -87,6 +87,7 @@ func TestLeasedPodCannotClaimASecondTask(t *testing.T) {
 	pod := h.newPod("pool-0")
 	pod.start()
 	pod.claimBatch()
+	pod.report("t1", "start")
 
 	if got := pod.claimBatch(); len(got) != 0 {
 		t.Fatalf("leased pod was handed %v", got)

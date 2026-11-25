@@ -25,17 +25,18 @@ import (
 
 const kubeNS = "sandbox-test"
 
-// kubeWorld is what outlives one manager: the Kubernetes namespace and the
-// Multica server.
+// kubeWorld is what outlives one manager: the Kubernetes namespace, the
+// Multica server and the store of the dispatch record.
 type kubeWorld struct {
 	t        *testing.T
 	client   *fake.Clientset
 	upstream *fakeMultica
+	store    *memStore
 }
 
 func newKubeWorld(t *testing.T) *kubeWorld {
 	t.Helper()
-	return &kubeWorld{t: t, client: fake.NewSimpleClientset(), upstream: newFakeMultica(t)}
+	return &kubeWorld{t: t, client: fake.NewSimpleClientset(), upstream: newFakeMultica(t), store: newMemStore()}
 }
 
 func podTemplate() *corev1.Pod {
@@ -50,7 +51,7 @@ func podTemplate() *corev1.Pod {
 // side. Its stop ends it.
 func (w *kubeWorld) manager(warm, maxPods int, opts ...func(*manager.Config)) *harness {
 	w.t.Helper()
-	cfg := manager.Config{MulticaURL: w.upstream.URL, PAT: harnessPAT, Pool: multica.Machine{Name: "Test Pool"}}
+	cfg := manager.Config{MulticaURL: w.upstream.URL, PAT: harnessPAT, Pool: multica.Machine{Name: "Test Pool"}, Store: w.store}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
@@ -77,6 +78,9 @@ func startManager(t *testing.T, client *fake.Clientset, cfg manager.Config, warm
 	}
 	logs, audit := &syncBuffer{}, &syncBuffer{}
 	cfg.AuditLog = audit
+	if cfg.Store == nil {
+		cfg.Store = newMemStore()
+	}
 	m, err := manager.New(cfg, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatal(err)

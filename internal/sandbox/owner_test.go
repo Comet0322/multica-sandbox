@@ -22,9 +22,9 @@ func ownerDeployment() *appsv1.Deployment {
 }
 
 func TestNewPodsAreOwnedByTheOwnerDeployment(t *testing.T) {
-	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, OwnerDeployment: "sandbox-manager"}, ownerDeployment())
-	if _, err := h.svc.Restore(context.Background()); err != nil {
-		t.Fatalf("Restore: %v", err)
+	h := newAdoptHarness(t, sandbox.KubeConfig{WarmPods: 1, OwnerDeployment: "sandbox-manager"}, ownerDeployment())
+	if err := h.svc.Adopt(context.Background(), nil); err != nil {
+		t.Fatalf("Adopt: %v", err)
 	}
 	h.run()
 	h.eventually("a warm pod", func() bool { return len(h.pods()) == 1 })
@@ -64,15 +64,15 @@ func TestAnOwnerThatCannotBeReadStopsTheStart(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, OwnerDeployment: "sandbox-manager"}, tc.objects...)
+			h := newAdoptHarness(t, sandbox.KubeConfig{WarmPods: 1, OwnerDeployment: "sandbox-manager"}, tc.objects...)
 			if tc.refuse {
 				h.client.PrependReactor("get", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
 					return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "deployments"}, "sandbox-manager", errors.New("no rights"))
 				})
 			}
-			_, err := h.svc.Restore(context.Background())
+			err := h.svc.Adopt(context.Background(), nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("Restore = %v, want %q", err, tc.want)
+				t.Fatalf("Adopt = %v, want %q", err, tc.want)
 			}
 			if n := len(h.pods()); n != 0 {
 				t.Fatalf("pods = %d, want none created", n)
@@ -82,21 +82,19 @@ func TestAnOwnerThatCannotBeReadStopsTheStart(t *testing.T) {
 }
 
 // A pod a previous run created before the owner was set keeps running and
-// is restored as it is; new pods get the owner.
-func TestRestoredPodsWithoutAnOwnerAreKept(t *testing.T) {
-	left := leftPod("sandbox-old", "mpt_old", map[string]string{sandbox.WorkspaceLabel: "ws-1", sandbox.KindLabel: "pool"},
-		map[string]string{sandbox.PhaseAnnotation: "running", sandbox.TaskAnnotation: "task-1", sandbox.TaskStartedAnnotation: "2026-11-16T08:30:00Z"})
-	h := newRestoreHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 3, OwnerDeployment: "sandbox-manager"}, ownerDeployment(), left)
-	got, err := h.svc.Restore(context.Background())
-	if err != nil || len(got) != 1 || got[0].ID != "sandbox-old" {
-		t.Fatalf("Restore = %+v, %v; want the old pod", got, err)
+// is adopted as it is; new pods get the owner.
+func TestAdoptedPodsWithoutAnOwnerAreKept(t *testing.T) {
+	left := leftPod("sandbox-old", "mpt_old")
+	h := newAdoptHarness(t, sandbox.KubeConfig{WarmPods: 1, MaxPods: 3, OwnerDeployment: "sandbox-manager"}, ownerDeployment(), left)
+	if err := h.svc.Adopt(context.Background(), []sandbox.PodID{"sandbox-old"}); err != nil {
+		t.Fatalf("Adopt: %v", err)
 	}
 	h.run()
 	h.eventually("a new warm pod", func() bool { return len(h.pods()) == 2 })
 	for _, pd := range h.pods() {
 		owned := len(pd.OwnerReferences) == 1
 		if pd.Name == "sandbox-old" && owned {
-			t.Fatalf("the restored pod got an owner: %+v", pd.OwnerReferences)
+			t.Fatalf("the adopted pod got an owner: %+v", pd.OwnerReferences)
 		}
 		if pd.Name != "sandbox-old" && !owned {
 			t.Fatalf("the new pod %s has no owner", pd.Name)

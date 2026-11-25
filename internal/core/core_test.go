@@ -2,6 +2,7 @@ package core_test
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -26,8 +27,12 @@ func TestATaskRunsOnAPodWhichIsIdleAfterIt(t *testing.T) {
 	if got := r.next("p1"); got != "t1" {
 		t.Fatalf("p1 picked up %q, want t1", got)
 	}
+	if got := r.next("p1"); got != "t1" {
+		t.Fatalf("a second pickup before the pod reported the task started returned %q, want t1 again", got)
+	}
+	r.core.TaskRunning("p1", "t1")
 	if got := r.next("p1"); got != "" {
-		t.Fatalf("a second pickup returned %q", got)
+		t.Fatalf("a pickup once the task runs returned %q", got)
 	}
 	if !r.core.Owns("p1", "t1") || r.core.Owns("p2", "t1") {
 		t.Fatal("t1 must be p1's and no one else's")
@@ -57,29 +62,41 @@ func TestNothingIsClaimedWithoutAPod(t *testing.T) {
 	}
 }
 
-// A halted pool (Kubernetes refuses the pods' records) stops every claim,
-// even onto a pod the core already holds, until it is no longer halted.
-func TestNothingIsClaimedWhileThePoolIsHalted(t *testing.T) {
+// A claimed task reaches its pod only once the dispatch record holds it.
+// While the record cannot be written, the pod gets nothing and nothing more
+// is claimed, even onto a pod the core already holds.
+func TestNothingIsHandedOrClaimedWhileTheRecordCannotBeWritten(t *testing.T) {
 	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
 	r.pool.add("p1", "A")
+	r.pool.add("p2", "A")
+	r.store.failWith(errors.New("connection refused"))
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
-	if got := r.next("p1"); got != "t1" {
-		t.Fatalf("p1 picked up %q, want t1", got)
+	if got := r.next("p1"); got != "" {
+		t.Fatalf("p1 was handed %q, which the record does not hold", got)
 	}
-	r.core.TaskEnded("p1", "t1", "pod reported complete")
-
-	r.pool.halt("Kubernetes refused the manager's credentials: patch pods")
+	if p := r.core.StoreProblem(); !strings.Contains(p, "connection refused") {
+		t.Fatalf("StoreProblem = %q, want the store's error", p)
+	}
 	r.source.add("A", "t2", "alice", 0)
 	r.dispatch()
 	if claims, _, _ := r.source.snapshot(); len(claims) != 1 {
-		t.Fatalf("claimed %v while the pool is halted", claims)
+		t.Fatalf("claimed %v while the record cannot be written", claims)
 	}
 
-	r.pool.halt("")
+	r.store.failWith(nil)
+	if got := r.next("p1"); got != "t1" {
+		t.Fatalf("p1 picked up %q once the record was written, want t1", got)
+	}
+	if st := r.store.task("t1").State; st != core.TaskHanded {
+		t.Fatalf("t1 is %q in the record, want handed", st)
+	}
+	if r.core.StoreProblem() != "" {
+		t.Fatalf("StoreProblem = %q once written", r.core.StoreProblem())
+	}
 	r.dispatch()
 	if claims, _, _ := r.source.snapshot(); len(claims) != 2 {
-		t.Fatalf("claimed %v, want t2 once the pool is no longer halted", claims)
+		t.Fatalf("claimed %v, want t2 once the record can be written", claims)
 	}
 }
 

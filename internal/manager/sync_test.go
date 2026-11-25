@@ -334,7 +334,7 @@ func TestPoolRunsOnlyUnderTheBotAccount(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "bot account") {
 		t.Fatalf("a pool without the bot account's ticket: want an error naming it, got %v", err)
 	}
-	if _, err := manager.New(manager.Config{MulticaURL: "http://127.0.0.1:1", PAT: patPool, Kube: testKube()}, nil); err != nil {
+	if _, err := manager.New(manager.Config{MulticaURL: "http://127.0.0.1:1", PAT: patPool, Kube: testKube(), Store: newMemStore()}, nil); err != nil {
 		t.Fatalf("the bot account's ticket alone must be valid: %v", err)
 	}
 }

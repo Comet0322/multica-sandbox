@@ -85,9 +85,9 @@ type Inventory struct {
 	// PrunedTotal counts failed pods dropped from the inventory since the
 	// manager started.
 	PrunedTotal int `json:"pruned_total"`
-	// Problem is why pods could not be created or started lately (no node
-	// capacity, an image that cannot be pulled, refused credentials), empty
-	// when none is known.
+	// Problem is why the dispatch record cannot be written, else why pods
+	// could not be created or started lately (no node capacity, an image
+	// that cannot be pulled, refused credentials), empty when none is known.
 	Problem string `json:"problem,omitempty"`
 	// Broken is why no pod starts at all (an image that cannot be pulled,
 	// refused credentials, or SANDBOX_POD_START_FAILURES failures in a row),

@@ -583,7 +583,7 @@ func TestPoolRejectsBadWorkspaceEntries(t *testing.T) {
 		"negative quota": {{WorkspaceID: wsA, Quota: -1}},
 	}
 	up := newMultiMultica(t, &fakeWorkspace{id: wsA})
-	pool, err := manager.New(manager.Config{MulticaURL: up.URL, PAT: patPool, Kube: testKube()}, nil)
+	pool, err := manager.New(manager.Config{MulticaURL: up.URL, PAT: patPool, Kube: testKube(), Store: newMemStore()}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

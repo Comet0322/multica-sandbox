@@ -2,102 +2,137 @@ package core
 
 import (
 	"context"
-	"time"
 
 	"sandbox-manager/internal/policy"
 )
 
-// The core keeps what each held pod serves on the pod, through its Pool
-// (Record), and a core that starts takes over the pods a previous run left
-// from those records (Restore). Kubernetes holds the state; the manager
-// keeps no database.
-
-// PodRecord is what a held pod serves: the policy's view of it, and when its
-// task started.
-type PodRecord struct {
-	Phase  policy.Phase
-	Tenant string
-	Kind   policy.Kind
-	// Key is the key of its task, or the key it is held for.
-	Key string
-	// Task is the task placed on or running on the pod; TaskStarted is when
-	// the pod picked it up, zero while it has not.
-	Task        string
-	TaskStarted time.Time
-	// Since is when a held pod was held or an idle pod became idle; Until is
-	// when a hold ends.
-	Since, Until time.Time
-}
-
-// RestoredPod is a pod a previous run left, held by the core from now on,
-// with what it serves.
-type RestoredPod struct {
-	ID     string
-	Record PodRecord
-}
-
-// reasonRestartedBeforeStart fails a task whose pod had not taken it up when
-// the manager stopped: the task went with the manager.
-const reasonRestartedBeforeStart = "the sandbox manager restarted before the task's pod took it up"
-
-// Restore takes over the pods a previous run left, which the Pool lists as
-// held. A running task runs on, its lease restored from when it started; a
-// hold resumes with its remaining time; an idle pod ages on. A task placed on
-// a pod that had not taken it up is failed, and its pod deleted. Call it
-// before the core serves anything.
-func (c *Core) Restore(pods []RestoredPod) {
+// Restore takes over what a previous run left in the store: the pods it
+// held, which the pool adopts, and the tasks it claimed.
+//
+//   - A running task runs on.
+//   - A task placed on a pod, or handed to it and not reported started, is
+//     handed to that pod again.
+//   - A task on no pod waits for one.
+//   - A hold resumes with its remaining time, and an idle pod ages on.
+//   - A pod the pool no longer has is found lost at the next dispatch tick,
+//     which fails its started task and places its other task elsewhere.
+//   - The failure reports the source had not taken are sent again.
+//
+// Call it once, before the core serves anything.
+func (c *Core) Restore(ctx context.Context) error {
+	rec, err := c.store.Load(ctx)
+	if err != nil {
+		return err
+	}
+	// The task each running pod runs; a pod holds one at a time.
+	running := map[string]bool{}
+	for _, p := range rec.Pods {
+		if p.Phase == policy.PhaseRunning {
+			running[p.ID] = true
+		}
+	}
+	onPod := map[string]*TaskRow{}
+	var loose []*TaskRow
 	c.mu.Lock()
-	for _, rp := range pods {
-		rec := rp.Record
-		info, _ := c.pool.Pod(rp.ID)
-		c.heldSeq++
-		pd := &pod{ID: rp.ID, Name: info.Name, seq: c.heldSeq}
-		c.held[rp.ID] = pd
-		if rec.Phase == policy.PhaseRunning && rec.TaskStarted.IsZero() {
-			c.log.Warn("restored pod had not taken its task up; the task is failed", "pod_id", rp.ID, "task_id", rec.Task, "workspace_id", rec.Tenant)
-			c.failLocked(rec.Tenant, rec.Task, reasonRestartedBeforeStart)
-			c.handBackLocked(policy.Delete{Pod: rp.ID, Reason: "its task was lost in a restart"})
+	for i := range rec.Tasks {
+		t := &rec.Tasks[i]
+		if t.FailPending {
+			c.failing[t.ID] = t
+			c.failNow = append(c.failNow, t)
+		}
+		switch {
+		case t.State == TaskEnded:
+		case running[t.PodID] && onPod[t.PodID] == nil:
+			onPod[t.PodID] = t
+		default:
+			loose = append(loose, t)
+		}
+	}
+	var adopt []HeldPod
+	var kept []PodRow
+	for _, p := range rec.Pods {
+		if running[p.ID] && onPod[p.ID] == nil {
+			// Nothing in the record runs there; whatever does is not the
+			// core's to know of.
+			c.log.Warn("pod deleted: the dispatch record has no task running on it", "pod_id", p.ID)
+			p.GoneAt, p.GoneWhy = c.now(), "the dispatch record has no task running on it"
+			c.dirtyPods[p.ID] = p
 			continue
 		}
-		c.applyLocked(c.policy.PodRestored(rp.ID, policy.PodInfo{
-			Phase: rec.Phase, Tenant: rec.Tenant, Kind: rec.Kind, Key: rec.Key, Task: rec.Task, Started: rec.Task != "",
-			Since: rec.Since, Until: rec.Until,
-		}))
-		if rec.Phase == policy.PhaseRunning {
-			l := &lease{TaskID: rec.Task, PodID: rp.ID, Tenant: rec.Tenant, StartedAt: rec.TaskStarted, PodName: pd.Name, pod: pd}
-			pd.leases = map[string]*lease{rec.Task: l}
-			c.leases[rec.Task] = l
-			c.history = append(c.history, l)
-		}
-		c.recorded[rp.ID] = rec
-		c.log.Info("pod restored", "pod_id", rp.ID, "phase", rec.Phase, "workspace_id", rec.Tenant, "kind", rec.Kind, "task_id", rec.Task)
+		adopt = append(adopt, HeldPod{ID: p.ID, Tenant: p.Tenant})
+		kept = append(kept, p)
+	}
+	c.mu.Unlock()
+
+	if err := c.pool.Adopt(ctx, adopt); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	for _, p := range kept {
+		c.restorePodLocked(p, onPod[p.ID])
+	}
+	for _, t := range loose {
+		c.restoreLooseLocked(t)
 	}
 	c.recordLocked()
 	c.mu.Unlock()
-	c.settle(context.Background())
+	c.log.Info("dispatch record restored", "pods", len(kept), "tasks", len(onPod)+len(loose), "failure_reports", c.PendingFailReports())
+	// The failure reports go out with the first settle once the source serves
+	// its tenants: written now, they would reach none.
+	_ = c.flush(ctx)
+	return nil
 }
 
-// recordLocked tells the Pool what each held pod serves, for those whose
-// record changed. Callers hold c.mu.
-func (c *Core) recordLocked() {
-	for id, pd := range c.held {
-		info, ok := c.policy.Pod(id)
-		if !ok {
-			continue
-		}
-		rec := PodRecord{Phase: info.Phase, Tenant: info.Tenant, Kind: info.Kind, Key: info.Key, Task: info.Task, Since: info.Since, Until: info.Until}
-		if l := pd.leases[info.Task]; l != nil {
-			rec.TaskStarted = l.StartedAt
-		}
-		if old, ok := c.recorded[id]; ok && old == rec {
-			continue
-		}
-		c.recorded[id] = rec
-		c.pool.Record(id, rec)
+// restorePodLocked holds a pod a previous run held, with the task it was
+// placed on or handed, if any. Callers hold c.mu.
+func (c *Core) restorePodLocked(p PodRow, t *TaskRow) {
+	name := p.ID
+	if info, ok := c.pool.Pod(p.ID); ok && info.Name != "" {
+		name = info.Name
 	}
-	for id := range c.recorded {
-		if c.held[id] == nil {
-			delete(c.recorded, id)
+	c.heldSeq++
+	pd := &pod{ID: p.ID, Name: name, seq: c.heldSeq, createdAt: p.CreatedAt, readyAt: p.ReadyAt}
+	c.held[p.ID] = pd
+	c.recorded[p.ID] = p
+	info := policy.PodInfo{Phase: p.Phase, Tenant: p.Tenant, Kind: p.Kind, Key: p.Key, Since: p.Since, Until: p.Until}
+	if t != nil {
+		info.Task, info.Started = t.ID, t.State != TaskPlaced
+		if t.State == TaskPlaced {
+			c.claimed[t.ID] = t
+			pd.queue = []*TaskRow{t}
+		} else {
+			l := &lease{TaskRow: t, PodName: pd.Name, pod: pd}
+			pd.leases = map[string]*lease{t.ID: l}
+			c.leases[t.ID] = l
+			c.history = append(c.history, l)
 		}
 	}
+	c.applyLocked(c.policy.PodRestored(p.ID, info))
+	c.log.Info("pod restored", "pod_id", p.ID, "phase", p.Phase, "workspace_id", p.Tenant, "kind", p.Kind, "task_id", info.Task, "task_state", taskState(t))
+}
+
+// restoreLooseLocked takes a task a previous run left on no pod it still
+// held: one placed waits for a pod; one its pod was handed is lost with that
+// pod. Callers hold c.mu.
+func (c *Core) restoreLooseLocked(t *TaskRow) {
+	if t.State != TaskPlaced {
+		c.log.Warn("restored task's pod is gone; the task is failed", "task_id", t.ID, "pod_id", t.PodID, "workspace_id", t.Tenant)
+		c.failLocked(t, "the pod running this task was lost")
+		t.State, t.EndedAt, t.EndReason, t.Payload = TaskEnded, c.now(), "pod lost", nil
+		c.saveTaskLocked(t)
+		return
+	}
+	t.PodID = ""
+	c.claimed[t.ID] = t
+	c.saveTaskLocked(t)
+	c.applyLocked(c.policy.TaskRestored(t.Task.Task))
+	c.log.Info("task restored, waiting for a pod", "task_id", t.ID, "workspace_id", t.Tenant)
+}
+
+func taskState(t *TaskRow) TaskState {
+	if t == nil {
+		return ""
+	}
+	return t.State
 }

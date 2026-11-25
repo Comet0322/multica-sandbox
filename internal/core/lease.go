@@ -5,34 +5,15 @@ import "time"
 // maxLeaseHistory bounds the closed leases kept for the lease query.
 const maxLeaseHistory = 1000
 
-// lease is the period in which one pod is assigned one task.
+// lease is the period in which one pod is assigned one task: from when the
+// pod is first handed the task until the task ended. It is the task's row,
+// with the pod it is on.
 type lease struct {
-	TaskID    string
-	PodID     string
-	Tenant    string
-	StartedAt time.Time
-	EndedAt   time.Time
-	EndReason string
-	// Initiator and PodName are kept for the audit trail.
-	Initiator string
-	PodName   string
+	*TaskRow
+	// PodName is kept for the audit trail.
+	PodName string
 
 	pod *pod
-}
-
-// claimedTask is a task claimed upstream that its pod has not picked up yet.
-// It sits in its pod's queue once the policy placed it.
-type claimedTask struct {
-	task      *Task
-	claimedAt time.Time
-}
-
-// forcedTask is a task decided to fail, whose failure report the source has
-// not taken yet.
-type forcedTask struct {
-	tenant string
-	id     string
-	reason string
 }
 
 // LeaseInfo is one lease in the lease query. EndedAt is nil while the lease is
@@ -54,7 +35,7 @@ func (c *Core) Leases() []LeaseInfo {
 	defer c.mu.Unlock()
 	out := make([]LeaseInfo, 0, len(c.history))
 	for _, l := range c.history {
-		info := LeaseInfo{TaskID: l.TaskID, WorkspaceID: l.Tenant, Initiator: l.Initiator, PodID: l.PodID, StartedAt: l.StartedAt, EndReason: l.EndReason}
+		info := LeaseInfo{TaskID: l.ID, WorkspaceID: l.Tenant, Initiator: l.Email, PodID: l.PodID, StartedAt: l.StartedAt, EndReason: l.EndReason}
 		if !l.EndedAt.IsZero() {
 			ended := l.EndedAt
 			info.EndedAt = &ended
@@ -64,9 +45,12 @@ func (c *Core) Leases() []LeaseInfo {
 	return out
 }
 
-// startLeaseLocked assigns a task to a held pod. Callers hold c.mu.
-func (c *Core) startLeaseLocked(pd *pod, t *Task) *lease {
-	l := &lease{TaskID: t.ID, PodID: pd.ID, Tenant: t.Tenant, StartedAt: c.now(), Initiator: t.Email, PodName: pd.Name, pod: pd}
+// startLeaseLocked hands a task placed on a held pod to the pod. Callers
+// hold c.mu.
+func (c *Core) startLeaseLocked(pd *pod, t *TaskRow) *lease {
+	t.State, t.PodID, t.StartedAt = TaskHanded, pd.ID, c.now()
+	c.saveTaskLocked(t)
+	l := &lease{TaskRow: t, PodName: pd.Name, pod: pd}
 	if pd.leases == nil {
 		pd.leases = map[string]*lease{}
 	}
@@ -89,19 +73,19 @@ func (c *Core) startLeaseLocked(pd *pod, t *Task) *lease {
 	return l
 }
 
-// closeLeaseLocked records a lease's end, on the policy's decision.
-// What happens to its pod is the policy's decision too. Callers hold c.mu. A
-// nil or already closed lease is ignored.
+// closeLeaseLocked records a lease's end, on the policy's decision: its task
+// ended. What happens to its pod is the policy's decision too. Callers hold
+// c.mu. A nil or already closed lease is ignored.
 func (c *Core) closeLeaseLocked(l *lease, reason string) {
-	if l == nil || !l.EndedAt.IsZero() {
+	if l == nil || l.State == TaskEnded {
 		return
 	}
-	l.EndedAt = c.now()
-	l.EndReason = reason
-	delete(c.leases, l.TaskID)
+	l.State, l.EndedAt, l.EndReason, l.Payload = TaskEnded, c.now(), reason, nil
+	c.saveTaskLocked(l.TaskRow)
+	delete(c.leases, l.ID)
 	c.auditLease(AuditRelease, l, reason)
-	if pd := l.pod; pd != nil && pd.leases[l.TaskID] == l {
-		delete(pd.leases, l.TaskID)
+	if pd := l.pod; pd != nil && pd.leases[l.ID] == l {
+		delete(pd.leases, l.ID)
 	}
 }
 
@@ -111,7 +95,7 @@ func (c *Core) leaseOfLocked(taskID string) *lease {
 		return nil
 	}
 	for i := len(c.history) - 1; i >= 0; i-- {
-		if c.history[i].TaskID == taskID {
+		if c.history[i].ID == taskID {
 			return c.history[i]
 		}
 	}
@@ -129,9 +113,9 @@ func (c *Core) leasedLocked(tenant string) int {
 	return n
 }
 
-// expireLeasesLocked ends the leases older than LeaseMax and queues their
-// tasks to be failed upstream: whatever the pod is doing, it must not be held
-// for good. Callers hold c.mu.
+// expireLeasesLocked ends the leases older than LeaseMax and fails their
+// tasks upstream: whatever the pod is doing, it must not be held for good.
+// Callers hold c.mu.
 func (c *Core) expireLeasesLocked() {
 	now := c.now()
 	var over []*lease
@@ -141,8 +125,20 @@ func (c *Core) expireLeasesLocked() {
 		}
 	}
 	for _, l := range over {
-		c.log.Warn("lease ended: maximum lease time exceeded", "task_id", l.TaskID, "workspace_id", l.Tenant, "pod_id", l.PodID, "started_at", l.StartedAt)
-		c.failLocked(l.Tenant, l.TaskID, "task exceeded the maximum lease time")
-		c.endTaskLocked(l.TaskID, "lease exceeded the maximum lease time")
+		c.log.Warn("lease ended: maximum lease time exceeded", "task_id", l.ID, "workspace_id", l.Tenant, "pod_id", l.PodID, "started_at", l.StartedAt)
+		c.failLocked(l.TaskRow, "task exceeded the maximum lease time")
+		c.endTaskLocked(l.ID, "lease exceeded the maximum lease time")
 	}
+}
+
+// taskLocked is a task the core holds: placed, or leased and not ended. Nil
+// when it holds none by that ID. Callers hold c.mu.
+func (c *Core) taskLocked(id string) *TaskRow {
+	if t := c.claimed[id]; t != nil {
+		return t
+	}
+	if l := c.leases[id]; l != nil {
+		return l.TaskRow
+	}
+	return nil
 }

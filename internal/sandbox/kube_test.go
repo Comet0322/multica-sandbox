@@ -378,7 +378,7 @@ func TestKubeShowsRefusedCredentials(t *testing.T) {
 		t.Fatalf("Create = %v, want ErrNoCapacity naming the credentials", err)
 	}
 	// Refused credentials refuse every pod: broken at once.
-	if b := svc.Inventory().Broken; !strings.Contains(b, "refused the manager's credentials") || !strings.Contains(b, "create, delete, get, list, watch and patch") {
+	if b := svc.Inventory().Broken; !strings.Contains(b, "refused the manager's credentials") || !strings.Contains(b, "create, delete, get, list and watch") {
 		t.Fatalf("broken = %q, want the refusal and the rights to check", b)
 	}
 }

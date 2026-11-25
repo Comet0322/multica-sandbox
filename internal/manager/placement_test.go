@@ -136,6 +136,7 @@ func TestTaskNoPodCanTakeStaysQueuedUpstream(t *testing.T) {
 	a := h.newPod("pool-0")
 	a.start()
 	a.claimBatch()
+	a.report("t1", "start")
 
 	if got := a.claimBatch(); len(got) != 0 {
 		t.Fatalf("the running pod was handed another task: %v", got)

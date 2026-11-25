@@ -233,6 +233,7 @@ func TestDispatchWakesTheTargetPodWhenTaskIsPlacedElsewhere(t *testing.T) {
 	if got := sockA.next(5 * time.Second); got != wakeEvent {
 		t.Fatalf("pod a: want the frame for t1, got %q", got)
 	}
+	a.report("t1", "start")
 
 	// a runs t1, so dispatch picks idle b, claims t2 against it and wakes
 	// only b.
@@ -372,6 +373,7 @@ func TestAPollWithNothingPlacedClaimsNothingUpstream(t *testing.T) {
 		t.Fatalf("want both pods leased, got %+v", inv)
 	}
 	// Leased pods still cannot claim a second task.
+	withSock.report("t1", "start")
 	h.upstream.enqueue("t3")
 	if got := withSock.claimBatch(); len(got) != 0 {
 		t.Fatalf("leased pod was handed %v", got)

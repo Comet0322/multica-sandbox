@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,9 +17,11 @@ import (
 	"syscall"
 	"time"
 
+	"sandbox-manager/internal/core"
 	"sandbox-manager/internal/manager"
 	"sandbox-manager/internal/multica"
 	"sandbox-manager/internal/policy"
+	"sandbox-manager/internal/store"
 )
 
 // managerSettings is the manager's command-line environment. Every variable
@@ -29,7 +32,11 @@ type managerSettings struct {
 	// auditFile is where audit records are appended; "-" means standard output
 	// and empty disables auditing.
 	auditFile string
-	config    manager.Config
+	// databaseURL is the Postgres database the dispatch record is kept in,
+	// and payloadKey the AES-256 key task payloads are encrypted with there.
+	databaseURL string
+	payloadKey  []byte
+	config      manager.Config
 	// warnings name the settings that are set but no longer used.
 	warnings []string
 }
@@ -164,6 +171,17 @@ func loadSettings(getenv func(string) string) (managerSettings, error) {
 	if s.config.PAT == "" {
 		fail("SANDBOX_POOL_TOKEN or SANDBOX_POOL_TOKEN_FILE is required")
 	}
+	// The dispatch record: a restarted manager takes over from it.
+	if s.databaseURL = secret("SANDBOX_DATABASE_URL"); s.databaseURL == "" {
+		fail("SANDBOX_DATABASE_URL or SANDBOX_DATABASE_URL_FILE is required: the Postgres database the manager keeps its dispatch record in")
+	}
+	if path := getenv("SANDBOX_PAYLOAD_KEY_FILE"); path == "" {
+		fail("SANDBOX_PAYLOAD_KEY_FILE is required: the key task payloads are encrypted with in the database")
+	} else if key, err := payloadKey(path); err != nil {
+		fail("SANDBOX_PAYLOAD_KEY_FILE: %v", err)
+	} else {
+		s.payloadKey = key
+	}
 	models, err := multica.ParseModels(getenv("SANDBOX_MODELS"))
 	if err != nil {
 		fail("SANDBOX_MODELS: %v", err)
@@ -236,6 +254,13 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 		defer closeAudit()
 		s.config.AuditLog = w
 	}
+	db, err := openStore(ctx, store.Config{URL: s.databaseURL, PayloadKey: s.payloadKey, Log: log})
+	if err != nil {
+		return fmt.Errorf("open the dispatch record's database (SANDBOX_DATABASE_URL): %w", err)
+	}
+	defer db.Close()
+	go db.PruneLoop(ctx)
+	s.config.Store = db
 	// Range and URL checks of the manager itself run here, before anything
 	// listens.
 	m, err := manager.New(s.config, log)
@@ -253,10 +278,10 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	}
 	defer adminLn.Close()
 
-	// The pods a previous run left are taken over before anything is
-	// claimed; the pods' owner is read first.
+	// What a previous run left is taken over from the dispatch record before
+	// anything is claimed; the pods' owner is read first.
 	if err := m.Restore(ctx); err != nil {
-		return fmt.Errorf("start the sandbox service: %w", err)
+		return fmt.Errorf("take over from the previous run: %w", err)
 	}
 	// The first listing must work: a wrong token or server address stops the
 	// manager now instead of leaving it serving nothing.
@@ -267,6 +292,36 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
 	return serveManager(ctx, log, m, podLn, adminLn, hup)
+}
+
+// recordStore is the dispatch record's database as the command line uses
+// it.
+type recordStore interface {
+	core.Store
+	PruneLoop(ctx context.Context)
+	Close()
+}
+
+// openStore opens the dispatch record's database; tests replace it.
+var openStore = func(ctx context.Context, cfg store.Config) (recordStore, error) {
+	return store.Open(ctx, cfg)
+}
+
+// payloadKey reads SANDBOX_PAYLOAD_KEY_FILE: 32 bytes in standard base64,
+// as "openssl rand -base64 32" writes them. Its errors never show the key.
+func payloadKey(path string) ([]byte, error) {
+	raw, err := readConfigFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s", path)
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("%s does not hold base64 (write it with: openssl rand -base64 32)", path)
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("%s holds a %d-byte key, want 32 (write it with: openssl rand -base64 32)", path, len(key))
+	}
+	return key, nil
 }
 
 // openAudit opens the audit log for appending. "-" is standard output. The

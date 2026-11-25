@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sort"
+	"time"
 
 	"sandbox-manager/internal/policy"
 )
@@ -21,10 +22,13 @@ type pod struct {
 	Name string
 	// seq orders the held pods by acquisition.
 	seq uint64
-	// leases are the tasks the pod runs, by task ID, and queue the claimed
-	// tasks the policy placed on it that it has not picked up yet.
+	// createdAt is when the pod was created, readyAt when the core acquired
+	// it.
+	createdAt, readyAt time.Time
+	// leases are the tasks the pod was handed, by task ID, and queue the
+	// claimed tasks the policy placed on it that it has not been handed yet.
 	leases map[string]*lease
-	queue  []*claimedTask
+	queue  []*TaskRow
 }
 
 // handBack is a pod the policy handed back, with the cause for the audit
@@ -69,6 +73,13 @@ func (c *Core) podGoneLocked(id, why string, tell func(*policy.Policy) []policy.
 	}
 	c.log.Warn("held pod gone; its tasks are failed or placed elsewhere", "pod_id", id, "name", pd.Name, "reason", why, "tasks", len(pd.leases))
 	delete(c.held, id)
+	c.goneLocked(pd, why)
+	// The tasks it was not handed wait for another pod, unless the policy
+	// places them at once.
+	for _, t := range pd.queue {
+		t.PodID = ""
+		c.saveTaskLocked(t)
+	}
 	c.applyLocked(tell(c.policy))
 }
 
@@ -104,7 +115,7 @@ func (c *Core) acquire(ctx context.Context) bool {
 		return true
 	}
 	c.heldSeq++
-	c.held[id] = &pod{ID: id, Name: info.Name, seq: c.heldSeq}
+	c.held[id] = &pod{ID: id, Name: info.Name, seq: c.heldSeq, createdAt: info.CreatedAt, readyAt: c.now()}
 	tenants := c.pool.Tenants(id)
 	c.applyLocked(c.policy.PodAcquired(id, tenants...))
 	c.mu.Unlock()
@@ -122,30 +133,36 @@ func (c *Core) handBackLocked(d policy.Delete) {
 		return
 	}
 	delete(c.held, d.Pod)
+	c.goneLocked(pd, d.Reason)
 	why := HandBack{Reason: d.Reason}
 	if l := c.leaseOfLocked(d.Task); l != nil {
-		why.TaskID, why.Tenant, why.Initiator = l.TaskID, l.Tenant, l.Initiator
+		why.TaskID, why.Tenant, why.Initiator = l.ID, l.Tenant, l.Email
 	}
 	c.log.Info("pod handed back", "pod_id", pd.ID, "reason", d.Reason)
 	c.handBacks = append(c.handBacks, handBack{id: pd.ID, why: why})
 }
 
-// settle carries out what decisions taken under c.mu left for the network:
-// it hands the pods back to the pool and reports the tasks decided to fail.
-// Callers invoke it without holding c.mu.
-func (c *Core) settle(ctx context.Context) {
+// settle carries out what decisions taken under c.mu left for the store and
+// the network: it writes the record, hands the pods back to the pool and,
+// once the record is written, reports the tasks decided to fail. It reports
+// whether the record is written. Callers invoke it without holding c.mu.
+func (c *Core) settle(ctx context.Context) bool {
+	stored := c.flush(ctx) == nil
 	c.mu.Lock()
 	backs := c.handBacks
 	c.handBacks = nil
-	forced := c.forced
-	c.forced = nil
+	var failed []*TaskRow
+	if stored {
+		failed, c.failNow = c.failNow, nil
+	}
 	c.mu.Unlock()
 	for _, b := range backs {
 		if err := c.pool.HandBack(context.WithoutCancel(ctx), b.id, b.why); err != nil {
 			c.log.Error("hand a pod back to the pool", "pod_id", b.id, "error", err)
 		}
 	}
-	c.reportFailures(ctx, forced)
+	c.reportFailures(ctx, failed)
+	return stored
 }
 
 // healHeldLocked forgets the held pods the pool no longer lists as held (a
@@ -203,8 +220,8 @@ func (c *Core) livePods() (live, starting int) {
 func initiatorsOf(pd *pod) []string {
 	var out []string
 	for _, l := range pd.leases {
-		if l.Initiator != "" && !slices.Contains(out, l.Initiator) {
-			out = append(out, l.Initiator)
+		if l.Email != "" && !slices.Contains(out, l.Email) {
+			out = append(out, l.Email)
 		}
 	}
 	sort.Strings(out)

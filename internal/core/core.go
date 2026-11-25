@@ -27,6 +27,8 @@ type Config struct {
 	Clock *Clock
 	// Audit receives the audit records; nil writes none.
 	Audit *AuditLog
+	// Store keeps the dispatch record (required).
+	Store Store
 
 	// Kinds are the runtime kinds claimed for. Empty means the pool kind.
 	Kinds         []policy.Kind
@@ -61,6 +63,10 @@ type Core struct {
 	clock  *Clock
 	source TaskSource
 	pool   Pool
+	store  Store
+
+	// storeMu makes the writes to the store one at a time (see flush).
+	storeMu sync.Mutex
 
 	mu sync.Mutex
 	// policy is the policy; every placement, claim-selection and
@@ -77,17 +83,22 @@ type Core struct {
 	// ones included, for the lease query.
 	leases  map[string]*lease
 	history []*lease
-	// claimed holds, by task ID, the tasks claimed that no pod has picked
-	// up yet.
-	claimed map[string]*claimedTask
-	// forced holds the tasks decided to fail since the last settle, and
-	// failing every failure report the source has not taken yet, by task ID.
-	forced  []forcedTask
-	failing map[string]forcedTask
+	// claimed holds, by task ID, the tasks claimed that no pod has been
+	// handed yet.
+	claimed map[string]*TaskRow
+	// failing holds, by task ID, the tasks whose failure report the source
+	// has not taken; failNow those decided since the last settle.
+	failing map[string]*TaskRow
+	failNow []*TaskRow
 	// tenants are the tenants served or draining, by ID.
 	tenants map[string]*tenant
-	// recorded is what the Pool was last told each held pod serves.
-	recorded map[string]PodRecord
+	// recorded is the row last written of each held pod; dirtyPods and
+	// dirtyTasks are the rows to write with the next flush, and
+	// storeProblem why the last write failed, empty once one succeeded.
+	recorded     map[string]PodRow
+	dirtyPods    map[string]PodRow
+	dirtyTasks   map[string]TaskRow
+	storeProblem string
 }
 
 // New builds the core. Connect gives it its sides before it serves anything.
@@ -97,6 +108,9 @@ func New(cfg Config) (*Core, error) {
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = NewClock()
+	}
+	if cfg.Store == nil {
+		return nil, fmt.Errorf("the core needs a store for its dispatch record")
 	}
 	if cfg.DispatchInterval < 0 || cfg.ReconcileInterval < 0 || cfg.LeaseMax < 0 || cfg.DrainTimeout < 0 || cfg.DrainPoll < 0 {
 		return nil, fmt.Errorf("intervals and timeouts must not be negative")
@@ -114,9 +128,10 @@ func New(cfg Config) (*Core, error) {
 	if cfg.DrainPoll == 0 {
 		cfg.DrainPoll = time.Second
 	}
-	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, held: map[string]*pod{},
-		leases: map[string]*lease{}, claimed: map[string]*claimedTask{}, tenants: map[string]*tenant{},
-		recorded: map[string]PodRecord{}, failing: map[string]forcedTask{}}
+	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, store: cfg.Store, held: map[string]*pod{},
+		leases: map[string]*lease{}, claimed: map[string]*TaskRow{}, tenants: map[string]*tenant{},
+		failing: map[string]*TaskRow{}, recorded: map[string]PodRow{},
+		dirtyPods: map[string]PodRow{}, dirtyTasks: map[string]TaskRow{}}
 	pol, err := policy.New(policy.Config{
 		Now:           c.now,
 		RemovedReason: cfg.RemovedReason,

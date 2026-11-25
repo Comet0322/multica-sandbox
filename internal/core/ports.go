@@ -110,9 +110,9 @@ type HandBack struct {
 	Initiator string
 }
 
-// Pool is where pods come from. Acquire, HandBack and Pods may call out, so
-// the core calls them without holding its lock; the others answer from the
-// Pool's own state and may be called under it.
+// Pool is where pods come from. Acquire, HandBack, Pods and Adopt may call
+// out, so the core calls them without holding its lock; the others answer
+// from the Pool's own state and may be called under it.
 type Pool interface {
 	// Acquire takes a ready pod that served no one; ErrNoCapacity when the
 	// pool has none.
@@ -130,12 +130,19 @@ type Pool interface {
 	// Preferred reports whether a pod is preferred for new work: it can be
 	// woken at once.
 	Preferred(pod string) bool
-	// Record keeps what a held pod serves where a restarted core finds it
-	// (see Restore). It must not block: the core calls it under its lock.
-	Record(pod string, rec PodRecord)
-	// Halted is why no task may be claimed now, empty when tasks may be;
-	// the Pool shows the reason itself.
-	Halted() string
+	// Adopt takes over the pods a previous run held, each with the tenant it
+	// serves (empty for a warm pod): those that still exist are held from
+	// now on, and every other pod the Pool finds is deleted. The core calls
+	// it once, from Restore, before it serves anything.
+	Adopt(ctx context.Context, pods []HeldPod) error
+}
+
+// HeldPod is a pod a previous run held, as the core asks the Pool to adopt
+// it.
+type HeldPod struct {
+	ID string
+	// Tenant is the tenant the pod serves, empty while it is warm.
+	Tenant string
 }
 
 // Verdict is the core's answer to whether a pod may act for a tenant.

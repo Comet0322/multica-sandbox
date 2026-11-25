@@ -81,13 +81,13 @@ func (c *Core) View() View {
 		pv.Busy = (pv.Policy != nil && pv.Policy.Phase != policy.PhaseWarm) || len(pd.leases) > 0 || len(pd.queue) > 0
 		v.Pods[id] = pv
 		for _, t := range pd.queue {
-			placed[t.task.ID] = id
-			v.Claimed = append(v.Claimed, ClaimedView{ID: t.task.ID, Tenant: t.task.Tenant, PodID: id, Email: t.task.Email, ClaimedAt: t.claimedAt})
+			placed[t.ID] = id
+			v.Claimed = append(v.Claimed, ClaimedView{ID: t.ID, Tenant: t.Tenant, PodID: id, Email: t.Email, ClaimedAt: t.ClaimedAt})
 		}
 	}
 	for id, t := range c.claimed {
 		if _, ok := placed[id]; !ok {
-			v.Claimed = append(v.Claimed, ClaimedView{ID: id, Tenant: t.task.Tenant, Email: t.task.Email, ClaimedAt: t.claimedAt})
+			v.Claimed = append(v.Claimed, ClaimedView{ID: id, Tenant: t.Tenant, Email: t.Email, ClaimedAt: t.ClaimedAt})
 		}
 	}
 	slices.SortFunc(v.Claimed, func(a, b ClaimedView) int {

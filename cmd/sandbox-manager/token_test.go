@@ -93,6 +93,7 @@ func TestStartupStopsWhenTheFirstWorkspaceListingFails(t *testing.T) {
 	}
 	s.podListen, s.adminListen = "127.0.0.1:0", "127.0.0.1:0"
 	s.config.Kube = testKube()
+	withoutDatabase(t)
 	err = runManager(context.Background(), slog.New(slog.NewTextHandler(io.Discard, nil)), s)
 	if err == nil || !strings.Contains(err.Error(), "list the account's workspaces") {
 		t.Fatalf("a rejected token must stop the manager, got %v", err)

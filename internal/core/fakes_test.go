@@ -1,6 +1,7 @@
 package core_test
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -129,20 +130,7 @@ type fakePool struct {
 	woken   []string
 	backs   []string // "pod reason"
 	preferd map[string]bool
-	records map[string]core.PodRecord
-	halted  string
-}
-
-func (p *fakePool) halt(why string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.halted = why
-}
-
-func (p *fakePool) Halted() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.halted
+	adopted []core.HeldPod
 }
 
 type fakePod struct {
@@ -152,26 +140,39 @@ type fakePod struct {
 }
 
 func newFakePool() *fakePool {
-	return &fakePool{preferd: map[string]bool{}, records: map[string]core.PodRecord{}}
+	return &fakePool{preferd: map[string]bool{}}
 }
 
-// restore adds a pod a previous run left, held by the core.
-func (p *fakePool) restore(id string, tenants ...string) {
+// Adopt holds the pods it is given that the pool has and are not lost, and
+// deletes every other pod, as a pool that restarted with the core does.
+func (p *fakePool) Adopt(_ context.Context, held []core.HeldPod) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pods = append(p.pods, &fakePod{id: id, state: core.PodHeld, tenants: tenants})
+	p.adopted = held
+	keep := map[string]bool{}
+	for _, h := range held {
+		keep[h.ID] = true
+	}
+	var out []*fakePod
+	for _, pd := range p.pods {
+		if keep[pd.id] && pd.state != core.PodLost {
+			pd.state = core.PodHeld
+			out = append(out, pd)
+		}
+	}
+	p.pods = out
+	return nil
 }
 
-func (p *fakePool) Record(id string, rec core.PodRecord) {
+// ids lists the pods the pool has, in order.
+func (p *fakePool) ids() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.records[id] = rec
-}
-
-func (p *fakePool) record(id string) core.PodRecord {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.records[id]
+	var out []string
+	for _, pd := range p.pods {
+		out = append(out, pd.id)
+	}
+	return out
 }
 
 // add registers a free pod serving tenants.
@@ -275,40 +276,148 @@ func (p *fakePool) snapshot() (woken, backs []string) {
 	return slices.Clone(p.woken), slices.Clone(p.backs)
 }
 
+// fakeStore keeps the dispatch record in memory as a database would: the
+// latest row of each ID, a payload only while its task is placed or handed,
+// no email.
+type fakeStore struct {
+	mu    sync.Mutex
+	pods  map[string]core.PodRow
+	tasks map[string]core.TaskRow
+	// err is what Write returns; nil writes.
+	err error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{pods: map[string]core.PodRow{}, tasks: map[string]core.TaskRow{}}
+}
+
+func (s *fakeStore) Load(context.Context) (core.Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var rec core.Record
+	for _, p := range s.pods {
+		if p.GoneAt.IsZero() {
+			rec.Pods = append(rec.Pods, p)
+		}
+	}
+	slices.SortFunc(rec.Pods, func(a, b core.PodRow) int {
+		return cmp.Or(a.ReadyAt.Compare(b.ReadyAt), cmp.Compare(a.ID, b.ID))
+	})
+	for _, t := range s.tasks {
+		if t.State != core.TaskEnded || t.FailPending {
+			rec.Tasks = append(rec.Tasks, t)
+		}
+	}
+	slices.SortFunc(rec.Tasks, func(a, b core.TaskRow) int {
+		return cmp.Or(a.ClaimedAt.Compare(b.ClaimedAt), cmp.Compare(a.ID, b.ID))
+	})
+	return rec, nil
+}
+
+func (s *fakeStore) Write(_ context.Context, pods []core.PodRow, tasks []core.TaskRow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	for _, p := range pods {
+		s.pods[p.ID] = p
+	}
+	for _, t := range tasks {
+		t.Email = ""
+		if t.State != core.TaskPlaced && t.State != core.TaskHanded {
+			t.Payload = nil
+		}
+		s.tasks[t.ID] = t
+	}
+	return nil
+}
+
+// failWith makes Write fail with err, nil to write again.
+func (s *fakeStore) failWith(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func (s *fakeStore) task(id string) core.TaskRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.tasks[id]
+}
+
+func (s *fakeStore) pod(id string) core.PodRow {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pods[id]
+}
+
 var t0 = time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
 
-// rig is a core on a fake source and pool, with a clock the test moves.
+// rig is a core on a fake source, pool and store, with a clock the test
+// moves.
 type rig struct {
-	t      *testing.T
-	core   *core.Core
-	source *fakeSource
-	pool   *fakePool
-	now    time.Time
-	mu     sync.Mutex
+	t       *testing.T
+	cfg     core.Config
+	tenants []core.Tenant
+	core    *core.Core
+	source  *fakeSource
+	pool    *fakePool
+	store   *fakeStore
+	now     time.Time
+	mu      sync.Mutex
 }
 
 func newRig(t *testing.T, cfg core.Config, tenants ...core.Tenant) *rig {
 	t.Helper()
-	r := &rig{t: t, now: t0}
+	r := &rig{t: t, cfg: cfg, tenants: tenants, now: t0, store: newFakeStore()}
 	ids := make([]string, len(tenants))
 	for i, tn := range tenants {
 		ids[i] = tn.ID
 	}
 	r.source, r.pool = newFakeSource(ids...), newFakePool()
+	r.core = r.build()
+	r.core.SetTenants(context.Background(), tenants)
+	return r
+}
+
+// build makes a core on the rig's source, pool, store and clock.
+func (r *rig) build() *core.Core {
+	r.t.Helper()
+	cfg := r.cfg
 	clk := core.NewClock()
 	clk.Set(func() time.Time { r.mu.Lock(); defer r.mu.Unlock(); return r.now })
-	cfg.Clock = clk
+	cfg.Clock, cfg.Store = clk, r.store
 	if cfg.DrainPoll == 0 {
 		cfg.DrainPoll = 5 * time.Millisecond
 	}
 	c, err := core.New(cfg)
 	if err != nil {
-		t.Fatal(err)
+		r.t.Fatal(err)
 	}
 	c.Connect(r.source, r.pool)
-	r.core = c
-	c.SetTenants(context.Background(), tenants)
-	return r
+	return c
+}
+
+// restart is the manager starting again: a new core on the same store and
+// source, and a new pool that finds every pod not lost, as Kubernetes keeps
+// them. The core restores, then learns its tenants.
+func (r *rig) restart() {
+	r.t.Helper()
+	old := r.pool
+	r.pool = newFakePool()
+	old.mu.Lock()
+	for _, pd := range old.pods {
+		if pd.state != core.PodLost {
+			r.pool.pods = append(r.pool.pods, &fakePod{id: pd.id, state: core.PodFree, tenants: pd.tenants})
+		}
+	}
+	old.mu.Unlock()
+	r.core = r.build()
+	if err := r.core.Restore(context.Background()); err != nil {
+		r.t.Fatal(err)
+	}
+	r.core.SetTenants(context.Background(), r.tenants)
 }
 
 func (r *rig) advance(d time.Duration) {
