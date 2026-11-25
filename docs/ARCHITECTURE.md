@@ -29,7 +29,7 @@ Terms follow [GLOSSARY.md](../GLOSSARY.md). How to run it is in the
 | Pool side | `internal/multica/pool` | Plays the Multica server toward each pod's daemon: authenticates it by its pod token, answers its registration, hands its claim the task the core placed on its pod, and relays its reports and its agents' calls upstream. | The policy |
 | Sandbox service | `internal/sandbox` | Creates pods from the operator's pod template, watches them, keeps the warm pods, deletes pods that do not start in time, records on each pod what it serves, and reports lost pods with their reason. | Multica, workspaces, tasks |
 | Manager | `internal/manager`, `cmd/sandbox-manager` | Wires the parts together, reads the settings, serves the admin API and the dispatch page. | |
-| Pod | `deploy/Dockerfile.pool` | `tini` and the stock daemon, which runs one agent CLI per task as a non-root user. | The manager's internals |
+| Pod | `deploy/Dockerfile.pod` | `tini` and the stock daemon, which runs one agent CLI per task as a non-root user. | The manager's internals |
 
 The import rules that keep these apart are tested (`imports_test.go` in each
 package; see [AGENTS.md](../AGENTS.md)).

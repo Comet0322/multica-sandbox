@@ -11,8 +11,8 @@ manager and the pod template are described in the
 
 | File | What |
 |---|---|
-| `Dockerfile.pool` | The pod image (daemon and agent CLIs) |
-| `pool/entrypoint-kube.sh`, `pool/pip.conf` | Image contents: the entrypoint, package mirror settings |
+| `Dockerfile.pod` | The pod image (daemon and agent CLIs) |
+| `pod/entrypoint-kube.sh`, `pod/pip.conf` | Image contents: the entrypoint, package mirror settings |
 | `home/` | Runtime-private agent configuration, kept read-only in the image (see `home/README.md`) |
 | `fake/` | A stand-in agent CLI for tests without a model |
 | `k8s/pod.yaml` | The example pod template |
@@ -85,7 +85,7 @@ and an empty, even read-only, HOME:
 ## Agent CLIs in the image
 
 The image carries Claude Code and opencode (1.19.5, the last 1.x release). Both
-are listed in `AGENT_PACKAGES` and `AGENT_COMMANDS` of `Dockerfile.pool`; the
+are listed in `AGENT_PACKAGES` and `AGENT_COMMANDS` of `Dockerfile.pod`; the
 daemon starts them itself, as the pod's user.
 
 opencode reaches an OpenAI-compatible endpoint through the provider in

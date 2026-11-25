@@ -1,6 +1,6 @@
 # The pod image needs only the pod files. Multica's sources come from the
 # "multica" build context, filtered by that checkout's own .dockerignore.
 *
-!deploy/pool/
+!deploy/pod/
 !deploy/home/
 !deploy/fake/

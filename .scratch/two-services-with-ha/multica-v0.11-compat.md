@@ -13,7 +13,7 @@ Compare v0.6.4 and v0.11.0 in `../multica` (`git show v0.6.4:<path>` / `git show
 - the daemon HTTP and WebSocket protocol the manager plays toward the pods and uses toward Multica: every route in `internal/multica` (daemonapi.go, conn.go, client.go, runtimes.go, wake.go, models.go, registration.go, task.go) and the types in `daemonwire`; request and response fields, status codes, auth headers;
 - what the v0.11.0 stock daemon in the pod calls that v0.6.4 did not, and what the manager would refuse (`daemonapi.go` `refuse`);
 - the server behaviours issue 01 relies on: offline threshold, reconnect grace, reclaim of dispatched tasks (90 s), dispatch timeout (300 s), `dispatched_at` fencing, recover-orphans, the daemon's retry of terminal reports, what makes the daemon kill its agent;
-- the pod image build (`deploy/Dockerfile.pool`, `--build-context multica=../multica`) against v0.11.0.
+- the pod image build (`deploy/Dockerfile.pod`, `--build-context multica=../multica`) against v0.11.0.
 
 Output: `multica-v0.11-compat-report.md` here, one row per difference: what changed (file:line at each tag), whether the manager breaks, the fix, and whether issue 01's conclusions still hold.
 

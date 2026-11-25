@@ -32,7 +32,7 @@ take time.
 
 ## Running against the local kind namespace
 
-After `deploy/k8s/dev/up.sh` and with `multica-sandbox-pool:kube-fake` built
+After `deploy/k8s/dev/up.sh` and with `multica-sandbox-pod:kube-fake` built
 and loaded (see the [deployment guide](../../../docs/DEPLOYMENT.md#local-kind-namespace)):
 
 ```bash
@@ -53,7 +53,7 @@ The scripts read these settings from the environment:
 | `E2E_EMAIL_DOMAIN` | `dev.test` | Domain of the bot account's address (`e2e-<run>@<domain>`). |
 | `E2E_MANAGER_URL` | the kind network's gateway, port `E2E_POD_PORT` | How the pods reach the manager on this host. |
 | `E2E_POD_PORT`, `E2E_ADMIN_PORT` | `8796`, `8797` | The manager's pod listener (all interfaces) and admin API (loopback). |
-| `E2E_POD_IMAGE` | `multica-sandbox-pool:kube-fake` | The fake-agent pod image, as the namespace pulls it. |
+| `E2E_POD_IMAGE` | `multica-sandbox-pod:kube-fake` | The fake-agent pod image, as the namespace pulls it. |
 | `E2E_PULL_POLICY` | `Never` | Its pull policy; `IfNotPresent` for an image in a registry. |
 | `E2E_DEV_STATE` | `deploy/k8s/dev/.state` | Where the kind namespace's state is, for the defaults above. |
 | `E2E_STATE` | `$TMPDIR/sandbox-e2e-<run>` | The run's own files: manager log, audit log, pod template, overrides. |
@@ -68,7 +68,7 @@ For example:
 E2E_KUBECONFIG=~/.kube/config E2E_NAMESPACE=<namespace> \
 E2E_API=https://<test backend> E2E_CODE=<code> \
 E2E_MANAGER_URL=http://<this host, as pods reach it>:8796 \
-E2E_POD_IMAGE=<registry>/multica-sandbox-pool:<tag>-fake E2E_PULL_POLICY=IfNotPresent \
+E2E_POD_IMAGE=<registry>/multica-sandbox-pod:<tag>-fake E2E_PULL_POLICY=IfNotPresent \
 deploy/k8s/e2e/scenarios.sh
 ```
 

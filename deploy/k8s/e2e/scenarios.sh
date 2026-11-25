@@ -40,7 +40,7 @@ step "bot account in two workspaces (departments a and b)"
 bot_account a b
 wsa=${workspaces[0]} wsb=${workspaces[1]}
 template "$image" >"$state/pod.yaml"
-missing_image=multica-sandbox-pool:e2e-missing-$run
+missing_image=multica-sandbox-pod:e2e-missing-$run
 template "$missing_image" >"$state/pod-broken.yaml"
 overrides 'a: {hold_timeout: 20s}'
 

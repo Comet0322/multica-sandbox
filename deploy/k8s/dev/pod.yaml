@@ -21,7 +21,7 @@ spec:
     seccompProfile: {type: RuntimeDefault}
   containers:
     - name: daemon
-      image: multica-sandbox-pool:kube-fake
+      image: multica-sandbox-pod:kube-fake
       imagePullPolicy: Never
       command: ["tini", "--", "multica-pod-entrypoint-kube"]
       env:

@@ -5,7 +5,7 @@
 # else is the operator's. Every PLACEHOLDER is set before use.
 #
 # The container runs tini and the stock daemon, and nothing else of ours
-# (deploy/pool/entrypoint-kube.sh, the image's default entrypoint). The pod's
+# (deploy/pod/entrypoint-kube.sh, the image's default entrypoint). The pod's
 # own settings are here or in the entrypoint:
 #   - the private umask: the entrypoint (umask 077);
 #   - the read-only root: securityContext.readOnlyRootFilesystem;
@@ -45,7 +45,7 @@ spec:
     seccompProfile: {type: RuntimeDefault}
   containers:
     - name: daemon
-      image: registry.example.com/multica-sandbox-pool:0.8.0 # PLACEHOLDER: the agents target of deploy/Dockerfile.pool
+      image: registry.example.com/multica-sandbox-pod:0.8.0 # PLACEHOLDER: the agents target of deploy/Dockerfile.pod
       imagePullPolicy: IfNotPresent
       command: ["tini", "--", "multica-pod-entrypoint-kube"]
       env:

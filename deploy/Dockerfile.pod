@@ -6,8 +6,8 @@
 # reused across departments and is deleted, never reset. Build from the
 # repository root, with a checkout of Multica (the version the daemon is built
 # from) as the named build context "multica":
-#   docker build -f deploy/Dockerfile.pool --build-context multica=../multica \
-#     -t multica-sandbox-pool:<tag> .
+#   docker build -f deploy/Dockerfile.pod --build-context multica=../multica \
+#     -t multica-sandbox-pod:<tag> .
 # Run: the manager creates the pods from a pod template (deploy/k8s/pod.yaml),
 # which sets the user, the group 2000, the volume, the resources and the
 # dropped capabilities. The default target installs real agent CLIs; --target
@@ -50,7 +50,7 @@ RUN apt-get update \
 
 # Package sources point at the internal mirror. --user, venv and in-project
 # installs work; global installs fail on the read-only root.
-COPY deploy/pool/pip.conf /etc/pip.conf
+COPY deploy/pod/pip.conf /etc/pip.conf
 RUN sed -i "s|@PACKAGE_MIRROR_URL@|${PACKAGE_MIRROR_URL}|g" /etc/pip.conf \
 	&& printf 'registry=%s/npm/\n' "${PACKAGE_MIRROR_URL}" >/usr/local/etc/npmrc
 ENV GOPROXY=${PACKAGE_MIRROR_URL}/go,off
@@ -77,7 +77,7 @@ RUN git config --system safe.directory '*' \
 COPY --from=builder /out/multica /usr/local/bin/multica
 # The entrypoint writes the daemon's config from the pod token the manager set
 # in the pod's environment, then becomes the daemon.
-COPY deploy/pool/entrypoint-kube.sh /usr/local/bin/multica-pod-entrypoint-kube
+COPY deploy/pod/entrypoint-kube.sh /usr/local/bin/multica-pod-entrypoint-kube
 
 # The daemon's CLI settings (manager address and a placeholder token), copied
 # into HOME by the entrypoint at container start with the placeholder replaced

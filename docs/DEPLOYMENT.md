@@ -47,7 +47,7 @@ Run one manager per namespace: two would act on the same pods.
 
    ```bash
    docker build -f deploy/Dockerfile.manager -t <registry>/multica-sandbox-manager:<tag> .
-   docker build -f deploy/Dockerfile.pool --build-context multica=../multica -t <registry>/multica-sandbox-pool:<tag> .
+   docker build -f deploy/Dockerfile.pod --build-context multica=../multica -t <registry>/multica-sandbox-pod:<tag> .
    ```
 
    The pod image builds the stock daemon from the working tree of a Multica
@@ -686,8 +686,8 @@ The pods need the fake-agent image, built and loaded once (and after a change
 to `deploy/`):
 
 ```bash
-docker build -f deploy/Dockerfile.pool --build-context multica=../multica --target fake -t multica-sandbox-pool:kube-fake .
-kind load docker-image --name sandbox-dev multica-sandbox-pool:kube-fake
+docker build -f deploy/Dockerfile.pod --build-context multica=../multica --target fake -t multica-sandbox-pod:kube-fake .
+kind load docker-image --name sandbox-dev multica-sandbox-pod:kube-fake
 ```
 
 Then run the manager on the host against the namespace:

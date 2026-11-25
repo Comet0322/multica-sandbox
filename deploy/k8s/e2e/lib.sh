@@ -25,7 +25,7 @@ fi
 	echo "set E2E_CODE to the backend's MULTICA_DEV_VERIFICATION_CODE" >&2
 	exit 2
 }
-image=${E2E_POD_IMAGE:-multica-sandbox-pool:kube-fake}
+image=${E2E_POD_IMAGE:-multica-sandbox-pod:kube-fake}
 pull=${E2E_PULL_POLICY:-Never}
 pod_port=${E2E_POD_PORT:-8796}
 admin_port=${E2E_ADMIN_PORT:-8797}
@@ -81,7 +81,7 @@ pod_gone() { ! pod_exists "$1"; }
 # Templates: the dev template with this run's image and manager address, and
 # one whose image does not exist.
 template() {
-	sed -e "s|@MANAGER_URL@|$manager_url|" -e "s|image: multica-sandbox-pool:kube-fake|image: $1|" \
+	sed -e "s|@MANAGER_URL@|$manager_url|" -e "s|image: multica-sandbox-pod:kube-fake|image: $1|" \
 		-e "s|imagePullPolicy: Never|imagePullPolicy: $pull|" "$root/deploy/k8s/dev/pod.yaml"
 }
 

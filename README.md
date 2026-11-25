@@ -25,5 +25,5 @@ Test with `go test -race ./...`, and end to end with `deploy/k8s/e2e/scenarios.s
 
 ```bash
 docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:dev .
-docker build -f deploy/Dockerfile.pool --build-context multica=../multica -t multica-sandbox-pool:dev .
+docker build -f deploy/Dockerfile.pod --build-context multica=../multica -t multica-sandbox-pod:dev .
 ```

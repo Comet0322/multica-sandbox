@@ -64,13 +64,13 @@ Method: `git show <tag>:<path>`, `git diff v0.6.4 v0.11.0`, `git grep` in `../mu
 
 **Not read:** the server's WebSocket handshake changes (the manager uses HTTP only upstream) and the Redis half of the sweeper (in a file with no diff).
 
-## 4. Pod image build (`deploy/Dockerfile.pool`)
+## 4. Pod image build (`deploy/Dockerfile.pod`)
 
 | # | What changed | Breaks? | Fix |
 | --- | --- | --- | --- |
 | I1 | Server image tags: `multica-backend:v0.6.4` and `multica-web:v0.6.4` (`sm:deploy/k8s/multica/backend.yaml:38`, `web.yaml:37`, `deploy/k8s/dev/up.sh:29`). The image names are the same at v0.11.0 (`m:docker-compose.selfhost.yml:56`). | The dev and e2e namespace keeps running v0.6.4. | Change them to `v0.11.0` in Phase B. |
-| I2 | **opencode moves to ACP.** At v0.11.0, a built-in opencode at 1.15.0 or newer runs as `opencode acp` (`m:server/pkg/agent/opencode.go:151`, `opencode_acp.go:95-126`). The file does not exist at v0.6.4. The pod installs `opencode-ai@1.19.5` (`sm:Dockerfile.pool:142`), and upstream verified 1.19.4 (`opencode_acp.go:33-34`). The `fake` target has no opencode, so e2e cannot catch a failure. | Unknown. | **Decision.** Run one real opencode task on the default target in Phase B. Pin `MULTICA_OPENCODE_TRANSPORT=run` in the ENV block (`sm:Dockerfile.pool:113-119`; the switch is read at `opencode_acp.go:70`) only if that task fails. |
-| I3 | Go: `golang:1.27.3-alpine` (`sm:Dockerfile.pool:15`). `server/go.mod:3` says `go 1.26.9` at both tags, with no toolchain line. | No. | None. |
+| I2 | **opencode moves to ACP.** At v0.11.0, a built-in opencode at 1.15.0 or newer runs as `opencode acp` (`m:server/pkg/agent/opencode.go:151`, `opencode_acp.go:95-126`). The file does not exist at v0.6.4. The pod installs `opencode-ai@1.19.5` (`sm:Dockerfile.pod:142`), and upstream verified 1.19.4 (`opencode_acp.go:33-34`). The `fake` target has no opencode, so e2e cannot catch a failure. | Unknown. | **Decision.** Run one real opencode task on the default target in Phase B. Pin `MULTICA_OPENCODE_TRANSPORT=run` in the ENV block (`sm:Dockerfile.pod:113-119`; the switch is read at `opencode_acp.go:70`) only if that task fails. |
+| I3 | Go: `golang:1.27.3-alpine` (`sm:Dockerfile.pod:15`). `server/go.mod:3` says `go 1.26.9` at both tags, with no toolchain line. | No. | None. |
 | I4 | **The build context is the working tree, not a tag.** `../multica` is on `security/v0.11.0` (`git describe`: `v0.11.0-19-g738d38669`). | No. The company's hardened branch is the right source. | State it in DEPLOYMENT.md, which says "at the version the server runs (v0.6.4)" (`docs/DEPLOYMENT.md:53-54`). |
 | I5 | Daemon config, flags and env are unchanged. `daemon start --foreground`; `.multica/config.json`; health on 127.0.0.1:19514 `/health`; `MULTICA_WORKSPACES_ROOT`, `MULTICA_AGENT_TEMP_BASE`, `MULTICA_GC_ENABLED`, `MULTICA_DAEMON_AUTO_UPDATE`. The fake claude still gets its prompt as the first stdin line (handshake from 2.1.110 on, `m:pkg/agent/version.go:140` → `:146`). | No. | None. |
 
