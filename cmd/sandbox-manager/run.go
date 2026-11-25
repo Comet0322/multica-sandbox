@@ -259,7 +259,6 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 		return fmt.Errorf("open the dispatch record's database (SANDBOX_DATABASE_URL): %w", err)
 	}
 	defer db.Close()
-	go db.PruneLoop(ctx)
 	s.config.Store = db
 	// Range and URL checks of the manager itself run here, before anything
 	// listens.
@@ -288,6 +287,7 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	if _, err := m.Sync(ctx); err != nil {
 		return fmt.Errorf("list the account's workspaces: %w", err)
 	}
+	go db.PruneLoop(ctx)
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
