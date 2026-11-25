@@ -53,6 +53,12 @@ spec:
         # It replaces the address baked into the image.
         - name: SANDBOX_MANAGER_URL
           value: "http://sandbox-manager:8080" # PLACEHOLDER if the Service is named otherwise
+        # The stock daemon runs one task at a time, as the pod does: the
+        # manager hands a task that has not started to its pod again (after
+        # a lost response, or a manager restart), and a daemon with a free
+        # slot would run it twice.
+        - name: MULTICA_DAEMON_MAX_CONCURRENT_TASKS
+          value: "1"
       # One task per pod, so the limit is the task's. Measured with no model
       # reachable (docs/DEPLOYMENT.md): an idle pod uses about 10 MiB; a
       # pod starting a Claude Code task peaks near 145 MiB; opencode starting

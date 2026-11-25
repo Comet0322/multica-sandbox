@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run the manager on the host against the dev namespace (up.sh first): it
 # creates its pods in the namespace with the dev-user kubeconfig, which may
-# only create, delete, watch and patch pods and read the stand-in owner
-# Deployment sandbox-e2e-owner, and serves Multica at 127.0.0.1:18080.
+# only create, delete, get, list and watch pods and read the stand-in owner
+# Deployment sandbox-e2e-owner, serves Multica at 127.0.0.1:18080, and keeps
+# its dispatch record in the dev database sandbox_manager.
 #
 #   deploy/k8s/dev/manager.sh       sign in the bot, create a workspace, run
 #
@@ -17,6 +18,7 @@ root=$(cd "$here/../../.." && pwd)
 state=${STATE:-$here/.state}
 api=http://127.0.0.1:18080
 [ -f "$state/dev-user.kubeconfig" ] || { echo "run deploy/k8s/dev/up.sh first" >&2; exit 1; }
+[ -f "$state/manager-db-url" ] || { echo "run deploy/k8s/dev/up.sh (or manager-db.sh) first: no database for the manager" >&2; exit 1; }
 code=$(sed -n 's/^MULTICA_DEV_VERIFICATION_CODE=//p' "$state/backend.env")
 
 if [ ! -s "$state/pool-token" ]; then
@@ -38,6 +40,8 @@ cd "$root"
 go build -o "$state/sandbox-manager" ./cmd/sandbox-manager
 export MULTICA_SERVER_URL=$api \
 	SANDBOX_POOL_TOKEN_FILE="$state/pool-token" \
+	SANDBOX_DATABASE_URL_FILE="$state/manager-db-url" \
+	SANDBOX_PAYLOAD_KEY_FILE="$state/payload-key" \
 	SANDBOX_POD_TEMPLATE="$state/pod.yaml" \
 	KUBECONFIG="$state/dev-user.kubeconfig" \
 	SANDBOX_MAX_PODS=${PODS:-4} \

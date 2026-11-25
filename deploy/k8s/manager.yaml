@@ -3,17 +3,20 @@
 #
 # Before applying it:
 #   kubectl apply -f deploy/k8s/rbac.yaml -n <namespace>     # the service account
+#   openssl rand -base64 32 >payload-key   # keep it: the database's payloads need it
 #   kubectl create secret generic sandbox-manager -n <namespace> \
-#     --from-file=pool-token=<file holding the bot account's PAT>
+#     --from-file=pool-token=<file holding the bot account's PAT> \
+#     --from-file=database-url=<file holding the Postgres URL> \
+#     --from-file=payload-key=payload-key
 #   kubectl create configmap sandbox-manager -n <namespace> \
 #     --from-file=pod.yaml=deploy/k8s/pod.yaml \
 #     --from-file=overrides.yaml=<your overrides file, may be empty>
 #   kubectl apply -f deploy/k8s/manager.yaml -n <namespace>
 #
 # Run exactly one manager per namespace (replicas 1, strategy Recreate): two
-# would act on the same pods. Never give the manager's own pod the label
-# app.kubernetes.io/managed-by=sandbox-manager; the manager treats every pod
-# carrying it as one of its own pods.
+# would act on the same pods and the same dispatch record. Never give the
+# manager's own pod the label app.kubernetes.io/managed-by=sandbox-manager;
+# the manager treats every pod carrying it as one of its own pods.
 apiVersion: v1
 kind: Service
 metadata:
@@ -51,7 +54,7 @@ spec:
         app.kubernetes.io/name: sandbox-manager
     spec:
       # The service account from rbac.yaml: pods only (create, delete, get,
-      # list, watch, patch). Its token is mounted into this pod only.
+      # list, watch). Its token is mounted into this pod only.
       serviceAccountName: sandbox-manager
       automountServiceAccountToken: true
       enableServiceLinks: false
@@ -68,6 +71,10 @@ spec:
           env:
             - {name: MULTICA_SERVER_URL, value: "http://multica-backend:8080"}
             - {name: SANDBOX_POOL_TOKEN_FILE, value: /etc/sandbox-manager/secret/pool-token}
+            # The dispatch record: a Postgres database of the manager's own,
+            # and the key task payloads are encrypted with there.
+            - {name: SANDBOX_DATABASE_URL_FILE, value: /etc/sandbox-manager/secret/database-url}
+            - {name: SANDBOX_PAYLOAD_KEY_FILE, value: /etc/sandbox-manager/secret/payload-key}
             - {name: SANDBOX_POD_TEMPLATE, value: /etc/sandbox-manager/config/pod.yaml}
             - {name: SANDBOX_WORKSPACE_OVERRIDES_FILE, value: /etc/sandbox-manager/config/overrides.yaml}
             # No KUBECONFIG: the in-cluster service account. The namespace is

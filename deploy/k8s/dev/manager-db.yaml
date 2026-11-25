@@ -1,0 +1,16 @@
+# The manager's database in the dev namespace: a database of its own on the
+# dev Postgres (multica-pg), reached from the host at the kind node's address
+# on node port 30432, where the manager runs (manager.sh, the end-to-end
+# scenarios). manager-db.sh creates the role and the database.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-manager-db
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: multica-pg
+  ports:
+    - port: 5432
+      targetPort: 5432
+      nodePort: 30432

@@ -3,8 +3,9 @@
 # the given kubeconfig. See README.md for the settings.
 #
 # Each run signs in a bot account of its own (e2e-<run>@<domain>), so it serves
-# only the workspaces it creates, and on exit stops its manager, deletes every
-# pod the manager labelled, archives its agents and deletes its workspaces.
+# only the workspaces it creates, keeps its dispatch record in a database of
+# its own, and on exit stops its manager, deletes every pod the manager
+# labelled, archives its agents and deletes its workspaces and its database.
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd "$here/../../.." && pwd)
@@ -47,6 +48,29 @@ state=${E2E_STATE:-${TMPDIR:-/tmp}/sandbox-e2e-$run}
 mkdir -p "$state"
 chmod 700 "$state"
 k() { kubectl -n "$NS" "$@"; }
+# adminctl runs kubectl with a context that may do more than the manager's
+# kubeconfig: delete the stand-in owner Deployment, or reach the kind
+# namespace's Postgres. admin is that context, empty when there is none.
+adminctl() { KUBECONFIG=${E2E_ADMIN_KUBECONFIG:-$HOME/.kube/config} kubectl "$@"; }
+admin=${E2E_ADMIN_CONTEXT:-}
+if [ -z "$admin" ] && adminctl config get-contexts -o name 2>/dev/null | grep -qx kind-sandbox-dev; then admin=kind-sandbox-dev; fi
+
+# The dispatch record: E2E_DATABASE_URL as given, else a database of this run's
+# own on the kind namespace's Postgres (deploy/k8s/dev/manager-db.sh), dropped
+# at teardown. The payload key is the run's own.
+run_db=""
+if [ -n "${E2E_DATABASE_URL:-}" ]; then
+	(umask 077 && printf '%s' "$E2E_DATABASE_URL" >"$state/database-url")
+elif [ -f "$devstate/manager-db-url" ] && [ -n "$admin" ]; then
+	run_db=sandbox_e2e_$run
+	(umask 077 && sed "s|/sandbox_manager?|/$run_db?|" "$devstate/manager-db-url" >"$state/database-url")
+else
+	echo "set E2E_DATABASE_URL, or run deploy/k8s/dev/up.sh for a database in the kind namespace" >&2
+	exit 2
+fi
+(umask 077 && openssl rand -base64 32 >"$state/payload-key")
+# pg runs SQL as the kind namespace's Postgres superuser.
+pg() { adminctl --context "$admin" -n "$NS" exec -i multica-pg-0 -- psql -U multica -d multica -v ON_ERROR_STOP=1 -qtA "$@"; }
 
 step() { printf '\n== %s\n' "$*"; }
 passed=()
@@ -95,6 +119,8 @@ start_manager() {
 	(
 		export MULTICA_SERVER_URL=$API \
 			SANDBOX_POOL_TOKEN_FILE=$state/pool-token \
+			SANDBOX_DATABASE_URL_FILE=$state/database-url \
+			SANDBOX_PAYLOAD_KEY_FILE=$state/payload-key \
 			SANDBOX_POD_TEMPLATE=$state/pod.yaml \
 			SANDBOX_NAMESPACE=$NS \
 			SANDBOX_MANAGER_NAME="E2E $run" \
@@ -248,6 +274,9 @@ teardown() {
 			curl -fsS -X DELETE "$API/api/workspaces/$w" -H "Authorization: Bearer $jwt" >/dev/null 2>&1
 		done
 		echo "deleted workspaces ${workspaces[*]}"
+		if [ -n "$run_db" ]; then
+			echo "DROP DATABASE IF EXISTS $run_db WITH (FORCE);" | pg && echo "dropped database $run_db"
+		fi
 	fi
 	left=$(managed_pods)
 	[ -z "$left" ] && echo "no pods left" || echo "pods left: $left" >&2
@@ -261,7 +290,10 @@ preflight() {
 	curl -fsS "$API/health" >/dev/null || fail "no Multica backend at $API"
 	no_managed_pods || fail "namespace $NS already has managed pods (another manager?): $(managed_pods | tr '\n' ' ')"
 	! curl -fsS -o /dev/null "$ADMIN/v1/inventory" 2>/dev/null || fail "something already listens on $ADMIN"
-	echo "namespace $NS, kubeconfig $KUBECONFIG, backend $API, pods reach the manager at $manager_url, pods owned by ${owner:-nothing}, run $run"
+	if [ -n "$run_db" ]; then
+		echo "CREATE DATABASE $run_db OWNER sandbox_manager;" | pg || fail "could not create the run's database $run_db"
+	fi
+	echo "namespace $NS, kubeconfig $KUBECONFIG, backend $API, pods reach the manager at $manager_url, pods owned by ${owner:-nothing}, database ${run_db:-from E2E_DATABASE_URL}, run $run"
 }
 
 # privacy: no pod name, IP or hostname of the run reaches Multica, in any

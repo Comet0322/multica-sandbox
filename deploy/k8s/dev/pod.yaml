@@ -29,6 +29,12 @@ spec:
         # network's gateway); run.sh writes the real address in.
         - name: SANDBOX_MANAGER_URL
           value: "@MANAGER_URL@"
+        # The stock daemon runs one task at a time, as the pod does: the
+        # manager hands a task that has not started to its pod again (after
+        # a lost response, or a manager restart), and a daemon with a free
+        # slot would run it twice.
+        - name: MULTICA_DAEMON_MAX_CONCURRENT_TASKS
+          value: "1"
       resources:
         requests: {cpu: 250m, memory: 256Mi}
         limits: {memory: 1Gi}

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create (or reuse) a kind cluster with one namespace holding Multica v0.11.0,
-# and a kubeconfig that may only create, delete, watch and patch pods there,
-# what the manager needs.
+# a database for the manager (manager-db.sh), and a kubeconfig that may only
+# create, delete, get, list and watch pods there, what the manager needs.
 #
 #   deploy/k8s/dev/up.sh          create or update
 #   deploy/k8s/dev/down.sh        delete the cluster
@@ -66,6 +66,8 @@ k -n "$ns" rollout status statefulset/multica-pg --timeout=180s
 k -n "$ns" rollout status deployment/multica-backend --timeout=180s
 k -n "$ns" rollout status deployment/multica-web --timeout=180s
 
+CLUSTER=$cluster NAMESPACE=$ns STATE=$state "$here/manager-db.sh"
+
 # The dev user's kubeconfig: the cluster's address as the host sees it, and
 # the service account's long-lived token.
 token=""
@@ -92,5 +94,6 @@ cat <<MSG
 Namespace $ns is ready in kind cluster $cluster.
   backend     http://127.0.0.1:18080   (curl http://127.0.0.1:18080/health)
   web         http://127.0.0.1:13001   (sign in with any email, code $code)
-  kubeconfig  $kc   (pods only: create, delete, get, list, watch, patch)
+  database    $(sed 's|//[^@]*@|//sandbox_manager:***@|' "$state/manager-db-url")
+  kubeconfig  $kc   (pods only: create, delete, get, list, watch)
 MSG
