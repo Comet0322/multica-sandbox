@@ -369,6 +369,14 @@ func (a *DaemonAPI) serveRuntimeScoped(w http.ResponseWriter, r *http.Request, p
 // serveTask forwards a pod's report on a task to Multica, provided the task is
 // leased to that pod.
 func (a *DaemonAPI) serveTask(w http.ResponseWriter, r *http.Request, podID, taskID, action string) {
+	if action == "environments" || action == "environment-configs" {
+		// The dev servers a task left on its pod, and those its repositories
+		// declare. Multica would link members to the pod's localhost and offer
+		// stop, restart and log buttons the manager never carries out, for a
+		// pod deleted after its hold, so these are answered here, leased or not.
+		writeJSON(w, http.StatusOK, okBody)
+		return
+	}
 	route, ok := a.cfg.Backend.TaskRoute(podID, taskID, action, r.URL.Path)
 	if !ok {
 		a.refuse(w, r, podID, "task is not assigned to this pod")

@@ -81,6 +81,37 @@ func TestTerminalReportMulticaRefusedEndsTheLease(t *testing.T) {
 	}
 }
 
+// The stock daemon reports the dev servers a task left running and the ones
+// its repositories declare, the second after the task's terminal report.
+// Multica would offer members links to the pod's localhost and buttons the
+// manager never carries out, for a pod deleted after its hold, so the manager
+// takes both reports itself, whether or not the task is still leased.
+func TestEnvironmentReportsAreNeverRelayed(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 1)
+	pod := h.newPod("pool-0")
+	leaseOne(t, h, pod, "t1")
+	reports := []string{"environments", "environment-configs"}
+	for _, action := range reports {
+		if status := pod.report("t1", action); status != http.StatusOK {
+			t.Fatalf("%s while leased: status %d", action, status)
+		}
+	}
+	h.wantHeld("t1")
+	if status := pod.report("t1", "complete"); status != http.StatusOK {
+		t.Fatalf("complete: status %d", status)
+	}
+	h.wantEnded("t1", "pod reported complete")
+	for _, action := range reports {
+		if status := pod.report("t1", action); status != http.StatusOK {
+			t.Fatalf("%s after the lease: status %d", action, status)
+		}
+		if n := h.upstream.callCount("POST /api/daemon/tasks/t1/" + action); n != 0 {
+			t.Fatalf("%s reached Multica %d times", action, n)
+		}
+	}
+}
+
 func TestReportThatIsNotTerminalNeverEndsTheLease(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, 1)
