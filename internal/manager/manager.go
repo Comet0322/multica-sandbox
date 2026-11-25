@@ -127,8 +127,9 @@ type Config struct {
 	Providers []string
 	// AuditLog receives the audit records as JSON Lines. Nil disables auditing.
 	AuditLog io.Writer
-	// Models are model list reports, by provider, that answer Multica's model
-	// picker while no pod has reported lately. Nil asks a pod.
+	// Models are model list reports, by provider, that alone answer Multica's
+	// model picker for runtimes of that provider (SANDBOX_MODELS). A provider
+	// not listed asks a pod.
 	Models map[string]json.RawMessage
 	// Runtimes are the runtime kinds the manager registers in every
 	// workspace and claims for (SANDBOX_RUNTIMES). Empty means the pool

@@ -65,7 +65,8 @@ type Config struct {
 	// means DefaultHeartbeatInterval.
 	HeartbeatInterval time.Duration
 	// Models are model list reports, by provider, that answer the picker
-	// when no pod reported lately (see multica.ModelCatalog.Pin).
+	// for every runtime of that provider; no pod is asked for it. A provider
+	// not listed is answered from a pod's report (see multica.ModelCatalog).
 	Models map[string]json.RawMessage
 	// ReadOverrides returns the per-workspace overrides file, read on every
 	// Sync. Nil means no overrides.
@@ -130,8 +131,8 @@ type Source struct {
 	overrides overrideState
 	// failRetry holds failure reports Multica did not take yet.
 	failRetry []pendingFail
-	// models is the latest model list report per provider, reused for every
-	// runtime of that provider.
+	// models is the latest pod model list report per provider not in
+	// cfg.Models, reused for every runtime of that provider.
 	models *multica.ModelCatalog
 	// orphansRecovered is set once the first successful Sync asked Multica to
 	// fail what an earlier manager left running.
@@ -165,11 +166,7 @@ func New(cfg Config) *Source {
 	if len(cfg.Runtimes) == 0 {
 		cfg.Runtimes = []RuntimeSet{{Kind: policy.KindPool}}
 	}
-	models := multica.NewModelCatalog(cfg.Now, 0)
-	for provider, report := range cfg.Models {
-		models.Pin(provider, report)
-	}
-	return &Source{cfg: cfg, log: cfg.Log, up: cfg.Client, ws: newWorkspaceSet(cfg.Log), models: models}
+	return &Source{cfg: cfg, log: cfg.Log, up: cfg.Client, ws: newWorkspaceSet(cfg.Log), models: multica.NewModelCatalog(cfg.Now, 0)}
 }
 
 // defaultName is a workspace's runtime name when it sets none: the pool
@@ -604,9 +601,8 @@ func (s *Source) HeartbeatLoop(ctx context.Context) {
 }
 
 // HeartbeatOnce heartbeats every registered runtime once. A model list
-// request in the answer is answered from the catalog, or goes to the pods
-// when the catalog has nothing for the runtime's provider; a runtime Multica no longer knows
-// drops its workspace's registration.
+// request in the answer is answered as answerModels says; a runtime Multica
+// no longer knows drops its workspace's registration.
 func (s *Source) HeartbeatOnce(ctx context.Context) {
 	for _, ws := range append(s.ws.served(), s.ws.drainingList()...) {
 		for _, set := range ws.sets {
@@ -626,20 +622,33 @@ func (s *Source) HeartbeatOnce(ctx context.Context) {
 	}
 }
 
-// answerModels answers a model list request with the catalog's report for
-// the runtime's provider. The pods run one image, so any pod's report is
-// every runtime's. Without one, or when Multica does not take it, a pod is
+// answerModels answers a model list request. A provider the operator listed
+// is answered from that list alone and never by a pod. Any other is answered
+// from the catalog's pod report: the pods run one image, so any pod's report
+// is every runtime's. Without one, or when Multica does not take it, a pod is
 // asked.
 func (s *Source) answerModels(ctx context.Context, rt *multica.Runtimes, runtimeID, requestID string) {
-	if report, ok := s.models.Report(rt.Provider(runtimeID)); ok {
-		err := rt.Conn().Post(ctx, multica.ModelReportPath(runtimeID, requestID), report, nil)
-		if err == nil {
-			s.log.Debug("model list request answered from the catalog", "runtime_id", runtimeID, "request_id", requestID)
-			return
-		}
-		s.log.Warn("answer model list request from the catalog", "runtime_id", runtimeID, "request_id", requestID, "error", err)
+	provider := rt.Provider(runtimeID)
+	if report, ok := s.cfg.Models[provider]; ok {
+		s.postModels(ctx, rt, runtimeID, requestID, report, "configuration")
+		return
+	}
+	if report, ok := s.models.Report(provider); ok && s.postModels(ctx, rt, runtimeID, requestID, report, "catalog") {
+		return
 	}
 	s.pods.NoteModelRequest(runtimeID, requestID)
+}
+
+// postModels sends a model list report upstream and reports whether Multica
+// took it.
+func (s *Source) postModels(ctx context.Context, rt *multica.Runtimes, runtimeID, requestID string, report json.RawMessage, from string) bool {
+	err := rt.Conn().Post(ctx, multica.ModelReportPath(runtimeID, requestID), report, nil)
+	if err != nil {
+		s.log.Warn("answer model list request", "from", from, "runtime_id", runtimeID, "request_id", requestID, "error", err)
+		return false
+	}
+	s.log.Debug("model list request answered", "from", from, "runtime_id", runtimeID, "request_id", requestID)
+	return true
 }
 
 // ModelsReported keeps a pod's model list report, which Multica took, for

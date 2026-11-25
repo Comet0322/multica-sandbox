@@ -96,6 +96,11 @@ Only that provider is enabled, so the model picker of an opencode agent shows
 exactly the models the file names (`llm/<model>`). To offer another model, add
 it to the file.
 
+The picker shows what a pod's CLI reports: Claude Code reports its own
+catalog, which need not match what the endpoint serves. For a CLI listed in
+`SANDBOX_MODELS` (see `docs/DEPLOYMENT.md`) the manager answers with that
+list instead, and no pod is asked.
+
 Auto-update and the model catalog download are switched off
 (`OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH`): a pod is
 not expected to reach the public internet.

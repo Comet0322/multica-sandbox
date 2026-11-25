@@ -10,12 +10,14 @@ import (
 
 // A model list request is the picker in the Multica UI asking which models the
 // runtime's agent CLI can run. Multica hands it to the runtime in the answer to
-// a heartbeat. The runtime is the manager's, but the CLIs are in the pods, whose
-// image is the same everywhere, so the manager passes the request to one pod's
-// daemon, which asks its CLI and reports to the manager, which relays the
-// report upstream with the workspace's account. Since one image means one
-// catalog, the task source keeps that report (ModelCatalog) and answers the
-// next requests of every runtime with the same provider itself for a while.
+// a heartbeat. For a provider the operator lists (ParseModels), the task
+// source answers with that list itself and no pod is asked. For any other,
+// the runtime is the manager's but the CLIs are in the pods, whose image is
+// the same everywhere, so the manager passes the request to one pod's daemon,
+// which asks its CLI and reports to the manager, which relays the report
+// upstream with the workspace's account. Since one image means one catalog,
+// the task source keeps that report (ModelCatalog) and answers the next
+// requests of every runtime with the same provider itself for a while.
 
 const (
 	// modelRequestRetry is how long a pod has to report before the request is
@@ -103,7 +105,6 @@ type ModelCatalog struct {
 type catalogEntry struct {
 	report json.RawMessage
 	at     time.Time
-	pinned bool
 }
 
 // NewModelCatalog returns an empty catalog; ttl <= 0 means ModelCatalogTTL.
@@ -140,23 +141,11 @@ func (c *ModelCatalog) Remember(provider string, report []byte) bool {
 	return true
 }
 
-// Pin keeps a report for the provider that never expires; a fresher pod
-// report still takes its place while it is fresh.
-func (c *ModelCatalog) Pin(provider string, report json.RawMessage) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries["pinned/"+provider] = catalogEntry{report: report, pinned: true}
-}
-
-// Report returns the report to answer the provider's request with: a fresh
-// pod report, else a pinned one.
+// Report returns the provider's pod report while it is fresh.
 func (c *ModelCatalog) Report(provider string) (json.RawMessage, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if e, ok := c.entries[provider]; ok && c.now().Sub(e.at) < c.ttl {
-		return e.report, true
-	}
-	if e, ok := c.entries["pinned/"+provider]; ok {
 		return e.report, true
 	}
 	return nil, false
@@ -185,7 +174,8 @@ func ModelReportPath(runtimeID, requestID string) string {
 // ParseModels reads the models the picker offers per agent CLI, as
 // "claude=claude-sonnet-4-6,claude-opus-4-7;codex=gpt-5.2": providers apart by
 // ";", each with its comma list of model IDs, the first one the default. It
-// returns a report per provider (see StaticModelReport); empty is none.
+// returns a report per provider (see StaticModelReport), the only answer the
+// picker gets for that provider; empty is none.
 func ParseModels(spec string) (map[string]json.RawMessage, error) {
 	out := map[string]json.RawMessage{}
 	for _, part := range strings.Split(spec, ";") {

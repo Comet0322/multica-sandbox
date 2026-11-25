@@ -7,6 +7,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"sandbox-manager/internal/manager"
+	"sandbox-manager/internal/multica"
 )
 
 // The Multica UI asks the runtime which models its agent CLI can run; the
@@ -184,5 +187,80 @@ func TestALaterModelListRequestIsAnsweredFromTheLastReport(t *testing.T) {
 	}
 	if _, raw := pod.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"}); strings.Contains(string(raw), "pending_model_list") {
 		t.Fatalf("an answered request was still handed to a pod: %s", raw)
+	}
+}
+
+// The operator names the models each agent CLI really has (SANDBOX_MODELS).
+// For a listed CLI that list is the picker's only answer: the manager gives it
+// at once, every time, and no pod is asked or can report in its place, not
+// even when Multica refuses an answer.
+func TestAListedProvidersModelsAreThePickersOnlyAnswer(t *testing.T) {
+	t.Parallel()
+	models, err := multica.ParseModels("claude=claude-sonnet-4-6,claude-opus-4-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarness(t, 1, func(c *manager.Config) { c.Models = models })
+	pod := h.newPod("pool-0")
+	pod.start()
+
+	var mu sync.Mutex
+	request := "ml-1"
+	reports := map[string][]string{}
+	h.upstream.intercept(func(w http.ResponseWriter, r *http.Request) bool {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.URL.Path == "/api/daemon/heartbeat":
+			writeJSON(w, map[string]any{"runtime_id": "runtime-a", "status": "ok", "pending_model_list": map[string]string{"id": request}})
+			return true
+		case strings.HasSuffix(r.URL.Path, "/result"):
+			var body struct {
+				Status string `json:"status"`
+				Models []struct {
+					ID string `json:"id"`
+				} `json:"models"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			got := []string{body.Status}
+			for _, m := range body.Models {
+				got = append(got, m.ID)
+			}
+			reports[r.URL.Path] = got
+			if strings.Contains(r.URL.Path, "/ml-1/") {
+				http.Error(w, "store unavailable", http.StatusInternalServerError)
+				return true
+			}
+			writeJSON(w, map[string]string{"status": "ok"})
+			return true
+		}
+		return false
+	})
+	want := "completed claude-sonnet-4-6 claude-opus-4-7"
+	answered := func(id string) string {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(reports["/api/daemon/runtimes/runtime-a/models/"+id+"/result"], " ")
+	}
+
+	h.pool.HeartbeatOnce(context.Background())
+	if got := answered("ml-1"); got != want {
+		t.Fatalf("the first request was answered with %q, want %q", got, want)
+	}
+	// Multica refused that answer; the request still does not go to a pod.
+	if _, raw := pod.call(http.MethodPost, "/api/daemon/heartbeat", map[string]any{"runtime_id": "runtime-a"}); strings.Contains(string(raw), "pending_model_list") {
+		t.Fatalf("a request for a listed provider was handed to a pod: %s", raw)
+	}
+	body := map[string]any{"status": "completed", "models": []map[string]string{{"id": "claude-haiku-5-5", "label": "Haiku"}}}
+	if status, _ := pod.call(http.MethodPost, "/api/daemon/runtimes/runtime-a/models/ml-1/result", body); status != http.StatusForbidden {
+		t.Fatalf("a pod reported models for a listed provider: status %d", status)
+	}
+
+	mu.Lock()
+	request = "ml-2"
+	mu.Unlock()
+	h.pool.HeartbeatOnce(context.Background())
+	if got := answered("ml-2"); got != want {
+		t.Fatalf("a later request was answered with %q, want %q", got, want)
 	}
 }
