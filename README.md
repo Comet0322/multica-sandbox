@@ -19,7 +19,7 @@ Runs Multica tasks on pods it creates through the Kubernetes API, one task at a 
 | `internal/sandbox` | The sandbox service: creates pods from the pod template, watches them, records what each serves on it, deletes them |
 | `deploy/` | Dockerfiles, the pod image's contents (`SANDBOX.md`), Kubernetes manifests, the local kind namespace, the end-to-end scenarios (`k8s/e2e`) and the runbook |
 | `docs/` | Architecture and deployment guide |
-| `GLOSSARY.md` | Terms (decision records are kept outside the repository) |
+| `GLOSSARY.md`, `docs/adr/`, `.scratch/` | Terms, decision records, and specs and issues (see AGENTS.md) |
 
 Test with `go test -race ./...`, and end to end with `deploy/k8s/e2e/scenarios.sh` against the local kind namespace. The pod image builds Multica's stock `multica` daemon from a Multica checkout next to this repository (`../multica`, at the version the Multica server runs, v0.11.0). Build the images from the repository root:
 
