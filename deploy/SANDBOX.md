@@ -99,7 +99,10 @@ it to the file.
 The picker shows what a pod's CLI reports: Claude Code reports its own
 catalog, which need not match what the endpoint serves. For a CLI listed in
 `SANDBOX_MODELS` (see `docs/DEPLOYMENT.md`) the manager answers with that
-list instead, and no pod is asked.
+list instead, and no pod is asked. A pod asked for models runs no task, so
+a credential looked up per task (such as a gateway sidecar resolving the
+member's key from the task ID) is not there yet: name the models in
+`SANDBOX_MODELS`, only those every member can use.
 
 Auto-update and the model catalog download are switched off
 (`OPENCODE_DISABLE_AUTOUPDATE`, `OPENCODE_DISABLE_MODELS_FETCH`): a pod is
