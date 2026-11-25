@@ -2,6 +2,8 @@ module sandbox-manager
 
 go 1.26.10
 
+toolchain go1.27.4
+
 require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674

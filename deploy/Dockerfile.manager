@@ -1,6 +1,6 @@
 # Build from the repository root:
 #   docker build -f deploy/Dockerfile.manager -t multica-sandbox-manager:<tag> .
-ARG GO_IMAGE=golang:1.27.3-alpine
+ARG GO_IMAGE=golang:1.27.4-alpine
 
 FROM ${GO_IMAGE} AS builder
 WORKDIR /src/sandbox-manager

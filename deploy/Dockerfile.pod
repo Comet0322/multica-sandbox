@@ -12,7 +12,7 @@
 # which sets the user, the group 2000, the volume, the resources and the
 # dropped capabilities. The default target installs real agent CLIs; --target
 # fake uses a fake Claude Code for credential-free testing.
-ARG GO_IMAGE=golang:1.27.3-alpine
+ARG GO_IMAGE=golang:1.27.4-alpine
 ARG BASE_IMAGE=node:22-slim
 
 # The stock daemon is Multica's, built from the "multica" build context's
