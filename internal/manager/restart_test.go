@@ -1,8 +1,11 @@
 package manager_test
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +145,53 @@ func TestARestartedManagerHandsATaskNotStartedAgain(t *testing.T) {
 				t.Fatalf("the restart failed t1: %s", why)
 			}
 		})
+	}
+}
+
+// While the database cannot be written, no pod is handed a task, nothing
+// more is claimed, and /readyz and the inventory say why; once it can, the
+// manager carries on.
+func TestADatabaseThatCannotBeWrittenStopsDispatch(t *testing.T) {
+	w := newKubeWorld(t)
+	h := w.manager(1, 1)
+	pods := h.startedPods(1)
+	w.store.failWith(errors.New("connection refused"))
+	w.upstream.enqueueIssue("t1", "issue-1")
+	h.dispatch()
+	if got := pods[0].pollBatch(); len(got) != 0 {
+		t.Fatalf("the pod was handed %v, which the record does not hold", got)
+	}
+	resp, err := http.Get(h.podAPI.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "the dispatch record cannot be written: ") {
+		t.Fatalf("/readyz = %d %q, want 503 naming the dispatch record", resp.StatusCode, body)
+	}
+	if p := h.inventory().Problem; !strings.Contains(p, "connection refused") {
+		t.Fatalf("inventory problem = %q, want the database's error", p)
+	}
+	w.upstream.enqueueIssue("t2", "issue-2")
+	h.dispatch()
+	if n := w.upstream.claimCount(); n != 1 {
+		t.Fatalf("claims = %d while the record cannot be written, want 1", n)
+	}
+
+	w.store.failWith(nil)
+	if got := pods[0].pollBatch(); !slices.Equal(got, []string{"t1"}) {
+		t.Fatalf("the pod got %v once the record was written, want t1", got)
+	}
+	if st := w.store.task("t1").State; st != core.TaskHanded {
+		t.Fatalf("t1 is %q in the record, want handed", st)
+	}
+	resp, err = http.Get(h.podAPI.URL + "/readyz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("/readyz = %d once the record is written, want 200", resp.StatusCode)
 	}
 }

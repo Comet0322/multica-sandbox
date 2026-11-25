@@ -16,6 +16,8 @@ type memStore struct {
 	mu    sync.Mutex
 	pods  map[string]core.PodRow
 	tasks map[string]core.TaskRow
+	// err is what Write returns; nil writes.
+	err error
 }
 
 func newMemStore() *memStore {
@@ -48,6 +50,9 @@ func (s *memStore) Load(context.Context) (core.Record, error) {
 func (s *memStore) Write(_ context.Context, pods []core.PodRow, tasks []core.TaskRow) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
 	for _, p := range pods {
 		s.pods[p.ID] = p
 	}
@@ -59,6 +64,13 @@ func (s *memStore) Write(_ context.Context, pods []core.PodRow, tasks []core.Tas
 		s.tasks[t.ID] = t
 	}
 	return nil
+}
+
+// failWith makes Write fail with err, nil to write again.
+func (s *memStore) failWith(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
 }
 
 // task is the task's row, as a restarted manager would load it.
