@@ -29,6 +29,12 @@ Today, with one replica, a restart already keeps the pods (they are owned by the
 - **openma-ai/open-managed-agents** (TypeScript, Apache-2.0). Code not reusable. Its Node deployment scales horizontally with a SQL outbox (`managed_session_executions`): a renewable claim per session with owner, attempt and generation fence, FIFO within a session. **Reference design for the manager's dispatch table.**
 - Conclusion: no project gives reusable code under these constraints. `internal/sandbox` already is the pods-only implementation and imports nothing else of this module, so it moves rather than being rewritten.
 
+## Where it stands (2026-11-26)
+
+- Multica v0.11.0 compatibility: done (`multica-v0.11-compat.md`).
+- Step 1, the dispatch record in Postgres: done (`step-1.md`).
+- Next: step 2, leader election with two manager replicas (issue 01 has the proposal; no step-2 brief yet).
+
 ## Decisions so far
 
 - Multica `security/v0.11.0` fork only (the company's build); v0.6.4 support is dropped (multica-v0.11-compat.md).

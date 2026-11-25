@@ -1,4 +1,4 @@
-Status: open
+Status: resolved
 
 # Multica v0.11.0 compatibility
 
@@ -22,3 +22,7 @@ Output: `multica-v0.11-compat-report.md` here, one row per difference: what chan
 - Point `deploy/k8s/multica` and `up.sh` at v0.11.0 images, build the pod image from `../multica` at v0.11.0, run `smoke.sh` and `scenarios.sh`.
 - Fix what breaks on `multica-v0.11-compat`, update `daemonwire` fixtures, AGENTS.md, docs/DEPLOYMENT.md "Multica server version".
 - v0.6.4 support is dropped (operator, 2026-11-26): the manager targets v0.11.0 only. Replace the v0.6.4 fixtures, images and wording outright; no code paths or tests kept for v0.6.4.
+
+## Answer
+
+Phase A: `multica-v0.11-compat-report.md`. Phase B done on branch `multica-v0.11-compat`, commits `a0dabaf` to `3452d9c`: the manager answers the pods' environment reports itself, refuses a wake socket handshake with an Origin, the kind namespace and e2e scenarios run v0.11.0, `daemonwire` is pinned to v0.11.0, and the docs target v0.11.0 only. The pod image builds the daemon from `../multica` at `security/v0.11.0`; the kind backend runs the stock `ghcr.io/multica-ai/multica-backend:v0.11.0` image. Every later branch of the stack builds on it.

@@ -1,4 +1,4 @@
-Status: claimed
+Status: resolved
 
 # Step 1: the manager keeps its state in Postgres (one replica)
 
@@ -48,3 +48,7 @@ Commits on branch `two-services-ha-step1` (already created from `pod-failure-han
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 Report: what changed per commit, the test and e2e results with their output, anything in this brief you could not do or decided differently and why.
+
+## Answer
+
+Done on `two-services-ha-step1`, commits `beb18b3` to `62e76ae` (the `Store` port, `internal/store`, restore from the database, the dev database, the restart scenarios, docs). `go test -race ./...` with the store tests against the kind manager database, and `deploy/k8s/e2e/scenarios.sh` with both restart scenarios, passed on 2026-11-26. Next: step 2, leader election (map.md, "Delivery order"; issue 01).
