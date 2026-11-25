@@ -37,8 +37,7 @@ func (c *Core) Restore(ctx context.Context) error {
 	for i := range rec.Tasks {
 		t := &rec.Tasks[i]
 		if t.FailPending {
-			c.failing[t.ID] = t
-			c.failNow = append(c.failNow, t)
+			c.failing[t.ID] = &report{row: t, tenant: t.Tenant, id: t.ID, reason: t.FailReason}
 		}
 		switch {
 		case t.State == TaskEnded:
@@ -56,7 +55,7 @@ func (c *Core) Restore(ctx context.Context) error {
 			// core's to know of.
 			c.log.Warn("pod deleted: the dispatch record has no task running on it", "pod_id", p.ID)
 			p.GoneAt, p.GoneWhy = c.now(), "the dispatch record has no task running on it"
-			c.dirtyPods[p.ID] = p
+			c.savePodLocked(p)
 			continue
 		}
 		adopt = append(adopt, HeldPod{ID: p.ID, Tenant: p.Tenant})
@@ -78,9 +77,9 @@ func (c *Core) Restore(ctx context.Context) error {
 	c.recordLocked()
 	c.mu.Unlock()
 	c.log.Info("dispatch record restored", "pods", len(kept), "tasks", len(onPod)+len(loose), "failure_reports", c.PendingFailReports())
-	// The failure reports go out with the first settle once the source serves
-	// its tenants: written now, they would reach none.
-	_ = c.flush(ctx)
+	// The failure reports go out once the core knows its tenants (see
+	// SetTenants): sent now, they would reach none.
+	_ = c.Flush(ctx)
 	return nil
 }
 

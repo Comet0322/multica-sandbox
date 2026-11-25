@@ -440,15 +440,27 @@ task runs. Nothing about who started a task is in the database. Ended tasks
 and pods that went are deleted 30 days later, unless a task's failure report
 is still to be sent.
 
-The manager writes the record before it acts on it:
-- a claimed task is in the record before a pod can get it;
-- a pod gets a task only once the record says it was handed it;
-- a failure is marked pending before it is reported, and reported again on
-  every reconciliation pass until Multica takes it.
+The manager writes the record as it changes, one write at a time and in
+the background, so a slow database holds up no heartbeat, report, inventory
+or Kubernetes event. Three steps wait for their own change to be written
+before the manager acts on it:
+- a claim waits until everything before it is written, so nothing is
+  claimed while the record cannot be written;
+- a pod gets a task only once the record says it was handed it, so a
+  claimed task is in the record before a pod can get it; until then the
+  task is not the pod's, and a pod lost meanwhile takes nothing with it;
+- a failure is reported only once the record holds it pending, then again
+  on every reconciliation pass until Multica takes it. A removed workspace is
+  disconnected only once its failure reports are taken.
+
+The rest (a task's start and end, holds, idle pods, pods let go) is written
+a moment later. A manager that stops writes what is left before it exits;
+what a crash loses, reconciliation rebuilds from Multica.
 
 While the database cannot be written, the manager claims nothing and hands
-no pod a task, `/readyz` returns 503 with `the dispatch record cannot be
-written: <why>`, and the inventory's `problem` says the same. Pods keep
+no pod a new task (a pod handed one before gets it again), `/readyz`
+returns 503 with `the dispatch record cannot be written: <why>`, and the
+inventory's `problem` says the same. Pods keep
 reporting on their running tasks. Once the database takes writes again, the
 manager carries on with no restart.
 
@@ -533,7 +545,7 @@ for each leased task's status with the endpoint the stock daemon polls
 (`GET /api/daemon/tasks/{id}/status`, with the PAT), at most 8 calls at once
 and 10s each. Any other error keeps the lease for the next pass.
 
-A failure report is marked pending in the dispatch record before it is sent.
+A failure report is sent once the dispatch record holds it pending.
 One that does not reach Multica (network error, timeout, 429 or 5xx) is sent
 again by every reconciliation pass until Multica takes it or refuses it with
 another 4xx (taken as already handled), with no time limit, and a restarted

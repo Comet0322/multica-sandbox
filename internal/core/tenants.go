@@ -32,6 +32,7 @@ func (c *Core) SetTenants(ctx context.Context, list []Tenant) TenantChanges {
 	var res TenantChanges
 	listed := map[string]bool{}
 	c.mu.Lock()
+	c.tenantsKnown = true
 	for _, t := range list {
 		listed[t.ID] = true
 		rec := c.tenants[t.ID]
@@ -83,9 +84,19 @@ func (c *Core) SetTenants(ctx context.Context, list []Tenant) TenantChanges {
 }
 
 // tenantBusyLocked reports whether a tenant holds anything here: a lease, a
-// claimed task not yet picked up, or a claim in flight. Callers hold c.mu.
+// claimed task not yet picked up, a claim in flight, or a failure report the
+// source has not taken, which it could not take once the tenant is closed.
+// Callers hold c.mu.
 func (c *Core) tenantBusyLocked(id string) bool {
-	return c.leasedLocked(id) > 0 || c.policy.Busy(id)
+	if c.leasedLocked(id) > 0 || c.policy.Busy(id) {
+		return true
+	}
+	for _, r := range c.failing {
+		if r.tenant == id {
+			return true
+		}
+	}
+	return false
 }
 
 // drainFrom waits for the work of a tenant removed as removal number gen to

@@ -94,7 +94,13 @@ func startManager(t *testing.T, client *fake.Clientset, cfg manager.Config, warm
 		t.Fatal(err)
 	}
 	go m.RunPods(ctx)
-	h := &harness{t: t, pool: m, logs: logs, audit: audit, kube: client, stop: cancel, adopted: map[string]bool{}}
+	stop := func() {
+		cancel()
+		if err := m.Flush(context.Background()); err != nil {
+			t.Errorf("write the dispatch record as the manager stops: %v", err)
+		}
+	}
+	h := &harness{t: t, pool: m, logs: logs, audit: audit, kube: client, stop: stop, adopted: map[string]bool{}}
 	h.podAPI = httptest.NewServer(m.PodHandler())
 	h.admin = httptest.NewServer(m.AdminHandler())
 	t.Cleanup(h.podAPI.Close)

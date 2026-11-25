@@ -121,6 +121,9 @@ func TestARestartedManagerHandsATaskNotStartedAgain(t *testing.T) {
 					t.Fatalf("the pod got %v, want t1", got)
 				}
 			}
+			if err := h1.pool.Flush(t.Context()); err != nil {
+				t.Fatal(err)
+			}
 			if st := w.store.task("t1").State; st != want {
 				t.Fatalf("t1 is %q in the record, want %q", st, want)
 			}

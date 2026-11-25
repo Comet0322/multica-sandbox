@@ -45,11 +45,9 @@ func (c *Core) Leases() []LeaseInfo {
 	return out
 }
 
-// startLeaseLocked hands a task placed on a held pod to the pod. Callers
-// hold c.mu.
+// startLeaseLocked starts the lease of a task its pod was handed, as the
+// record says. Callers hold c.mu.
 func (c *Core) startLeaseLocked(pd *pod, t *TaskRow) *lease {
-	t.State, t.PodID, t.StartedAt = TaskHanded, pd.ID, c.now()
-	c.saveTaskLocked(t)
 	l := &lease{TaskRow: t, PodName: pd.Name, pod: pd}
 	if pd.leases == nil {
 		pd.leases = map[string]*lease{}

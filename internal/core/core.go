@@ -65,9 +65,6 @@ type Core struct {
 	pool   Pool
 	store  Store
 
-	// storeMu makes the writes to the store one at a time (see flush).
-	storeMu sync.Mutex
-
 	mu sync.Mutex
 	// policy is the policy; every placement, claim-selection and
 	// lifetime decision comes from it.
@@ -86,19 +83,28 @@ type Core struct {
 	// claimed holds, by task ID, the tasks claimed that no pod has been
 	// handed yet.
 	claimed map[string]*TaskRow
-	// failing holds, by task ID, the tasks whose failure report the source
-	// has not taken; failNow those decided since the last settle.
-	failing map[string]*TaskRow
-	failNow []*TaskRow
+	// failing holds, by task ID, the failure reports the source has not
+	// taken; none goes out before tenantsKnown, set by the first SetTenants.
+	failing      map[string]*report
+	tenantsKnown bool
 	// tenants are the tenants served or draining, by ID.
 	tenants map[string]*tenant
-	// recorded is the row last written of each held pod; dirtyPods and
-	// dirtyTasks are the rows to write with the next flush, and
-	// storeProblem why the last write failed, empty once one succeeded.
-	recorded     map[string]PodRow
-	dirtyPods    map[string]PodRow
-	dirtyTasks   map[string]TaskRow
-	storeProblem string
+
+	// The dispatch record (see store.go). recorded is the row last saved of
+	// each held pod. seq numbers the changes to the record; dirtyPods and
+	// dirtyTasks are the rows left to write, each with its change. written
+	// is the last change the store holds with every one before it, and
+	// lastFailed the last change of a write that failed. writing is set
+	// while the writer runs; wrote is closed when a write ends.
+	// storeProblem is why the last write failed, empty once one succeeded.
+	recorded            map[string]PodRow
+	seq                 uint64
+	dirtyPods           map[string]unwritten[PodRow]
+	dirtyTasks          map[string]unwritten[TaskRow]
+	written, lastFailed uint64
+	writing             bool
+	wrote               chan struct{}
+	storeProblem        string
 }
 
 // New builds the core. Connect gives it its sides before it serves anything.
@@ -130,8 +136,8 @@ func New(cfg Config) (*Core, error) {
 	}
 	c := &Core{cfg: cfg, log: cfg.Log, clock: cfg.Clock, store: cfg.Store, held: map[string]*pod{},
 		leases: map[string]*lease{}, claimed: map[string]*TaskRow{}, tenants: map[string]*tenant{},
-		failing: map[string]*TaskRow{}, recorded: map[string]PodRow{},
-		dirtyPods: map[string]PodRow{}, dirtyTasks: map[string]TaskRow{}}
+		failing: map[string]*report{}, recorded: map[string]PodRow{},
+		dirtyPods: map[string]unwritten[PodRow]{}, dirtyTasks: map[string]unwritten[TaskRow]{}, wrote: make(chan struct{})}
 	pol, err := policy.New(policy.Config{
 		Now:           c.now,
 		RemovedReason: cfg.RemovedReason,

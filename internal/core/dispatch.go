@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 
 	"sandbox-manager/internal/policy"
 )
@@ -62,18 +63,37 @@ func (c *Core) placeLocked(d policy.Place) {
 	}
 	c.unqueueLocked(d.Task)
 	target.queue = append(target.queue, t)
-	t.PodID = d.Pod
+	placeOn(t, d.Pod)
 	c.saveTaskLocked(t)
 	c.log.Info("claimed task assigned to pod", "task_id", d.Task, "pod_id", d.Pod, "workspace_id", d.Tenant)
 	c.pool.Wake(d.Pod)
 }
 
-// takeQueuedLocked hands the pod the oldest task placed on it and starts its
-// lease. Nil when none is placed there.
-func (c *Core) takeQueuedLocked(pd *pod) *TaskRow {
+// placeOn has a claimed task placed on pod, or on none when pod is empty: it
+// is not handed, whatever a pickup the record did not take marked.
+func placeOn(t *TaskRow, pod string) {
+	t.PodID, t.State, t.StartedAt = pod, TaskPlaced, time.Time{}
+}
+
+// markHandedLocked marks the oldest task placed on the pod handed, so the
+// record says so before the pod gets it; nil when none is placed there. The
+// task stays placed here until the mark is written (see Next). A mark the
+// record has not taken yet is made again, from now. Callers hold c.mu.
+func (c *Core) markHandedLocked(pd *pod) *TaskRow {
 	if len(pd.queue) == 0 {
 		return nil
 	}
+	t := pd.queue[0]
+	if _, unwritten := c.dirtyTasks[t.ID]; t.State == TaskPlaced || unwritten {
+		t.State, t.StartedAt = TaskHanded, c.now()
+		c.saveTaskLocked(t)
+	}
+	return t
+}
+
+// takeQueuedLocked makes the oldest task placed on the pod, which the record
+// says the pod was handed, the pod's: its lease starts. Callers hold c.mu.
+func (c *Core) takeQueuedLocked(pd *pod) *TaskRow {
 	t := pd.queue[0]
 	pd.queue = pd.queue[1:]
 	delete(c.claimed, t.ID)
@@ -175,7 +195,7 @@ func (c *Core) readPending(ctx context.Context) {
 // record that cannot be written stops every claim: a claimed task must be
 // in the record before a pod gets it.
 func (c *Core) claimRound(ctx context.Context) {
-	if c.flush(ctx) != nil {
+	if c.Flush(ctx) != nil {
 		return
 	}
 	var tried []policy.Target
@@ -267,11 +287,12 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 	c.settle(ctx)
 }
 
-// Next hands the polling pod the task placed on it, nil when none is. A task
-// the pod was handed and has not reported started is handed again, so a
-// response the pod never got, or a restart, costs nothing. The pod gets a
-// task only once the record says it was handed it; until it can be written
-// the pod gets nothing, and asks again.
+// Next hands the polling pod the task placed on it, nil when none is. The pod
+// gets a task only once the record says it was handed it: the task is marked
+// handed, the mark is written, and only then is the task the pod's. Until
+// then it stays placed, and the pod gets nothing and asks again. A task the
+// pod was handed and has not reported started is handed again, so a
+// response the pod never got, or a restart, costs nothing.
 //
 // It never claims upstream: only the dispatch tick does, against a pod the
 // core holds, so a polling pod with nothing placed on it causes no upstream
@@ -279,19 +300,31 @@ func (c *Core) placeClaimed(ctx context.Context, claim policy.Claim, task *Task)
 func (c *Core) Next(ctx context.Context, podID string) json.RawMessage {
 	c.mu.Lock()
 	c.tickLocked()
-	var payload json.RawMessage
+	var again json.RawMessage
+	var marked *TaskRow
 	if pd := c.held[podID]; pd != nil {
 		if t := handedLocked(pd); t != nil {
-			payload = t.Payload
+			again = t.Payload
 			c.log.Info("task handed to its pod again", "pod_id", podID, "task_id", t.ID, "workspace_id", t.Tenant)
-		} else if t := c.takeQueuedLocked(pd); t != nil {
-			payload = t.Payload
-			c.log.Info("leased pod to task", "pod_id", podID, "task_id", t.ID, "workspace_id", t.Tenant)
+		} else {
+			marked = c.markHandedLocked(pd)
 		}
 	}
 	c.mu.Unlock()
-	if !c.settle(ctx) {
+	c.settle(ctx)
+	if marked == nil {
+		return again
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.waitTaskLocked(ctx, marked.ID) {
 		return nil
 	}
-	return payload
+	pd := c.held[podID]
+	if pd == nil || len(pd.queue) == 0 || pd.queue[0] != marked || marked.State != TaskHanded {
+		return nil
+	}
+	t := c.takeQueuedLocked(pd)
+	c.log.Info("leased pod to task", "pod_id", podID, "task_id", t.ID, "workspace_id", t.Tenant)
+	return t.Payload
 }

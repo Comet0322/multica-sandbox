@@ -405,6 +405,11 @@ func (m *Manager) Run(ctx context.Context) {
 // is deleted. Call it once, before Sync and Run.
 func (m *Manager) Restore(ctx context.Context) error { return m.core.Restore(ctx) }
 
+// Flush waits until the dispatch record holds every change made so far (see
+// core.Core.Flush). Call it as the manager stops, after Run, so the next run
+// takes over the latest record.
+func (m *Manager) Flush(ctx context.Context) error { return m.core.Flush(ctx) }
+
 // Sync brings the served workspaces in line with the account's memberships
 // (see tasksource.Source.Sync).
 func (m *Manager) Sync(ctx context.Context) (ReloadResult, error) { return m.source.Sync(ctx) }

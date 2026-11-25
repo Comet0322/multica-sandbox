@@ -2,26 +2,47 @@ package core
 
 import (
 	"context"
-	"maps"
-	"slices"
+	"errors"
 	"time"
 
 	"sandbox-manager/internal/policy"
 )
 
 // The core writes its dispatch record to its Store, the port in ports.go, as
-// the record changes. Every change marks a row to write, and settle writes
-// the rows before it acts on the network, one write at a time.
+// the record changes. Every change is numbered and leaves its row to write;
+// one writer at a time writes every such row and starts at the first change,
+// so nothing that changes the record waits for the database. Only what must
+// be in the record before the core acts waits for its own change to be
+// written: a claim (claimRound), a pod's pickup (Next), and a failure report
+// (released by the writer once its row is written). Flush waits for every
+// change, as the manager stops.
 
 // storeTimeout bounds one write of the dispatch record.
 const storeTimeout = 10 * time.Second
 
-// saveTaskLocked has the task's row written with the next flush. Callers
-// hold c.mu.
-func (c *Core) saveTaskLocked(t *TaskRow) { c.dirtyTasks[t.ID] = *t }
+// unwritten is a row to write, with the number of the change that made it.
+type unwritten[T any] struct {
+	row T
+	seq uint64
+}
+
+// saveTaskLocked has the task's row written. Callers hold c.mu.
+func (c *Core) saveTaskLocked(t *TaskRow) uint64 {
+	c.seq++
+	c.dirtyTasks[t.ID] = unwritten[TaskRow]{*t, c.seq}
+	c.startWriterLocked()
+	return c.seq
+}
+
+// savePodLocked has a pod's row written. Callers hold c.mu.
+func (c *Core) savePodLocked(p PodRow) {
+	c.seq++
+	c.dirtyPods[p.ID] = unwritten[PodRow]{p, c.seq}
+	c.startWriterLocked()
+}
 
 // recordLocked has the row of every held pod whose policy view changed
-// written with the next flush. Callers hold c.mu.
+// written. Callers hold c.mu.
 func (c *Core) recordLocked() {
 	for id, pd := range c.held {
 		info, ok := c.policy.Pod(id)
@@ -34,7 +55,7 @@ func (c *Core) recordLocked() {
 			continue
 		}
 		c.recorded[id] = row
-		c.dirtyPods[id] = row
+		c.savePodLocked(row)
 	}
 }
 
@@ -47,51 +68,136 @@ func (c *Core) goneLocked(pd *pod, why string) {
 	}
 	row.GoneAt, row.GoneWhy = c.now(), why
 	delete(c.recorded, pd.ID)
-	c.dirtyPods[pd.ID] = row
+	c.savePodLocked(row)
 }
 
-// flush writes the rows changed since the last write. Writes are one at a
-// time, so they land in the order the changes were made; a write that fails
-// leaves its rows to the next one, unless newer ones replaced them. A nil
-// error means everything changed before the call is written.
-func (c *Core) flush(ctx context.Context) error {
-	c.storeMu.Lock()
-	defer c.storeMu.Unlock()
-	c.mu.Lock()
-	pods, tasks := c.dirtyPods, c.dirtyTasks
-	if len(pods)+len(tasks) == 0 {
-		c.mu.Unlock()
-		return nil
+// startWriterLocked starts the writer unless it runs or nothing is left to
+// write. Callers hold c.mu.
+func (c *Core) startWriterLocked() {
+	if c.writing || len(c.dirtyPods)+len(c.dirtyTasks) == 0 {
+		return
 	}
-	c.dirtyPods, c.dirtyTasks = map[string]PodRow{}, map[string]TaskRow{}
-	c.mu.Unlock()
-	wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeTimeout)
-	err := c.store.Write(wctx, slices.Collect(maps.Values(pods)), slices.Collect(maps.Values(tasks)))
-	cancel()
+	c.writing = true
+	go c.write()
+}
+
+// write is the writer: it writes every row left to write, one write at a
+// time so they land in the order the changes were made, until none is left
+// or a write fails. A failed write leaves its rows to the next one, which the
+// next change or wait starts.
+func (c *Core) write() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err == nil {
-		if c.storeProblem != "" {
-			c.log.Info("the dispatch record is written again")
+	for len(c.dirtyPods)+len(c.dirtyTasks) > 0 {
+		snap := c.seq
+		pods := make([]PodRow, 0, len(c.dirtyPods))
+		for _, u := range c.dirtyPods {
+			pods = append(pods, u.row)
 		}
-		c.storeProblem = ""
+		tasks := make([]TaskRow, 0, len(c.dirtyTasks))
+		for _, u := range c.dirtyTasks {
+			tasks = append(tasks, u.row)
+		}
+		c.mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		err := c.store.Write(ctx, pods, tasks)
+		cancel()
+		c.mu.Lock()
+		c.wroteLocked(snap, err)
+		if err != nil {
+			break
+		}
+	}
+	c.writing = false
+}
+
+// wroteLocked takes the outcome of the write of every change up to snap:
+// what it wrote is no longer left to write, the failure reports whose rows
+// it wrote go out, and the waiters wake. Callers hold c.mu.
+func (c *Core) wroteLocked(snap uint64, err error) {
+	defer func() {
+		close(c.wrote)
+		c.wrote = make(chan struct{})
+	}()
+	if err != nil {
+		c.lastFailed = snap
+		if c.storeProblem == "" {
+			c.log.Error("write the dispatch record; nothing is claimed or handed to a pod until it is written", "error", err)
+		}
+		c.storeProblem = err.Error()
+		return
+	}
+	c.written = snap
+	for id, u := range c.dirtyPods {
+		if u.seq <= snap {
+			delete(c.dirtyPods, id)
+		}
+	}
+	for id, u := range c.dirtyTasks {
+		if u.seq <= snap {
+			delete(c.dirtyTasks, id)
+		}
+	}
+	if c.storeProblem != "" {
+		c.log.Info("the dispatch record is written again")
+	}
+	c.storeProblem = ""
+	if reports := c.releaseLocked(true); len(reports) > 0 {
+		go c.sendReports(context.Background(), reports)
+	}
+}
+
+// waitWrittenLocked waits until every change up to seq is written. It
+// reports false when a write of that change failed meanwhile, or ctx ended.
+// Callers hold c.mu, which it releases while it waits.
+func (c *Core) waitWrittenLocked(ctx context.Context, seq uint64) bool {
+	for c.written < seq {
+		c.startWriterLocked()
+		wrote := c.wrote
+		c.mu.Unlock()
+		select {
+		case <-wrote:
+		case <-ctx.Done():
+		}
+		c.mu.Lock()
+		if c.written >= seq {
+			break
+		}
+		if ctx.Err() != nil || c.lastFailed >= seq {
+			return false
+		}
+	}
+	return true
+}
+
+// waitTaskLocked waits until the task's row, as it is now, is written; false
+// when a write of it failed meanwhile, or ctx ended. Callers hold c.mu, which
+// it releases while it waits.
+func (c *Core) waitTaskLocked(ctx context.Context, id string) bool {
+	for {
+		u, ok := c.dirtyTasks[id]
+		if !ok {
+			return true
+		}
+		if !c.waitWrittenLocked(ctx, u.seq) {
+			return false
+		}
+	}
+}
+
+// Flush waits until every change made so far is in the store. The manager
+// calls it as it stops, so the next run takes over the latest record. It
+// returns why it is not written when a write failed, or ctx ended.
+func (c *Core) Flush(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.waitWrittenLocked(ctx, c.seq) {
 		return nil
 	}
-	for id, row := range pods {
-		if _, newer := c.dirtyPods[id]; !newer {
-			c.dirtyPods[id] = row
-		}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	for id, row := range tasks {
-		if _, newer := c.dirtyTasks[id]; !newer {
-			c.dirtyTasks[id] = row
-		}
-	}
-	if c.storeProblem == "" {
-		c.log.Error("write the dispatch record; nothing is claimed or handed to a pod until it is written", "error", err)
-	}
-	c.storeProblem = err.Error()
-	return err
+	return errors.New(c.storeProblem)
 }
 
 // StoreProblem is why the dispatch record cannot be written, empty while it

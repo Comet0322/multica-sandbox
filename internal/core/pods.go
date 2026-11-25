@@ -77,7 +77,7 @@ func (c *Core) podGoneLocked(id, why string, tell func(*policy.Policy) []policy.
 	// The tasks it was not handed wait for another pod, unless the policy
 	// places them at once.
 	for _, t := range pd.queue {
-		t.PodID = ""
+		placeOn(t, "")
 		c.saveTaskLocked(t)
 	}
 	c.applyLocked(tell(c.policy))
@@ -142,27 +142,21 @@ func (c *Core) handBackLocked(d policy.Delete) {
 	c.handBacks = append(c.handBacks, handBack{id: pd.ID, why: why})
 }
 
-// settle carries out what decisions taken under c.mu left for the store and
-// the network: it writes the record, hands the pods back to the pool and,
-// once the record is written, reports the tasks decided to fail. It reports
-// whether the record is written. Callers invoke it without holding c.mu.
-func (c *Core) settle(ctx context.Context) bool {
-	stored := c.flush(ctx) == nil
+// settle carries out what decisions taken under c.mu left for the network:
+// it hands the pods back to the pool and sends the failure reports whose
+// rows are written. Callers invoke it without holding c.mu.
+func (c *Core) settle(ctx context.Context) {
 	c.mu.Lock()
 	backs := c.handBacks
 	c.handBacks = nil
-	var failed []*TaskRow
-	if stored {
-		failed, c.failNow = c.failNow, nil
-	}
+	reports := c.releaseLocked(true)
 	c.mu.Unlock()
 	for _, b := range backs {
 		if err := c.pool.HandBack(context.WithoutCancel(ctx), b.id, b.why); err != nil {
 			c.log.Error("hand a pod back to the pool", "pod_id", b.id, "error", err)
 		}
 	}
-	c.reportFailures(ctx, failed)
-	return stored
+	c.sendReports(ctx, reports)
 }
 
 // healHeldLocked forgets the held pods the pool no longer lists as held (a

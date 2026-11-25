@@ -266,9 +266,9 @@ type harness struct {
 	// audit captures the manager's audit log.
 	audit *syncBuffer
 	// kube is the Kubernetes API the manager creates its pods in, and stop
-	// ends the manager.
+	// ends the manager as the command does, writing its dispatch record.
 	kube *fake.Clientset
-	stop context.CancelFunc
+	stop func()
 	// adopted are the pods a simulated daemon plays, by name.
 	adoptMu sync.Mutex
 	adopted map[string]bool

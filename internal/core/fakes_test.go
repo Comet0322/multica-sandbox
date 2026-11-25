@@ -28,6 +28,9 @@ type fakeSource struct {
 	claims  []string          // tenants claimed from, in order
 	pending map[string]error  // tenant -> error from Pending
 	created map[string]time.Time
+	// onFail, when set, is called with each failure report as it arrives,
+	// before Fail answers; it may block.
+	onFail func(taskID string)
 }
 
 func newFakeSource(tenants ...string) *fakeSource {
@@ -90,9 +93,29 @@ func (s *fakeSource) Claim(_ context.Context, tenant string, kind policy.Kind) (
 
 func (s *fakeSource) Fail(_ context.Context, tenant, taskID, reason string) error {
 	s.mu.Lock()
+	onFail := s.onFail
+	s.mu.Unlock()
+	if onFail != nil {
+		onFail(taskID)
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fails = append(s.fails, tenant+" "+taskID+" "+reason)
 	return s.failErr
+}
+
+// whenFail sets onFail.
+func (s *fakeSource) whenFail(fn func(taskID string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onFail = fn
+}
+
+// end makes TaskEnded report the task over, for reason.
+func (s *fakeSource) end(taskID, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ended[taskID] = reason
 }
 
 // failWith makes Fail return err, nil to take reports again.
@@ -285,6 +308,9 @@ type fakeStore struct {
 	tasks map[string]core.TaskRow
 	// err is what Write returns; nil writes.
 	err error
+	// hold, when set, holds each Write until it receives from it; entered
+	// is told of each Write as it starts.
+	hold, entered chan struct{}
 }
 
 func newFakeStore() *fakeStore {
@@ -316,6 +342,13 @@ func (s *fakeStore) Load(context.Context) (core.Record, error) {
 
 func (s *fakeStore) Write(_ context.Context, pods []core.PodRow, tasks []core.TaskRow) error {
 	s.mu.Lock()
+	hold, entered := s.hold, s.entered
+	s.mu.Unlock()
+	if hold != nil {
+		entered <- struct{}{}
+		<-hold
+	}
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.err != nil {
 		return s.err
@@ -338,6 +371,44 @@ func (s *fakeStore) failWith(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.err = err
+}
+
+// holdWrites makes every Write wait until letWrite or releaseWrites.
+func (s *fakeStore) holdWrites() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hold, s.entered = make(chan struct{}), make(chan struct{}, 100)
+}
+
+// writeStarted waits for a held Write to start.
+func (s *fakeStore) writeStarted(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	entered := s.entered
+	s.mu.Unlock()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a write")
+	}
+}
+
+// letWrite lets one held Write through.
+func (s *fakeStore) letWrite() {
+	s.mu.Lock()
+	hold := s.hold
+	s.mu.Unlock()
+	hold <- struct{}{}
+}
+
+// releaseWrites lets every Write through again.
+func (s *fakeStore) releaseWrites() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.hold != nil {
+		close(s.hold)
+		s.hold, s.entered = nil, nil
+	}
 }
 
 func (s *fakeStore) task(id string) core.TaskRow {
@@ -399,11 +470,13 @@ func (r *rig) build() *core.Core {
 	return c
 }
 
-// restart is the manager starting again: a new core on the same store and
-// source, and a new pool that finds every pod not lost, as Kubernetes keeps
-// them. The core restores, then learns its tenants.
+// restart is the manager stopping and starting again: the core writes what
+// changed last, then a new core starts on the same store and source, with a
+// new pool that finds every pod not lost, as Kubernetes keeps them. The core
+// restores, then learns its tenants.
 func (r *rig) restart() {
 	r.t.Helper()
+	r.flush()
 	old := r.pool
 	r.pool = newFakePool()
 	old.mu.Lock()
@@ -427,6 +500,31 @@ func (r *rig) advance(d time.Duration) {
 }
 
 func (r *rig) dispatch() { r.core.DispatchOnce(context.Background()) }
+
+// flush waits until the store holds every change the core made.
+func (r *rig) flush() {
+	r.t.Helper()
+	if err := r.core.Flush(context.Background()); err != nil {
+		r.t.Fatal(err)
+	}
+}
+
+// wantFails waits until the source got exactly these failure reports, which
+// go out once the record holds them.
+func (r *rig) wantFails(want ...string) {
+	r.t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, fails, _ := r.source.snapshot()
+		if slices.Equal(fails, want) {
+			return
+		}
+		if time.Now().After(deadline) {
+			r.t.Fatalf("fails = %q, want %q", fails, want)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 // next is the task the pod picks up, "" when none.
 func (r *rig) next(pod string) string {

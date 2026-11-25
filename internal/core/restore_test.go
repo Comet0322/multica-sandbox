@@ -20,6 +20,7 @@ func TestTheCoreRecordsItsPodsAndTasks(t *testing.T) {
 	r.pool.add("p1", "A")
 	r.source.add("A", "t1", "alice", 0)
 	r.dispatch()
+	r.flush()
 	if task := r.store.task("t1"); task.State != core.TaskPlaced || task.PodID != "p1" || !task.ClaimedAt.Equal(t0) || len(task.Payload) == 0 || task.Email != "" {
 		t.Fatalf("t1 once placed = %+v, want placed on p1 with its payload and no email", task)
 	}
@@ -32,10 +33,12 @@ func TestTheCoreRecordsItsPodsAndTasks(t *testing.T) {
 		t.Fatalf("t1 once handed = %+v", task)
 	}
 	r.core.TaskRunning("p1", "t1")
+	r.flush()
 	if task := r.store.task("t1"); task.State != core.TaskRunning || task.Payload != nil {
 		t.Fatalf("t1 once running = %+v, want running with no payload", task)
 	}
 	r.core.TaskEnded("p1", "t1", "pod reported complete")
+	r.flush()
 	if task := r.store.task("t1"); task.State != core.TaskEnded || task.EndReason != "pod reported complete" || task.FailPending {
 		t.Fatalf("t1 once ended = %+v", task)
 	}
@@ -44,11 +47,13 @@ func TestTheCoreRecordsItsPodsAndTasks(t *testing.T) {
 	}
 	r.advance(10 * time.Minute)
 	r.core.Touch()
+	r.flush()
 	if pod := r.store.pod("p1"); pod.Phase != policy.PhaseIdle || pod.Key != "" {
 		t.Fatalf("p1 once idle = %+v", pod)
 	}
 	r.advance(24 * time.Hour)
 	r.core.Touch()
+	r.flush()
 	if pod := r.store.pod("p1"); pod.GoneAt.IsZero() || pod.GoneWhy == "" {
 		t.Fatalf("p1 once deleted = %+v, want gone and why", pod)
 	}
@@ -137,6 +142,7 @@ func TestARestartedCoreCarriesOnFromItsStore(t *testing.T) {
 		t.Fatalf("the idle pod picked up %q, want t7", got)
 	}
 	r.core.TaskEnded("p-run", "t1", "pod reported complete")
+	r.flush()
 	if pod := r.store.pod("p-run"); pod.Phase != policy.PhaseHeld || pod.Key != "issue:1" {
 		t.Fatalf("the running pod after its task = %+v, want held for issue:1", pod)
 	}
@@ -162,10 +168,7 @@ func TestARestoredPodThatIsGoneIsLost(t *testing.T) {
 	r.restart()
 	r.pool.add("p3", "A")
 	r.dispatch()
-	_, fails, _ := r.source.snapshot()
-	if !slices.Equal(fails, []string{"A t1 the pod running this task was lost"}) {
-		t.Fatalf("fails = %v, want t1's", fails)
-	}
+	r.wantFails("A t1 the pod running this task was lost")
 	if got := r.next("p3"); got != "t2" {
 		t.Fatalf("p3 got %q, want t2, whose pod was lost before it started", got)
 	}
@@ -182,10 +185,7 @@ func TestARestoredPodLostFailsItsTask(t *testing.T) {
 	r.restart()
 	r.pool.lose("run")
 	r.core.PodLost("run", "the pod ran out of memory (limit 4Gi)")
-	_, fails, _ := r.source.snapshot()
-	if !slices.Equal(fails, []string{"A t1 the pod running this task was lost: the pod ran out of memory (limit 4Gi)"}) {
-		t.Fatalf("fails = %v", fails)
-	}
+	r.wantFails("A t1 the pod running this task was lost: the pod ran out of memory (limit 4Gi)")
 }
 
 // A failure report the source had not taken when the manager stopped is
@@ -199,6 +199,7 @@ func TestAFailureReportPendingAtARestartIsSentAgain(t *testing.T) {
 	r.source.failWith(errors.New("upstream unavailable"))
 	r.pool.lose("p1")
 	r.core.PodLost("p1", "the pod was deleted")
+	r.wantFails("A t1 the pod running this task was lost: the pod was deleted")
 	if task := r.store.task("t1"); task.State != core.TaskEnded || !task.FailPending {
 		t.Fatalf("t1 = %+v, want ended with its failure pending", task)
 	}
@@ -207,6 +208,7 @@ func TestAFailureReportPendingAtARestartIsSentAgain(t *testing.T) {
 	if n := r.core.PendingFailReports(); n != 0 {
 		t.Fatalf("pending reports = %d once the restarted core sent it", n)
 	}
+	r.flush()
 	if task := r.store.task("t1"); task.FailPending {
 		t.Fatalf("t1 = %+v, want its failure no longer pending", task)
 	}

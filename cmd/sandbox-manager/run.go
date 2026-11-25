@@ -291,7 +291,15 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	hup := make(chan os.Signal, 1)
 	signal.Notify(hup, syscall.SIGHUP)
 	defer signal.Stop(hup)
-	return serveManager(ctx, log, m, podLn, adminLn, hup)
+	err = serveManager(ctx, log, m, podLn, adminLn, hup)
+	// What changed last is written before the database closes, so the next
+	// run takes it over.
+	flushCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if ferr := m.Flush(flushCtx); ferr != nil {
+		log.Error("write the dispatch record before stopping", "error", ferr)
+	}
+	return err
 }
 
 // recordStore is the dispatch record's database as the command line uses
