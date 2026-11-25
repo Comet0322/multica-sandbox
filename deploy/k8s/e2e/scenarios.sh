@@ -12,7 +12,11 @@
 #                        is gone runs on a new pod without an error
 #   out-of-memory        a task over its pod's memory limit fails with the
 #                        out-of-memory reason, and the next task runs
-#   restart              restarting the manager mid-task keeps the task
+#   restart              restarting the manager mid-task keeps the task, and
+#                        its result reaches Multica through the new manager
+#   restart-before-start a manager killed with a task placed on a pod that
+#                        has not started it hands it again once restarted:
+#                        the task runs and is not failed
 #   handoff-on-one-pod   agent B lands on the held pod and finds agent A's
 #                        unpushed branch
 #   budget               a full budget deletes an idle pool runtime pod
@@ -127,9 +131,40 @@ stop_manager
 echo "manager stopped while task $tr runs"
 overrides 'a: {hold_timeout: 10m}'
 start_manager
-grep -q 'pods restored' "$state/manager.log" || fail "the new manager restored no pods"
+grep -q 'dispatch record restored' "$state/manager.log" || fail "the new manager restored nothing"
 wait_tasks "$r" 1 completed 120 >/dev/null
-pass "restart: task $tr ran on through a manager restart and completed"
+reason=$(leases | jq -r --arg t "$tr" '[.[] | select(.task_id == $t)][0].end_reason // empty')
+[ "$reason" = "pod reported complete" ] || fail "task $tr's lease ended '$reason', want its completion relayed by the new manager"
+[ "$(tasks "$r" | wc -l)" = 1 ] || fail "the issue has $(tasks "$r" | wc -l) tasks, want only the one that ran through the restart"
+pass "restart: task $tr ran on through a manager restart; the new manager relayed its completion to Multica"
+
+# --- restart before the task starts ---------------------------------------------
+step "restart the manager before a placed task starts"
+stop_manager
+# Without the wake socket a pod takes a task placed on it at its next poll
+# (every 30 seconds), which leaves time to kill the manager before it does.
+start_manager SANDBOX_POOL_WAKE_INTERVAL=0
+q=$(new_issue "restart before start" "$fast")
+placed=""
+for _ in $(seq 120); do
+	id=$(tasks "$q" | jq -rs '.[0].id // empty')
+	if [ -n "$id" ] && [ "$(task_state "$id")" = starting ]; then
+		placed=$id
+		crash_manager
+		break
+	fi
+	sleep 0.5
+done
+[ -n "$placed" ] || fail "no task of issue $q was placed on a pod"
+st=$(tasks "$q" | jq -rs '.[0].status')
+[ "$st" = dispatched ] || fail "task $placed is $st upstream when the manager was killed, want dispatched (not started)"
+echo "manager killed with task $placed placed on a pod and not started"
+start_manager
+restored=$(grep '"msg":"pod restored"' "$state/manager.log" | jq -r --arg t "$placed" 'select(.task_id == $t) | .task_state' | tail -n 1)
+case "$restored" in placed | handed) ;; *) fail "the new manager restored task $placed as '$restored', want placed or handed" ;; esac
+wait_tasks "$q" 1 completed 120 >/dev/null
+[ "$(tasks "$q" | wc -l)" = 1 ] || fail "the issue has $(tasks "$q" | wc -l) tasks, want the one handed again, not a retry"
+pass "restart before start: task $placed, $restored and not started when the manager was killed, was handed again by the new manager and completed"
 
 # --- handoff on one pod --------------------------------------------------------
 step "handoff on one pod (hold 10m)"
@@ -197,9 +232,6 @@ if [ -n "$owner" ]; then
 	n=$(wc -w <<<"$pods")
 	# Only the dev stand-in is deleted, and put back from deploy/k8s/dev; the
 	# kubeconfig may not delete deployments, so the kind admin context does.
-	adminctl() { KUBECONFIG=${E2E_ADMIN_KUBECONFIG:-$HOME/.kube/config} kubectl "$@"; }
-	admin=${E2E_ADMIN_CONTEXT:-}
-	if [ -z "$admin" ] && adminctl config get-contexts -o name 2>/dev/null | grep -qx kind-sandbox-dev; then admin=kind-sandbox-dev; fi
 	if [ "$owner" = sandbox-e2e-owner ] && [ -n "$admin" ]; then
 		# Deleting the manager's Deployment stops the manager too.
 		stop_manager

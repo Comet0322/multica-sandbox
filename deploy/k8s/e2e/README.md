@@ -8,7 +8,7 @@ pods, the daemon, the backend and the Kubernetes API are real.
 | Script | What it checks | Time |
 | --- | --- | --- |
 | `smoke.sh` | One pool task and one clean task complete on real pods; no pod detail reaches Multica | under a minute |
-| `scenarios.sh` | Every scenario below | about 4½ minutes |
+| `scenarios.sh` | Every scenario below | about 5 minutes |
 
 The scenarios, in the order they run:
 
@@ -17,7 +17,8 @@ The scenarios, in the order they run:
 | Handoff across pods | Agent A commits to an unpushed branch. After A's hold and its idle pod are gone, agent B, handed the same issue, lands on another pod and finds neither the branch nor any of A's files: only what A pushed would reach it. |
 | Clean | A clean task gets a pod that served no one. The same issue's next task gets that pod again while it is held; another issue's task does not. After the hold, the pod is deleted, and the issue's next task (a resume, for Multica) runs on a new pod and completes. |
 | Out of memory | A task holding 1.5 GiB in a 1 GiB pod fails with `the pod ran out of memory (limit 1Gi)`, and the next task completes. |
-| Restart | The manager is stopped while a task runs and started again; the task completes. |
+| Restart | The manager is stopped while a task runs and started again; the task completes, and the new manager relays its completion to Multica. |
+| Restart before start | The manager, without the wake socket so a pod takes its task only at its next poll, is killed (`SIGKILL`) right after it placed a task on a pod; Multica shows the task dispatched, not started. The new manager restores the task as placed (or handed) from its database, hands it to the pod, and the task completes; it is never failed or retried. |
 | Handoff on one pod | Agent B, handed agent A's issue while A's pod is held, lands on that pod and finds A's unpushed branch. |
 | Budget | With 3 pods all in use, a task of department b deletes department a's idle pod, not a's or b's held pods. With b's guarantee raised to 2, a task of a deletes a's own held pod, never one of b's. |
 | Owner | Every pod is owned by the owner Deployment (`sandbox-e2e-owner` in the kind namespace), not blocking its deletion. On kind, deleting that Deployment has Kubernetes delete every pod it owned; it is then put back from `deploy/k8s/dev/owner.yaml`. Skipped when the kubeconfig cannot read the Deployment. |
@@ -46,7 +47,7 @@ The scripts read these settings from the environment:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `E2E_KUBECONFIG` | `deploy/k8s/dev/.state/dev-user.kubeconfig` | The kubeconfig the manager creates pods with. It needs `create`, `delete`, `get`, `list`, `watch` and `patch` on pods, nothing else. |
+| `E2E_KUBECONFIG` | `deploy/k8s/dev/.state/dev-user.kubeconfig` | The kubeconfig the manager creates pods with. It needs `create`, `delete`, `get`, `list` and `watch` on pods, nothing else. |
 | `E2E_NAMESPACE` | the kubeconfig context's | The namespace the pods are created in. |
 | `E2E_API` | `http://127.0.0.1:18080` | The Multica backend, as this host reaches it. |
 | `E2E_CODE` | from `deploy/k8s/dev/.state/backend.env` | The backend's `MULTICA_DEV_VERIFICATION_CODE`: the scripts sign in a bot account of their own with it, so the backend must be a test backend. |
@@ -58,13 +59,15 @@ The scripts read these settings from the environment:
 | `E2E_DEV_STATE` | `deploy/k8s/dev/.state` | Where the kind namespace's state is, for the defaults above. |
 | `E2E_STATE` | `$TMPDIR/sandbox-e2e-<run>` | The run's own files: manager log, audit log, pod template, overrides. |
 | `E2E_KIND_CLUSTER` | `sandbox-dev` when `kind` lists it | The kind cluster the cannot-start scenario loads the missing image into, to see pods start again; unset with no kind cluster, that check is skipped. |
+| `E2E_DATABASE_URL` | a database of the run's own | The Postgres URL the manager keeps its dispatch record in. Unset, the run creates a database `sandbox_e2e_<run>` on the kind namespace's Postgres (`deploy/k8s/dev/manager-db.sh`), through the admin context, and drops it at the end. Set, it should be a database of the run's own. |
 | `E2E_OWNER_DEPLOYMENT` | `sandbox-e2e-owner` | The Deployment the manager runs with as `SANDBOX_POD_OWNER`; empty, or unreadable with the kubeconfig, runs without an owner. Only `sandbox-e2e-owner` is ever deleted. |
-| `E2E_ADMIN_CONTEXT`, `E2E_ADMIN_KUBECONFIG` | `kind-sandbox-dev` when present, `~/.kube/config` | A context that may delete and recreate `sandbox-e2e-owner`, for the owner scenario's deletion check. |
-| `KEEP` | unset | `1` keeps the run's workspaces in Multica for inspection. |
+| `E2E_ADMIN_CONTEXT`, `E2E_ADMIN_KUBECONFIG` | `kind-sandbox-dev` when present, `~/.kube/config` | A context that may delete and recreate `sandbox-e2e-owner`, for the owner scenario's deletion check, and run `psql` in the kind namespace's Postgres, for the run's database. |
+| `KEEP` | unset | `1` keeps the run's workspaces in Multica, and its database, for inspection. |
 
 For example:
 
 ```bash
+E2E_DATABASE_URL=postgres://<user>:<password>@<host>/<empty database> \
 E2E_KUBECONFIG=~/.kube/config E2E_NAMESPACE=<namespace> \
 E2E_API=https://<test backend> E2E_CODE=<code> \
 E2E_MANAGER_URL=http://<this host, as pods reach it>:8796 \
@@ -86,5 +89,6 @@ Each run signs in a bot account of its own and creates its own workspaces, so
 it serves nothing else. On exit, passed or failed, it stops its manager,
 deletes every pod labelled `app.kubernetes.io/managed-by=sandbox-manager` in
 the namespace and waits until they are gone, archives the agents it created
-and deletes its workspaces (kept with `KEEP=1`). The bot account and its
+and deletes its workspaces and the database it created (kept with
+`KEEP=1`). The bot account and its
 token stay in Multica. The manager log stays in `E2E_STATE`.

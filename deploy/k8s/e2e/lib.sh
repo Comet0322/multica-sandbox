@@ -148,6 +148,17 @@ stop_manager() {
 	wait "$manager" 2>/dev/null || true
 	manager=""
 }
+# crash_manager: kill the manager outright, as a node failure would.
+crash_manager() {
+	[ -n "$manager" ] || return 0
+	kill -KILL "$manager" 2>/dev/null || true
+	wait "$manager" 2>/dev/null || true
+	manager=""
+}
+dispatch() { curl -fsS "$ADMIN/v1/dispatch"; }
+# task_state TASK: the task's state on the dispatch page (starting, running,
+# ended), empty when the manager does not show it.
+task_state() { dispatch | jq -r --arg t "$1" '[.workspaces[].tasks[]? | select(.id == $t)][0].state // empty'; }
 # reload: make the manager read the overrides file again at once.
 reload() { kill -HUP "$manager"; }
 # overrides YAML: write the overrides file (keys are this run's slugs a and
