@@ -5,7 +5,9 @@
 // policy (package policy). It makes no HTTP call and reads no
 // Multica or daemon JSON; the adapters in internal/multica do.
 //
-// The core talks to each side through the interfaces in ports.go. The Pool
+// The core talks to each side through the interfaces in ports.go, and keeps
+// its dispatch record (the pods it holds, the tasks it claimed) in the Store
+// defined there, so a restarted core takes over from it (Restore). The Pool
 // asks it about the pods it serves (what a pod runs next, whether a task is a
 // pod's, whether a pod may act for a tenant) and tells it what happened (a
 // task ended, a pod was lost); the TaskSource tells it which tenants exist.
