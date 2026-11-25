@@ -50,7 +50,6 @@ func TestPrivateVisibilityMakesNoVisibilityCalls(t *testing.T) {
 	up := newSyncMultica(t, wsA)
 	h := newSyncHarness(t, up, func(c *manager.Config) { c.RuntimeVisibility = "private" })
 	h.pool.Sync(context.Background())
-	// The first Sync lists the runtimes once to recover orphaned tasks.
 	listed := up.pathCount("GET /api/runtimes")
 	pod := h.newPod("pool-0")
 	pod.registerFor(wsA)
@@ -64,8 +63,8 @@ func TestPrivateVisibilityMakesNoVisibilityCalls(t *testing.T) {
 }
 
 // The registration request may end (the pod gave up waiting) while the
-// manager is still sharing the runtime and recovering orphans; both go on.
-func TestSharingAndRecoverySurviveTheRegistrationRequestEnding(t *testing.T) {
+// manager is still sharing the runtime; that goes on.
+func TestSharingSurvivesTheRegistrationRequestEnding(t *testing.T) {
 	t.Parallel()
 	up := newSyncMultica(t, wsA)
 	var delivered atomic.Bool
@@ -92,7 +91,4 @@ func TestSharingAndRecoverySurviveTheRegistrationRequestEnding(t *testing.T) {
 		resp.Body.Close()
 	}
 	eventually(t, "the visibility update to reach Multica", func() bool { return delivered.Load() })
-	if n := up.pathCount("POST /api/daemon/runtimes/rt-" + wsA[:8] + "/recover-orphans"); n != 1 {
-		t.Fatalf("orphan recovery calls: %d", n)
-	}
 }

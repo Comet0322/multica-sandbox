@@ -24,7 +24,6 @@ const (
 type fakeCore struct {
 	mu      sync.Mutex
 	tenants []core.Tenant
-	busy    map[string]bool
 }
 
 func (c *fakeCore) SetTenants(_ context.Context, list []core.Tenant) core.TenantChanges {
@@ -33,14 +32,6 @@ func (c *fakeCore) SetTenants(_ context.Context, list []core.Tenant) core.Tenant
 	c.tenants = list
 	return core.TenantChanges{}
 }
-
-func (c *fakeCore) TenantBusy(id string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.busy[id]
-}
-
-func (c *fakeCore) Knows(string) bool { return false }
 
 // fakePods records what the source tells the pod side.
 type fakePods struct {
@@ -91,7 +82,7 @@ func newSource(t *testing.T, overrides string, handle func(w http.ResponseWriter
 		cfg.ReadOverrides = func() ([]byte, error) { return []byte(overrides), nil }
 	}
 	s := tasksource.New(cfg)
-	c, p := &fakeCore{busy: map[string]bool{}}, &fakePods{}
+	c, p := &fakeCore{}, &fakePods{}
 	s.Connect(c, p)
 	return s, c, p
 }
@@ -137,8 +128,6 @@ func TestAWorkspaceIsClaimableOnlyOnceAPodRegisteredIt(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/daemon/register":
 			writeJSON(w, map[string]any{"runtimes": []map[string]any{{"id": "rt-a", "provider": "claude"}}})
-		case "/api/daemon/runtimes/rt-a/recover-orphans":
-			writeJSON(w, map[string]any{})
 		case "/api/daemon/tasks/claim":
 			writeJSON(w, map[string]any{"tasks": []map[string]any{{"id": "t1", "workspace_id": strings.ToUpper(wsA), "agent_id": "ag", "issue_id": "is", "initiator_email": "Alice@Example.com"}}})
 		default:
@@ -211,8 +200,6 @@ func TestTheSourceHeartbeatsItsRuntimesAndPassesModelRequestsOn(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/daemon/register":
 			writeJSON(w, map[string]any{"runtimes": []map[string]any{{"id": "rt-a", "provider": "claude"}}})
-		case "/api/daemon/runtimes/rt-a/recover-orphans":
-			writeJSON(w, map[string]any{})
 		case "/api/daemon/heartbeat":
 			writeJSON(w, map[string]any{"status": "ok", "pending_model_list": map[string]string{"id": "ml-1"}})
 		default:

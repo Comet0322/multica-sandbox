@@ -163,11 +163,8 @@ func (r *Runtimes) RecordHealth(op string, err error) {
 
 // Register registers the manager's runtimes from a pod daemon's
 // registration, the first time and whenever a pod offers an agent CLI the
-// registration has no runtime for, and returns the stored answer. busy
-// reports whether the workspace still has work in the manager; it is asked,
-// without any lock of Runtimes held, before a first registration recovers
-// orphaned tasks.
-func (r *Runtimes) Register(ctx context.Context, captured json.RawMessage, headers map[string]string, busy func() bool) (json.RawMessage, error) {
+// registration has no runtime for, and returns the stored answer.
+func (r *Runtimes) Register(ctx context.Context, captured json.RawMessage, headers map[string]string) (json.RawMessage, error) {
 	r.registerMu.Lock()
 	defer r.registerMu.Unlock()
 	r.mu.Lock()
@@ -191,25 +188,6 @@ func (r *Runtimes) Register(ctx context.Context, captured json.RawMessage, heade
 	// What follows must not die with the pod's request that triggered it.
 	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
-	if busy() {
-		// The workspace was registered before and still has work here (its
-		// runtime was re-created upstream, or it came back after an absence):
-		// the tasks on these runtimes are live, not orphans.
-		r.cfg.Log.Info("skipped orphan recovery: the workspace has active leases", "workspace_id", r.cfg.WorkspaceID)
-	} else {
-		// Whatever Multica still shows running on these runtimes belongs to
-		// no lease here and will never finish (the manager's first listing did
-		// the same for the runtimes that existed then; these may be new). The
-		// workspace holds no lease or claimed task in this manager, and none
-		// can be claimed until the registration below is stored, so failing
-		// them (which lets Multica retry) cannot hit a live task. Best effort:
-		// the tasks would otherwise wait for Multica's own timeout.
-		for _, rt := range runtimes {
-			if err := r.conn.RecoverOrphans(bg, rt.ID); err != nil {
-				r.cfg.Log.Warn("recover orphaned tasks upstream", "workspace_id", r.cfg.WorkspaceID, "runtime_id", rt.ID, "error", err)
-			}
-		}
-	}
 	r.store(raw, runtimes)
 	r.cfg.Log.Info("registered the manager's runtimes", "workspace_id", r.cfg.WorkspaceID, "runtimes", len(runtimes))
 	r.share(bg, runtimes)
@@ -309,53 +287,6 @@ func (r *Runtimes) Pending(ctx context.Context, runtimeIDs []string) ([]PendingT
 		list = append(list, tasks...)
 	}
 	return list, nil
-}
-
-// RecoverOrphans fails whatever Multica still shows running on the
-// manager's runtimes in the workspace, those of its identity and its legacy
-// one. The caller makes sure the workspace has no live work here. Best
-// effort: a failure leaves the tasks to Multica's own timeout.
-func (r *Runtimes) RecoverOrphans(ctx context.Context) {
-	runtimes, err := r.conn.ListRuntimes(ctx, r.cfg.WorkspaceID)
-	if err != nil {
-		r.cfg.Log.Warn("list runtimes to recover orphaned tasks", "workspace_id", r.cfg.WorkspaceID, "error", err)
-		return
-	}
-	own, legacy := r.daemonID(), r.legacyID()
-	for _, rt := range runtimes {
-		if rt.DaemonID != own && (legacy == "" || rt.DaemonID != legacy) {
-			continue
-		}
-		if err := r.conn.RecoverOrphans(ctx, rt.ID); err != nil {
-			r.cfg.Log.Warn("recover orphaned tasks upstream", "workspace_id", r.cfg.WorkspaceID, "runtime_id", rt.ID, "error", err)
-		}
-	}
-}
-
-// Dispatched lists the tasks Multica shows dispatched to the manager's
-// runtimes in the workspace, those of its identity and its legacy one.
-func (r *Runtimes) Dispatched(ctx context.Context) ([]string, error) {
-	runtimes, err := r.conn.ListRuntimes(ctx, r.cfg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	own, legacy := r.daemonID(), r.legacyID()
-	var out []string
-	for _, rt := range runtimes {
-		if rt.DaemonID != own && (legacy == "" || rt.DaemonID != legacy) {
-			continue
-		}
-		tasks, err := r.conn.Pending(ctx, rt.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range tasks {
-			if t.Status == "dispatched" {
-				out = append(out, t.ID)
-			}
-		}
-	}
-	return out, nil
 }
 
 // EnsureVisibility makes sure the registered runtimes have the wanted

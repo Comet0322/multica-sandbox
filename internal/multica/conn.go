@@ -168,11 +168,6 @@ func (c *Conn) Register(ctx context.Context, body map[string]any) (json.RawMessa
 	return raw, runtimes, nil
 }
 
-// RecoverOrphans fails whatever Multica still shows running on the runtime.
-func (c *Conn) RecoverOrphans(ctx context.Context, runtimeID string) error {
-	return c.call(ctx, http.MethodPost, "/api/daemon/runtimes/"+url.PathEscape(runtimeID)+"/recover-orphans", map[string]any{}, nil)
-}
-
 // Heartbeat heartbeats one runtime.
 func (c *Conn) Heartbeat(ctx context.Context, runtimeID string) (daemonwire.DaemonHeartbeatAckPayload, error) {
 	var ack daemonwire.DaemonHeartbeatAckPayload

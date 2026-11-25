@@ -82,14 +82,8 @@ func (c *Core) SetTenants(ctx context.Context, list []Tenant) TenantChanges {
 	return res
 }
 
-// TenantBusy reports whether a tenant holds anything here: a lease, a
-// claimed task not yet picked up, or a claim in flight.
-func (c *Core) TenantBusy(id string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.tenantBusyLocked(id)
-}
-
+// tenantBusyLocked reports whether a tenant holds anything here: a lease, a
+// claimed task not yet picked up, or a claim in flight. Callers hold c.mu.
 func (c *Core) tenantBusyLocked(id string) bool {
 	return c.leasedLocked(id) > 0 || c.policy.Busy(id)
 }

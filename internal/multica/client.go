@@ -97,7 +97,7 @@ func (c *Client) KnownIdentity() string {
 // LegacyDaemonID is the daemon_id the manager used to derive for each
 // workspace, before it had one identity everywhere. Registration sends it as
 // a legacy id so the server merges those runtime rows into the one
-// identity's, and orphan recovery treats its runtimes as the manager's own.
+// identity's.
 func (c *Client) LegacyDaemonID(workspaceID string) string {
 	sum := sha256.Sum256([]byte(c.base + "\x00" + workspaceID))
 	// The prefix is the name the program registered under before it was

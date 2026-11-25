@@ -254,7 +254,7 @@ func runManager(ctx context.Context, log *slog.Logger, s managerSettings) error 
 	defer adminLn.Close()
 
 	// The pods a previous run left are taken over before anything is
-	// claimed or orphans are recovered; the pods' owner is read first.
+	// claimed; the pods' owner is read first.
 	if err := m.Restore(ctx); err != nil {
 		return fmt.Errorf("start the sandbox service: %w", err)
 	}

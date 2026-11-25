@@ -49,7 +49,7 @@ func TestARestartedCoreCarriesOn(t *testing.T) {
 		{ID: "placed", Record: core.PodRecord{Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:3", Task: "t3"}},
 	})
 
-	if !r.core.Owns("run", "t1") || !r.core.TenantBusy("A") {
+	if !r.core.Owns("run", "t1") {
 		t.Fatal("the running task is not the restored pod's")
 	}
 	if l := r.core.Leases(); len(l) != 1 || l[0].TaskID != "t1" || !l[0].StartedAt.Equal(t0.Add(-time.Hour)) {

@@ -84,7 +84,6 @@ func TestWorkspaceAddedBackWhileDrainingKeepsItsLeasesAndRegistration(t *testing
 		t.Fatalf("want ta1, got %v", got)
 	}
 	registers := up.callCount(a, "POST /api/daemon/register")
-	recovers := up.callCount(a, "POST /api/daemon/runtimes/"+a.runtimeID+"/recover-orphans")
 
 	if res, err := h.pool.Reload(context.Background(), all[1:]); err != nil || !slices.Equal(res.Removed, []string{wsA}) {
 		t.Fatalf("remove A: %+v, %v", res, err)
@@ -117,14 +116,10 @@ func TestWorkspaceAddedBackWhileDrainingKeepsItsLeasesAndRegistration(t *testing
 		t.Fatalf("the running task was failed: %v", reports)
 	}
 
-	// The daemon registers again: no new upstream registration and no orphan
-	// recovery that would fail the running task.
+	// The daemon registers again: no new upstream registration.
 	pod.registerFor(wsA)
 	if n := up.callCount(a, "POST /api/daemon/register"); n != registers {
 		t.Fatalf("A registered upstream again: %d -> %d", registers, n)
-	}
-	if n := up.callCount(a, "POST /api/daemon/runtimes/"+a.runtimeID+"/recover-orphans"); n != recovers {
-		t.Fatalf("orphans were recovered under a running lease: %d -> %d", recovers, n)
 	}
 	if status := pod.report("ta1", "complete"); status != http.StatusOK {
 		t.Fatalf("complete: status %d", status)

@@ -91,10 +91,6 @@ func DaemonIDSuffix(kind policy.Kind) string {
 // Core is what the source tells the core.
 type Core interface {
 	SetTenants(ctx context.Context, list []core.Tenant) core.TenantChanges
-	TenantBusy(id string) bool
-	// Knows reports whether the core holds a task: leased, or claimed and
-	// not picked up yet.
-	Knows(taskID string) bool
 }
 
 // Pods is what the source tells the pod side directly: nothing of it touches
@@ -128,9 +124,6 @@ type Source struct {
 	// models is the latest pod model list report per provider not in
 	// cfg.Models, reused for every runtime of that provider.
 	models *multica.ModelCatalog
-	// orphansRecovered is set once the first successful Sync asked Multica to
-	// fail what an earlier manager left running.
-	orphansRecovered bool
 }
 
 // New returns the source. Connect gives it the core and the pod side before
@@ -246,9 +239,6 @@ func (s *Source) Sync(ctx context.Context) (ReloadResult, error) {
 		// say); the stock daemon would look again only in 30 minutes.
 		s.pods.NotifyWorkspacesChanged(false)
 	}
-	if err == nil {
-		s.recoverOrphansOnce(ctx)
-	}
 	s.reconcileVisibility(ctx)
 	return res, err
 }
@@ -335,54 +325,6 @@ func (s *Source) Close(tenant string) {
 		ws.close()
 	}
 }
-
-// recoverOrphansOnce runs on the first successful Sync, after the core took
-// over the pods an earlier manager left. In a workspace with no work taken
-// over, whatever Multica still shows running on the manager's runtimes will
-// never finish: it is failed, which lets Multica retry it, without waiting for
-// a pod to register the workspace. In a workspace with work taken over, only
-// the tasks shown dispatched that the core does not hold are failed. The
-// first Sync runs before pods are served, so no live task can be hit. Best
-// effort: a failure leaves the tasks to Multica's own timeout, or to the
-// recovery a pod's registration runs.
-func (s *Source) recoverOrphansOnce(ctx context.Context) {
-	s.mu.Lock()
-	if s.orphansRecovered {
-		s.mu.Unlock()
-		return
-	}
-	s.orphansRecovered = true
-	s.mu.Unlock()
-	for _, ws := range s.ws.served() {
-		id := ws.cfg.WorkspaceID
-		if !s.core.TenantBusy(id) {
-			for _, set := range ws.sets {
-				set.rt.RecoverOrphans(ctx)
-			}
-			continue
-		}
-		// The workspace has work the core took over from the pods; only the
-		// tasks dispatched here that no pod has are orphans. A task running
-		// on a pod that is gone was failed when the pod was found lost.
-		for _, set := range ws.sets {
-			ids, err := set.rt.Dispatched(ctx)
-			if err != nil {
-				s.log.Warn("list the tasks dispatched to the manager", "workspace_id", id, "error", err)
-				continue
-			}
-			for _, task := range ids {
-				if !s.core.Knows(task) {
-					s.log.Warn("failing a task dispatched to the manager before it restarted", "workspace_id", id, "task_id", task)
-					s.Fail(ctx, id, task, reasonLostInRestart)
-				}
-			}
-		}
-	}
-}
-
-// reasonLostInRestart fails a task the manager claimed before it restarted
-// and no pod took up.
-const reasonLostInRestart = "the sandbox manager restarted before the task reached a pod"
 
 // unregisteredWithPods reports whether some served workspace has no upstream
 // registration while live pods are in the pool to register it.
@@ -657,7 +599,7 @@ func (s *Source) Register(ctx context.Context, podID string, req multica.Registr
 	var resp map[string]json.RawMessage
 	var runtimes []json.RawMessage
 	for _, set := range ws.sets {
-		registration, err := set.rt.Register(ctx, req.Raw, req.Headers, func() bool { return s.core.TenantBusy(id) })
+		registration, err := set.rt.Register(ctx, req.Raw, req.Headers)
 		if err != nil {
 			s.log.Warn("register the workspace's runtimes from a pod", "pod_id", podID, "workspace_id", id, "kind", set.kind, "error", err)
 			return nil, "", unavailable

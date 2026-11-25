@@ -39,8 +39,6 @@ func (m *kindsMultica) handle(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/daemon/register":
 		m.registered = append(m.registered, body)
 		writeJSON(w, map[string]any{"runtimes": []map[string]any{{"id": "rt-" + body["daemon_id"].(string), "provider": "claude"}}})
-	case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
-		writeJSON(w, map[string]any{})
 	case r.URL.Path == "/api/daemon/heartbeat":
 		m.heartbeats = append(m.heartbeats, body["runtime_id"].(string))
 		writeJSON(w, map[string]any{"status": "ok"})
@@ -61,7 +59,7 @@ func newKindsSource(t *testing.T, sets []tasksource.RuntimeSet) (*tasksource.Sou
 		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), RuntimeVisibility: "private",
 		Runtimes: sets,
 	})
-	s.Connect(&fakeCore{busy: map[string]bool{}}, &fakePods{})
+	s.Connect(&fakeCore{}, &fakePods{})
 	if _, err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +119,7 @@ func TestAPodGetsTheRuntimesOfEveryKind(t *testing.T) {
 		Client: multica.NewClient(srv.URL, "mul_pat", "mgr", nil), RuntimeVisibility: "private",
 		Runtimes: []tasksource.RuntimeSet{poolSet, cleanSet},
 	})
-	s.Connect(&fakeCore{busy: map[string]bool{}}, &fakePods{})
+	s.Connect(&fakeCore{}, &fakePods{})
 	if _, err := s.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}

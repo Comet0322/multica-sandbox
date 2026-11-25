@@ -153,8 +153,6 @@ func (m *multiMultica) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case strings.HasSuffix(r.URL.Path, "/repos"):
 		writeJSON(w, []any{})
-	case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
-		writeJSON(w, map[string]any{"orphaned": 0, "retried": 0})
 	case r.URL.Path == "/api/runtimes" && r.Method == http.MethodGet:
 		writeJSON(w, []map[string]any{{"id": ws.runtimeID, "visibility": "public"}})
 	case strings.HasPrefix(r.URL.Path, "/api/runtimes/") && r.Method == http.MethodPatch:

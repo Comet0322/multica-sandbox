@@ -77,14 +77,6 @@ func (c *Core) Restore(pods []RestoredPod) {
 	c.settle(context.Background())
 }
 
-// Knows reports whether the core holds a task: leased, or claimed and not
-// picked up yet.
-func (c *Core) Knows(taskID string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.leases[taskID] != nil || c.claimed[taskID] != nil
-}
-
 // recordLocked tells the Pool what each held pod serves, for those whose
 // record changed. Callers hold c.mu.
 func (c *Core) recordLocked() {
