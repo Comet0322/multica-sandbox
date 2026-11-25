@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stand-in for the kind CLI on a host that has a kind cluster but not the
+# binary. It covers only what deploy/ and the e2e scripts call on an existing
+# cluster: get clusters, get nodes --name C, load docker-image --name C IMAGE...
+# It cannot create or delete a cluster (up.sh on a new host, down.sh): install
+# kind for those. e2e.sh and pod-image.sh put it on PATH when kind is missing.
+set -euo pipefail
+label=io.x-k8s.kind.cluster
+nodes() { docker ps --filter "label=$label=$1" --format '{{.Names}}'; }
+cmd="${1:-} ${2:-}"
+shift 2 || true
+name=kind
+args=()
+while [ $# -gt 0 ]; do
+	case $1 in
+	--name) name=$2; shift 2 ;;
+	*) args+=("$1"); shift ;;
+	esac
+done
+case $cmd in
+"get clusters") docker ps --filter "label=$label" --format "{{.Label \"$label\"}}" | sort -u ;;
+"get nodes") nodes "$name" ;;
+"load docker-image")
+	for n in $(nodes "$name"); do
+		docker save "${args[@]}" | docker exec -i "$n" ctr -n k8s.io images import --all-platforms --digests --snapshotter=overlayfs - >/dev/null
+	done ;;
+*) echo "kind stand-in: unsupported: $cmd (install kind)" >&2; exit 1 ;;
+esac
