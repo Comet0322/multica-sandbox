@@ -35,10 +35,16 @@ type wakeSocket struct {
 // handshake response.
 func (p *simPod) dialWake() (*wakeSocket, *http.Response, error) {
 	p.h.t.Helper()
+	return p.dialWakeWith(http.Header{})
+}
+
+// dialWakeWith dials as dialWake does, with extra handshake headers.
+func (p *simPod) dialWakeWith(header http.Header) (*wakeSocket, *http.Response, error) {
+	p.h.t.Helper()
 	d := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
 	}
-	header := http.Header{"Authorization": {"Bearer " + p.ticket}}
+	header.Set("Authorization", "Bearer "+p.ticket)
 	conn, resp, err := d.Dial("ws"+strings.TrimPrefix(p.h.podAPI.URL, "http")+"/api/daemon/ws", header)
 	if err != nil {
 		return nil, resp, err
@@ -117,6 +123,21 @@ func TestWakeSocketUpgradesOnlyPodsWithAKnownToken(t *testing.T) {
 	if _, resp, err := stranger.dialWake(); err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unknown pod token: want 401, got %v (err %v)", resp, err)
 	}
+}
+
+// The stock daemon sends no Origin, so a handshake that carries one comes
+// from a browser and is refused, as Multica's own daemon socket does.
+func TestWakeSocketRefusesAHandshakeWithAnOrigin(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, 1, withWake(time.Hour))
+	pod := h.newPod("pool-0")
+	pod.start()
+
+	_, resp, err := pod.dialWakeWith(http.Header{"Origin": {"https://example.test"}})
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("handshake with an Origin: want 403, got %v (err %v)", resp, err)
+	}
+	pod.openWake() // the same pod without one is upgraded
 }
 
 func TestWakeSocketIsOffWithoutWakeInterval(t *testing.T) {

@@ -34,8 +34,10 @@ const (
 )
 
 var wakeUpgrader = websocket.Upgrader{
-	// Pods are identified by their pod token and are not browsers.
-	CheckOrigin: func(*http.Request) bool { return true },
+	// Pods are identified by their pod token. The stock daemon sends no
+	// Origin, so a handshake that carries one is a browser's and is refused,
+	// as Multica's own daemon socket does.
+	CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" },
 }
 
 // wakeFrame is the content-free hint the daemon reacts to by claiming.
