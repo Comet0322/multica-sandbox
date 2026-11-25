@@ -31,10 +31,15 @@ func (c *Core) reconcileLoop(ctx context.Context) {
 }
 
 // ReconcileOnce asks the source whether each leased task is over and ends the
-// leases of those that are, and sends again the failure reports the source
-// has not taken. No lock is held while calling out.
+// leases of those that are, and meanwhile sends again the failure reports the
+// source has not taken. No lock is held while calling out.
 func (c *Core) ReconcileOnce(ctx context.Context) {
-	c.retryFailures(ctx)
+	retried := make(chan struct{})
+	go func() {
+		defer close(retried)
+		c.retryFailures(ctx)
+	}()
+	defer func() { <-retried }()
 	c.mu.Lock()
 	c.tickLocked()
 	held := make([]*lease, 0, len(c.leases))

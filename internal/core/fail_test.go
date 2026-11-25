@@ -68,3 +68,29 @@ func TestAFailureReportIsNotSentTwiceAtOnce(t *testing.T) {
 		t.Fatalf("fails = %q while the first report is under way, want none sent again", fails)
 	}
 }
+
+// Failure reports Multica is slow to take do not hold up lease
+// reconciliation.
+func TestSlowFailureReportsDoNotHoldUpReconciliation(t *testing.T) {
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
+	r.pool.add("p1", "A")
+	r.pool.add("p2", "A")
+	r.source.add("A", "t1", "alice", 0)
+	r.dispatch()
+	r.next("p1")
+	r.source.add("A", "t2", "alice", 0)
+	r.dispatch()
+	r.next("p2")
+	r.source.failWith(errors.New("upstream unavailable"))
+	r.pool.lose("p1")
+	r.core.PodLost("p1", "the pod was deleted")
+	r.wantFails("A t1 the pod running this task was lost: the pod was deleted")
+	r.source.failWith(nil)
+	release := make(chan struct{})
+	r.source.whenFail(func(string) { <-release })
+	t.Cleanup(func() { close(release) })
+	r.source.end("t2", "upstream task ended: cancelled")
+
+	go r.core.ReconcileOnce(t.Context())
+	eventually(t, "t2's lease to end", func() bool { return !r.core.Owns("p2", "t2") })
+}

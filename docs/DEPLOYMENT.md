@@ -549,7 +549,8 @@ A failure report is sent once the dispatch record holds it pending.
 One that does not reach Multica (network error, timeout, 429 or 5xx) is sent
 again by every reconciliation pass until Multica takes it or refuses it with
 another 4xx (taken as already handled), with no time limit, and a restarted
-manager sends it again. `/v1/inventory` shows how many are pending as
+manager sends it again. A pass sends them at most 8 at once, beside the
+status calls, so reports Multica is slow to take hold up no lease. `/v1/inventory` shows how many are pending as
 `pending_fail_reports`.
 
 ## Per-workspace overrides
