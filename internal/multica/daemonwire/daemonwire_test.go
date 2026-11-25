@@ -9,9 +9,11 @@ import (
 	"sandbox-manager/internal/multica/daemonwire"
 )
 
-// The fixtures are written in the v0.6.4 wire format of Multica's
-// server/pkg/protocol. A type that no longer reads or writes them breaks the
-// manager's contract with Multica or with the pods' daemons.
+// The fixtures are in the v0.11.0 wire format of Multica's
+// server/pkg/protocol; heartbeat_ack.json is a v0.11.0 server's answer to an
+// HTTP heartbeat, its request ID replaced. A type that no longer reads or
+// writes them breaks the manager's contract with Multica or with the pods'
+// daemons.
 
 func fixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -90,7 +92,7 @@ func TestTheHeartbeatAckYieldsThePendingModelList(t *testing.T) {
 	sameJSON(t, out, `{"id":"req-1"}`)
 
 	var none daemonwire.DaemonHeartbeatAckPayload
-	if err := json.Unmarshal([]byte(`{"runtime_id":"rt-1","status":"ok"}`), &none); err != nil {
+	if err := json.Unmarshal([]byte(`{"status":"ok"}`), &none); err != nil {
 		t.Fatal(err)
 	}
 	if none.PendingModelList != nil {

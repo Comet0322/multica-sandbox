@@ -10,7 +10,7 @@ import (
 )
 
 // originated is a task payload's attribution naming the person who authorized
-// it, as Multica v0.6.4 sends it; nil when no person did.
+// it, as Multica v0.11.0 sends it; nil when no person did.
 func originated(person string) map[string]any {
 	if person == "" {
 		return nil

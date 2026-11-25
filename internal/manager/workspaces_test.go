@@ -26,7 +26,7 @@ const (
 type fakeWorkspace struct {
 	id, runtimeID string
 	// slug is what the member listing (/api/workspaces) reports; the daemon
-	// listing has none, as on v0.6.4. Empty means "ws-" and the ID's first
+	// listing has none, as on v0.11.0. Empty means "ws-" and the ID's first
 	// eight characters.
 	slug   string
 	queue  []map[string]any
