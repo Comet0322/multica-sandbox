@@ -50,8 +50,8 @@ Run one manager per namespace: two would act on the same pods.
    docker build -f deploy/Dockerfile.pool --build-context multica=../multica -t <registry>/multica-sandbox-pool:<tag> .
    ```
 
-   The pod image builds the stock daemon from a Multica checkout at the
-   version the server runs (v0.6.4).
+   The pod image builds the stock daemon from the working tree of a Multica
+   checkout: check it out at the commit the server is built from (v0.11.0).
 4. **The pod template.** Copy `deploy/k8s/pod.yaml`, set its image, and size
    its requests and limits ([The pod template](#the-pod-template)).
 5. **Permissions.** Give the manager its rights on pods
@@ -591,7 +591,7 @@ with the task that caused them.
 
 ## Multica server version
 
-The manager needs Multica v0.6.4 or later and no migration newer than it. It
+The manager needs Multica v0.11.0 and no migration newer than it. It
 calls, with the bot PAT: `GET /api/me`, `GET /api/daemon/workspaces` (and
 `GET /api/workspaces` for slugs while the overrides file has entries),
 `POST /api/daemon/register`, `POST /api/daemon/heartbeat`,
@@ -600,7 +600,14 @@ calls, with the bot PAT: `GET /api/me`, `GET /api/daemon/workspaces` (and
 `GET /api/daemon/tasks/{id}/status`, `POST /api/daemon/tasks/{id}/fail`,
 `GET /api/runtimes` and `PATCH /api/runtimes/{id}`; it relays the pods' task
 calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
-`mat_` calls.
+`mat_` calls. It answers the pods' `tasks/{id}/environments` and
+`environment-configs` reports itself: Multica would link members to dev
+servers on a pod's localhost, and offer controls for them that nothing carries
+out.
+
+Multica serves a runtime and its tasks only to the account that registered
+it, so the PAT must stay with that account: another account's PAT reaches
+neither the manager's runtimes nor the tasks running on them.
 
 ## Known limits and operations
 
@@ -630,11 +637,17 @@ calls (`start`, `progress`, `session`, `complete`, ...) and the agents'
 - **Claim load and dispatch rate.** Every tick reads one pending list per
   runtime of every served workspace, and hands out at most one task, so
   filling many pods after a burst takes about one second per task.
+- **A runtime's concurrency limit covers all its pods.** Multica's
+  per-runtime `max_concurrent_tasks` (unset by default) counts every task of
+  the runtime. Set on one of the manager's runtimes, it limits all of that
+  runtime's pods together, and claims beyond it come back empty without an
+  error.
 - **The PAT is a single point of failure.** It acts in every served workspace,
   and when it is revoked or expires every workspace stops at once: new tasks
   stay queued in Multica, reports of running tasks are refused and their
   leases end, `/readyz` turns 503, and `last_sync` and the workspaces'
-  `upstream` show the error. To rotate it, create the new PAT, replace the
+  `upstream` show the error. To rotate it, create the new PAT for the same
+  account ([Multica server version](#multica-server-version)), replace the
   Secret file, restart the manager (running tasks carry on, see above), then
   revoke the old PAT.
 - **Restrict who reaches the manager's pod port.** A pod token is needed for
@@ -650,7 +663,7 @@ deploy/k8s/dev/up.sh
 ```
 
 This creates the kind cluster `sandbox-dev` and the namespace
-`multica-sandbox`, and runs Multica v0.6.4 in it (backend at
+`multica-sandbox`, and runs Multica v0.11.0 in it (backend at
 http://127.0.0.1:18080, web app at http://127.0.0.1:13001; sign in with any
 email and the code `up.sh` prints). It writes to `deploy/k8s/dev/.state/`,
 which git ignores:

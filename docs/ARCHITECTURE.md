@@ -166,5 +166,5 @@ Multica, which the daemon passes to the agent unchanged.
 | Pool runtime pods shared within a department | Fewer pod starts; an issue's later tasks may reuse a warm cache. | Another issue of the department may see files left on the pod; the clean runtime exists for work that must not. |
 | Warm pods | Claims rarely wait for a pod to start. | Pods that use their requests while serving no one. |
 | State kept on the pods (labels and annotations) | The manager keeps no database; a restart takes over running tasks. | It needs the `patch` verb on pods; without it the manager stops claiming, and a restart deletes every pod. |
-| Stock Multica and stock daemon | No fork to maintain; the manager follows Multica's daemon protocol. | The manager depends on that protocol (pinned to v0.6.4 by fixtures) and on Multica's API for workspaces and tasks. |
+| Stock Multica and stock daemon | No fork to maintain; the manager follows Multica's daemon protocol. | The manager depends on that protocol (pinned to v0.11.0 by fixtures) and on Multica's API for workspaces and tasks. |
 | One bot account for every workspace | One credential, one daemon identity, workspaces found by membership. | The PAT is a single point of failure, and a workspace that invites the bot is served by it. |
