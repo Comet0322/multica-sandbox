@@ -250,22 +250,31 @@ func TestARestartedCoreDropsWhatTheRecordCannotVouchFor(t *testing.T) {
 }
 
 // A task Multica hands out again, its earlier delivery not started in time,
-// replaces the delivery the core holds and keeps its place.
+// replaces the delivery the core holds and keeps its place, whether its pod
+// had been handed the earlier delivery or not. Multica hands a task out again
+// only to a claim, so the pod's next pickup gets the delivery Multica starts.
 func TestATaskClaimedAgainReplacesItsDelivery(t *testing.T) {
-	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
-	r.pool.add("p1", "A")
-	r.pool.add("p2", "A")
-	r.source.add("A", "t1", "alice", 0)
-	r.dispatch()
-	again := core.Task{Task: policy.Task{ID: "t1", Tenant: "A", Kind: policy.KindPool, Key: "issue:t1"}, Payload: json.RawMessage(`{"id":"t1","delivery":2}`)}
-	r.source.mu.Lock()
-	r.source.queues["A"] = append(r.source.queues["A"], again)
-	r.source.mu.Unlock()
-	r.dispatch()
-	if got := string(r.core.Next(context.Background(), "p1")); !strings.Contains(got, `"delivery":2`) {
-		t.Fatalf("p1 got %s, want the new delivery", got)
-	}
-	if got := r.next("p2"); got != "" {
-		t.Fatalf("p2 got %q, want nothing: the task kept its place", got)
+	for _, handed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "placed", true: "handed"}[handed], func(t *testing.T) {
+			r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
+			r.pool.add("p1", "A")
+			r.pool.add("p2", "A")
+			r.source.add("A", "t1", "alice", 0)
+			r.dispatch()
+			if handed && r.next("p1") != "t1" {
+				t.Fatal("p1 was not handed t1")
+			}
+			again := core.Task{Task: policy.Task{ID: "t1", Tenant: "A", Kind: policy.KindPool, Key: "issue:t1"}, Payload: json.RawMessage(`{"id":"t1","delivery":2}`)}
+			r.source.mu.Lock()
+			r.source.queues["A"] = append(r.source.queues["A"], again)
+			r.source.mu.Unlock()
+			r.dispatch()
+			if got := string(r.core.Next(context.Background(), "p1")); !strings.Contains(got, `"delivery":2`) {
+				t.Fatalf("p1 got %s, want the new delivery", got)
+			}
+			if got := r.next("p2"); got != "" {
+				t.Fatalf("p2 got %q, want nothing: the task kept its place", got)
+			}
+		})
 	}
 }
