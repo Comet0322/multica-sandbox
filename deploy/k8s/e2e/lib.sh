@@ -1,5 +1,5 @@
 # Shared by scenarios.sh and smoke.sh: a manager on this host against a
-# namespace with a Multica v0.6.4 backend in it, creating real pods there with
+# namespace with a Multica v0.11.0 backend in it, creating real pods there with
 # the given kubeconfig. See README.md for the settings.
 #
 # Each run signs in a bot account of its own (e2e-<run>@<domain>), so it serves

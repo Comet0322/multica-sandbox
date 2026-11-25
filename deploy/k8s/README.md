@@ -6,7 +6,7 @@ pod template, the permissions and every setting are in the
 
 | Path | What |
 | --- | --- |
-| `multica/` | Multica v0.6.4 (Postgres, the backend, the web app), with no namespace in the manifests: `kubectl apply -k deploy/k8s/multica -n <namespace>` after creating the `multica-backend` Secret and ConfigMap. |
+| `multica/` | Multica v0.11.0 (Postgres, the backend, the web app), with no namespace in the manifests: `kubectl apply -k deploy/k8s/multica -n <namespace>` after creating the `multica-backend` Secret and ConfigMap. |
 | `pod.yaml` | The example pod template (`SANDBOX_POD_TEMPLATE`). Set its image and size it before use. |
 | `rbac.yaml` | The manager's service account, with a Role that may only `create`, `delete`, `get`, `list`, `watch` and `patch` pods and `get` its own Deployment (for `SANDBOX_POD_OWNER`), and its RoleBinding. |
 | `manager.yaml` | An example Deployment and Service for the manager, on that service account or a mounted kubeconfig. |

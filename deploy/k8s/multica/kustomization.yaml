@@ -1,4 +1,4 @@
-# Multica v0.6.4 for one namespace: Postgres, the backend and the web app.
+# Multica v0.11.0 for one namespace: Postgres, the backend and the web app.
 # The manifests name no namespace; apply them with -n, for example
 #   kubectl apply -k deploy/k8s/multica -n <namespace>
 # The Secret multica-backend (DATABASE_URL, POSTGRES_PASSWORD, JWT_SECRET and,

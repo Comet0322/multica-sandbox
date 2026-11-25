@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create (or reuse) a kind cluster with one namespace holding Multica v0.6.4,
+# Create (or reuse) a kind cluster with one namespace holding Multica v0.11.0,
 # and a kubeconfig that may only create, delete, watch and patch pods there,
 # what the manager needs.
 #
@@ -26,7 +26,7 @@ fi
 
 # Load the images from the host's Docker when it has them, so the node does
 # not pull them again.
-for img in ghcr.io/multica-ai/multica-backend:v0.6.4 ghcr.io/multica-ai/multica-web:v0.6.4 pgvector/pgvector:pg17; do
+for img in ghcr.io/multica-ai/multica-backend:v0.11.0 ghcr.io/multica-ai/multica-web:v0.11.0 pgvector/pgvector:pg17; do
 	if docker image inspect "$img" >/dev/null 2>&1; then
 		kind load docker-image --name "$cluster" "$img" >/dev/null
 	fi

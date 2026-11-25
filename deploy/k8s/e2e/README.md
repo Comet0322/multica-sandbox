@@ -1,8 +1,8 @@
 # End-to-end scenarios
 
 `scenarios.sh` and `smoke.sh` run the manager on this host against a namespace
-that holds a Multica v0.6.4 backend, and let it create real pods there from
-the stock v0.6.4 daemon in the fake-agent pod image. Nothing is mocked: the
+that holds a Multica v0.11.0 backend, and let it create real pods there from
+the stock v0.11.0 daemon in the fake-agent pod image. Nothing is mocked: the
 pods, the daemon, the backend and the Kubernetes API are real.
 
 | Script | What it checks | Time |

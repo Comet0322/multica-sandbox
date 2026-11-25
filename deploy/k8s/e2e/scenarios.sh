@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end scenarios against a namespace with real pods, the stock v0.6.4
-# daemon (the fake-agent pod image) and a Multica v0.6.4 backend. The manager
+# End-to-end scenarios against a namespace with real pods, the stock v0.11.0
+# daemon (the fake-agent pod image) and a Multica v0.11.0 backend. The manager
 # runs on this host; settings and how to point it at another namespace are in
 # README.md.
 #
