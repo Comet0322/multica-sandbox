@@ -220,7 +220,7 @@ errors. Prefer the `_FILE` form with a mounted secret.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SANDBOX_DATABASE_URL` | none | Postgres URL of the manager's own database (secret; `_FILE` form accepted), for example `postgres://sandbox_manager:<password>@<host>:5432/sandbox_manager`. Required. See [The dispatch record](#the-dispatch-record-and-a-manager-restart). |
-| `SANDBOX_PAYLOAD_KEY_FILE` | none | Absolute path of the key task payloads are encrypted with in the database: 32 bytes in base64 (`openssl rand -base64 32`). Required. Keep it with the database: the payloads of tasks not started yet do not decrypt without it, and the manager does not start. |
+| `SANDBOX_PAYLOAD_KEY_FILE` | none | Absolute path of the key task payloads are encrypted with in the database: 32 bytes in base64 (`openssl rand -base64 32`). Required. Keep it with the database: the payloads of tasks not started yet do not decrypt without it (see the known limits). |
 
 ### Pods
 
@@ -702,10 +702,12 @@ neither the manager's runtimes nor the tasks running on them.
 - **A restart longer than 90 seconds.** Multica hands a task that was
   dispatched and not started to the manager's next claim again. The manager
   takes the new delivery for the task it holds, so the task runs once.
-- **The payload key cannot be rotated in place.** The payloads of tasks
-  placed or handed when the key changes do not decrypt with the new key, and
-  the manager does not start. Change it only while the dispatch page shows no
-  starting task, and restart at once.
+- **Changing the payload key drops the tasks not started yet.** Their
+  payloads do not decrypt with the new key. The manager logs each, ends it
+  at start without failing it, and deletes its pod; Multica hands it out
+  again to the manager's next claim after 90 seconds, or fails it as a
+  retryable timeout after 300 seconds. Change the key while the dispatch
+  page shows no starting task, and none is dropped.
 - **The database is the manager's alone.** Two managers on one database
   would take over each other's pods. Back it up with the payload key.
 - **Memory is per pod.** The pod template's limits bound each task; a task

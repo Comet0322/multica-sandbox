@@ -11,7 +11,8 @@ import (
 //
 //   - A running task runs on.
 //   - A task placed on a pod, or handed to it and not reported started, is
-//     handed to that pod again.
+//     handed to that pod again. One whose payload the store could not read
+//     ends unreported, for Multica to hand out again, and its pod goes.
 //   - A task on no pod waits for one.
 //   - A hold resumes with its remaining time, and an idle pod ages on.
 //   - A pod the pool no longer has is found lost at the next dispatch tick,
@@ -41,6 +42,12 @@ func (c *Core) Restore(ctx context.Context) error {
 		}
 		switch {
 		case t.State == TaskEnded:
+		case t.State != TaskRunning && len(t.Payload) == 0:
+			// No pod can be handed it. Multica hands it out again to a claim
+			// after 90 s, or fails it as a retryable timeout.
+			c.log.Warn("restored task has no payload to hand its pod; it ends here, unreported", "task_id", t.ID, "pod_id", t.PodID, "workspace_id", t.Tenant)
+			t.State, t.EndedAt, t.EndReason = TaskEnded, c.now(), "its payload could not be read"
+			c.saveTaskLocked(t)
 		case running[t.PodID] && onPod[t.PodID] == nil:
 			onPod[t.PodID] = t
 		default:

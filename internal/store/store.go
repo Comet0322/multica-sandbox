@@ -3,8 +3,9 @@
 // what the previous run left. It implements core.Store.
 //
 // A task's payload is kept encrypted with AES-256-GCM, the task ID as
-// additional data, and only while the task is placed or handed. A task's
-// email is never kept.
+// additional data, and only while the task is placed or handed. One that
+// does not decrypt (the key changed) is loaded as none. A task's email is
+// never kept.
 package store
 
 import (
@@ -181,7 +182,8 @@ FROM tasks WHERE state <> 'ended' OR fail_pending ORDER BY claimed_at, id`
 
 // Load reads, from one snapshot, the pods that are not gone in the order
 // they were acquired, and the tasks that did not end or whose failure report
-// is pending in the order they were claimed.
+// is pending in the order they were claimed. A payload that does not
+// decrypt is logged and loaded as none.
 func (s *Store) Load(ctx context.Context) (core.Record, error) {
 	var rec core.Record
 	snapshot := pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
@@ -220,8 +222,10 @@ func (s *Store) scanTask(row pgx.CollectableRow) (core.TaskRow, error) {
 	if err != nil {
 		return t, err
 	}
-	t.Payload, err = openPayload(s.aead, t.ID, sealed)
-	return t, err
+	if t.Payload, err = openPayload(s.aead, t.ID, sealed); err != nil {
+		s.log.Error("load a task without its payload", "task_id", t.ID, "error", err)
+	}
+	return t, nil
 }
 
 // Prune deletes the pods that went before before, and the tasks that ended

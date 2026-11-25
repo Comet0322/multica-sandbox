@@ -280,3 +280,39 @@ func TestATaskClaimedAgainReplacesItsDelivery(t *testing.T) {
 		})
 	}
 }
+
+// A task the store loads without its payload (the payload key changed) can
+// be handed to no pod. It ends here without a failure report, so Multica
+// hands it out again; its pod, which ran nothing else, is deleted.
+func TestARestoredTaskWithoutItsPayloadEnds(t *testing.T) {
+	r := newRig(t, core.Config{}, tenant("A", policy.TenantSettings{}))
+	pods := []core.PodRow{
+		{ID: "p-placed", Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:1", ReadyAt: t0},
+		{ID: "p-handed", Phase: policy.PhaseRunning, Tenant: "A", Kind: policy.KindPool, Key: "issue:2", ReadyAt: t0},
+	}
+	tasks := []core.TaskRow{
+		{Task: core.Task{Task: policy.Task{ID: "t1", Tenant: "A", Kind: policy.KindPool, Key: "issue:1"}}, PodID: "p-placed", State: core.TaskPlaced, ClaimedAt: t0},
+		{Task: core.Task{Task: policy.Task{ID: "t2", Tenant: "A", Kind: policy.KindPool, Key: "issue:2"}}, PodID: "p-handed", State: core.TaskHanded, ClaimedAt: t0, StartedAt: t0},
+	}
+	if err := r.store.Write(context.Background(), pods, tasks); err != nil {
+		t.Fatal(err)
+	}
+	r.pool.add("p-placed", "A")
+	r.pool.add("p-handed", "A")
+	r.restart()
+	if got := r.pool.ids(); len(got) != 0 {
+		t.Fatalf("pods after the restart = %v, want both deleted", got)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		eventually(t, id+" ended in the record", func() bool {
+			task := r.store.task(id)
+			return task.State == core.TaskEnded && !task.FailPending
+		})
+	}
+	if _, fails, _ := r.source.snapshot(); len(fails) != 0 {
+		t.Fatalf("fails = %v, want none", fails)
+	}
+	if l := r.core.Leases(); len(l) != 0 {
+		t.Fatalf("leases = %+v, want none", l)
+	}
+}

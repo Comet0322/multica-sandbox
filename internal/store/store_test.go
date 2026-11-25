@@ -365,19 +365,32 @@ func TestPayloadIsDroppedOnceTheTaskRuns(t *testing.T) {
 	}
 }
 
-func TestLoadFailsOnAPayloadThatDoesNotDecrypt(t *testing.T) {
+// A payload that does not decrypt (the key changed, or the column was
+// tampered with) is loaded as none, and logged by task without the payload;
+// the other rows load as they are.
+func TestLoadDropsAPayloadThatDoesNotDecrypt(t *testing.T) {
 	u, conn := newSchema(t)
-	s := open(t, u)
+	var logged bytes.Buffer
+	s, err := store.Open(t.Context(), store.Config{URL: u, PayloadKey: key, Log: slog.New(slog.NewTextHandler(&logged, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
 	a := task("task-a", core.TaskPlaced, at(0))
 	a.Payload = json.RawMessage(`{"secret":"prompt"}`)
-	write(t, s, nil, []core.TaskRow{a, task("task-b", core.TaskPlaced, at(1))})
+	b := task("task-b", core.TaskPlaced, at(1))
+	b.Payload = json.RawMessage(`{"secret":"other prompt"}`)
+	write(t, s, nil, []core.TaskRow{a, b})
 	if _, err := conn.Exec(t.Context(), `UPDATE tasks SET payload = (SELECT payload FROM tasks WHERE id = 'task-a') WHERE id = 'task-b'`); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := s.Load(t.Context())
-	if err == nil || !strings.Contains(err.Error(), "task-b") || strings.Contains(err.Error(), "prompt") {
-		t.Fatalf("Load error = %v, want one naming task-b without the payload", err)
+	got := load(t, s).Tasks
+	if len(got) != 2 || string(got[0].Payload) != string(a.Payload) || got[1].ID != "task-b" || got[1].Payload != nil {
+		t.Fatalf("loaded %+v, want task-a with its payload and task-b with none", got)
+	}
+	if l := logged.String(); !strings.Contains(l, "task-b") || strings.Contains(l, "prompt") {
+		t.Fatalf("log = %q, want it to name task-b and not show a payload", l)
 	}
 }
 

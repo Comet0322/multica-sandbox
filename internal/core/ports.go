@@ -60,7 +60,7 @@ type Store interface {
 	// Load reads the record a previous run left: the pods it held and did
 	// not let go, in the order it acquired them, and the tasks that did not
 	// end or whose failure report the source has not taken, in the order
-	// they were claimed.
+	// they were claimed. A payload it cannot read is loaded as none.
 	Load(ctx context.Context) (Record, error)
 	// Write saves the rows, each replacing the row of the same ID: all of
 	// them, or none when it returns an error.
