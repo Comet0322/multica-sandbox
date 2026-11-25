@@ -305,7 +305,7 @@ func (s *Source) reload(ctx context.Context, workspaces []WorkspaceConfig) (Relo
 	})
 	tenants := make([]core.Tenant, 0, len(next))
 	for _, ws := range s.ws.served() {
-		tenants = append(tenants, core.Tenant{ID: ws.cfg.WorkspaceID, Settings: ws.cfg.Settings()})
+		tenants = append(tenants, core.Tenant{ID: ws.cfg.WorkspaceID, Settings: s.ws.config(ws).Settings()})
 	}
 	s.core.SetTenants(ctx, tenants)
 	// Sync reloads every pass; only a pass that changed something is news.
@@ -666,10 +666,10 @@ type WorkspaceView struct {
 // ones still draining.
 func (s *Source) Workspaces() (served, draining []WorkspaceView) {
 	for _, ws := range s.ws.served() {
-		served = append(served, WorkspaceView{Config: ws.cfg, Upstream: ws.health()})
+		served = append(served, WorkspaceView{Config: s.ws.config(ws), Upstream: ws.health()})
 	}
 	for _, ws := range s.ws.drainingList() {
-		draining = append(draining, WorkspaceView{Config: ws.cfg, Upstream: ws.health()})
+		draining = append(draining, WorkspaceView{Config: s.ws.config(ws), Upstream: ws.health()})
 	}
 	return served, draining
 }

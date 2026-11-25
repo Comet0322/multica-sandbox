@@ -341,7 +341,7 @@ func TestKubeReportsHowAHeldPodWasLost(t *testing.T) {
 			if inv.Broken != "" {
 				t.Fatalf("a lost ready pod broke the pods: %q", inv.Broken)
 			}
-			h.eventually("the pod deleted", func() bool { return len(h.pods()) == 0 || h.pods()[0].Name != string(id) })
+			h.eventually("the pod deleted", func() bool { pods := h.pods(); return len(pods) == 0 || pods[0].Name != string(id) })
 		})
 	}
 }

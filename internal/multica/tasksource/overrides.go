@@ -266,7 +266,7 @@ func (s *Source) fillSlugs(ctx context.Context, list []WorkspaceConfig) []string
 		if slug, ok := slugs[strings.ToLower(wc.WorkspaceID)]; ok {
 			wc.Slug = slug
 		} else if ws := s.ws.get(wc.WorkspaceID); ws != nil {
-			wc.Slug = ws.cfg.Slug
+			wc.Slug = s.ws.config(ws).Slug
 		}
 	}
 	return problems

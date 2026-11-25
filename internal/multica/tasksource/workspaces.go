@@ -43,6 +43,14 @@ func (s *workspaceSet) served() []*workspace {
 	return s.order
 }
 
+// config is a workspace's configuration. apply rewrites its settings in
+// place under the lock, so a reader takes a copy under it too.
+func (s *workspaceSet) config(ws *workspace) WorkspaceConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ws.cfg
+}
+
 // get returns the served workspace with the ID, nil when none is.
 func (s *workspaceSet) get(id string) *workspace {
 	s.mu.Lock()
