@@ -1,6 +1,6 @@
 # Issue tracker: Local Markdown
 
-Issues and specs for this repo live as markdown files in `.scratch/`. They stay in the working copy only: `.git/info/exclude` keeps `.scratch/` and `docs/adr/` out of git, so they are never committed or published.
+Issues and specs for this repo live as markdown files in `.scratch/`, committed with the code so that whoever picks the work up next has them. `docs/adr/` stays out of git (`.git/info/exclude`).
 
 ## Conventions
 

@@ -19,7 +19,7 @@ This repository is our sandbox manager: the program that runs Multica tasks one 
 
 ### Issue tracker
 
-Issues and specs live as local markdown under `.scratch/`, which is never committed (see `docs/agents/issue-tracker.md`).
+Issues and specs live as markdown under `.scratch/`, committed with the code so the next agent finds them (see `docs/agents/issue-tracker.md`).
 
 ### Triage labels
 
@@ -27,4 +27,4 @@ Default five roles: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`. The ADRs, like `.scratch/`, stay local and are never committed; the glossary is committed.
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`. The ADRs stay local and are never committed; the glossary and `.scratch/` are committed.
